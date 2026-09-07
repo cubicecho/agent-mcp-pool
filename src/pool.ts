@@ -469,19 +469,46 @@ export class McpPool {
    */
   tools(names?: string[], servers?: Iterable<string>): OpenAI.ChatCompletionTool[] {
     const allowed = scope(servers);
-    const entries = names ? names.map((name) => this.index.get(name)) : [...this.index.values()];
     const definitions: OpenAI.ChatCompletionTool[] = [];
     // A model asking for the same tool twice would otherwise be sent two definitions under one
     // function name, which OpenAI rejects — a bad request rather than a bad answer, and one that
     // reads as the caller's bug. Caller order is kept; the first mention wins.
     const seen = new Set<string>();
-    for (const found of entries) {
-      if (!found || (allowed && !allowed.has(found.serverId))) continue;
+    for (const name of names ?? this.index.keys()) {
+      const found = this.index.get(name);
+      if (!found) {
+        // Skipped either way — a name nothing offers is a tool the model is not sent, and its
+        // next call says so plainly. Said out loud because the silent version is invisible to the
+        // one caller it hurts: a consumer holding names from before a rename watches its agent
+        // quietly lose tools, and nothing in this log ever mentioned it.
+        if (!this.expected(name)) this.log.info?.(`[mcp] no tool named ${name} is offered`);
+        continue;
+      }
+      if (allowed && !allowed.has(found.serverId)) continue;
       if (seen.has(found.tool.qualified)) continue;
       seen.add(found.tool.qualified);
       definitions.push(found.tool.definition);
     }
     return definitions;
+  }
+
+  /**
+   * Whether a name that missed the index might still turn up.
+   *
+   * A lazy pool's cold server has no tools indexed and `tools()` deliberately does not connect
+   * one, so a name that server could own is early rather than missing; same for one still
+   * shaking hands. Anything else means no server that is going to answer has this tool.
+   *
+   * Deliberately not `error`. The pool cannot tell a caller's stale name from a model's invented
+   * one, and the second arrives through `load_tools` as a matter of course — a level that says
+   * "something is wrong" would be wrong most of the time it fired.
+   */
+  private expected(qualifiedName: string) {
+    for (const entry of this.entries.values()) {
+      if (entry.status !== "idle" && entry.status !== "connecting") continue;
+      if (couldQualify(slugOf(entry.config), qualifiedName)) return true;
+    }
+    return false;
   }
 
   /**
