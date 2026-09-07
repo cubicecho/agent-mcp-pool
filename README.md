@@ -131,6 +131,31 @@ server's tools without spawning it needs a cached last-known tool list, which is
 out a penalty for something that did not go wrong. Both options absent is exactly today's
 behaviour.
 
+### Stopping and restarting one server
+
+`shutdown()` is every server and forgets them, and `sync()` only closes what the configs dropped.
+One server on its own is `stop()` and `reconnect()`:
+
+```ts
+await pool.stop(id);      // close the child, keep the row: `idle`, no error, no backoff
+await pool.reconnect(id); // close it and dial again, changed or not
+```
+
+`stop()` is the reap path reached by a person instead of a clock, which is why it lands on `idle`
+rather than a status of its own: `idle` already means registered, no child, nothing wrong. Nothing
+stands between a stopped server and the next `call()` or `client()`, including the backoff a crash
+would have armed — so "restart this wedged server" is a `stop()` and then a use, and an operator
+uninstalling a server can close its child before the row leaves disk rather than racing a live
+process holding files open. It stays stopped in the meantime: `reconcile` steps over an `idle`
+entry whether or not the pool is lazy, so the next write to the server table will not dial it.
+
+`reconnect()` is the unconditional one, `lazy` included. It used to drop the entry and let the
+reconcile rebuild it, and a lazy reconcile registers an entry and waits for a use — so on a lazy
+pool it *stopped* the server it was asked to restart, and the caller found out on whichever later
+call spawned a child. Which of the two things the method did depended on a constructor flag set
+somewhere else entirely; now the two pools mean the same by it. A disabled row is still not
+started: it is off for a reason a reconnect does not overrule.
+
 ### Not indexing at all
 
 The drain that fills the index is the pool doing its job for an agent loop, and pure cost for a
