@@ -6,6 +6,16 @@ an OpenAI-compatible agent loop as `<slug>__<tool name>`.
 Connections are long-lived and shared across runs: a stdio server is a child process, and
 spawning one per run would cost more than the run.
 
+## Install
+
+```sh
+npm install @cubicecho/agent-mcp-pool @modelcontextprotocol/sdk openai
+```
+
+Both are peer dependencies — `@modelcontextprotocol/sdk` (`>=1.30`) because `client()` hands back
+the SDK's own `Client` and an `instanceof` against a second copy in the tree means nothing, and
+`openai` (`>=6`) because `tools()` returns its `ChatCompletionTool`. ESM only, Node >=22.
+
 ## The seam
 
 The two servers this came from both did `import { db }` and read an `mcp_servers` table. The
@@ -95,6 +105,13 @@ carry. `client(id)` hands back the connected client:
 const { resources } = await (await pool.client(id)).listResources();
 ```
 
+`resultText` is the flattening `call()` does, exported separately: MCP answers with a list of
+content blocks and a message array holds one string. A consumer driving the client itself and
+still putting the answer in front of a model wants the same rule rather than its own — everything
+that is not text is *named* (`[image content]`) rather than dropped, so a model that asked for a
+screenshot is told it got one instead of being handed an empty string and left to conclude the
+call failed.
+
 Everything else the pool does applies unchanged — reconcile, the queue, crash detection with the
 stderr tail, backoff, retry-on-use. A server that is merely down is retried first, the same as
 `call()` does; a disabled one is refused, because off is not the same as out of scope. **It
@@ -113,6 +130,53 @@ A failed server is then retried, which is the other half: `sync` leaves a *healt
 server alone but treats a failed one as work to do, and `call` brings back a server that is
 merely down rather than telling the model its tool does not exist. Both are held off by
 `crashBackoffMs` (5s), or a server that cannot start would be respawned on every write.
+
+## Timeouts
+
+`connectTimeoutMs` caps how long a server gets to answer `initialize` and `tools/list`. The SDK
+already applies its own 60s, so this is not about an unbounded hang — it is about how long a boot
+is willing to stall. `sync` connects in parallel, but one wedged server still holds the whole
+reconcile open for the full timeout, so the number to pick is the one your startup can afford,
+not the one a healthy server needs.
+
+Unset is the SDK's 60s, which is a ceiling rather than a budget.
+
+## Probing
+
+A config is easy to get subtly wrong, and finding out at 3am when the task runs is too late.
+`probe()` connects a config that may not be saved yet, lists its tools, and hangs up:
+
+```ts
+const { ok, error, tools } = await mcp.probe(row); // { ok: false, error: "no module named …" }
+```
+
+It reports rather than throws, and `error` is the child's **stderr** where there is one — the same
+tail that makes a failed server diagnosable above, which is the whole difference between "no
+module named mcp_server_git" and "MCP error -32000: Connection closed".
+
+Going through the pool is what binds the client name, the `childEnv` policy and the timeout to
+whatever this pool uses, so the probe dials the way the pool will. Every consumer that called the
+free `probe()` wrote that wrapper itself, and one that bound them differently showed up only in a
+remote server's logs. The free function stays exported for a caller with no pool.
+
+`probeTimeoutMs` overrides `connectTimeoutMs` for probes alone, defaulting to it. The two have
+different audiences: a reconcile of thirty servers at boot can afford to be patient, and a person
+who has just pressed "Test connection" cannot.
+
+## Logging
+
+The pool logs — a server's tool count on connect, what it wrote on the way out, a name nothing
+offers — and by default it logs to `console`. A consumer wondering why MCP chatter is in its
+stdout wants `log`:
+
+```ts
+import { McpPool, type PoolLog } from "@cubicecho/agent-mcp-pool";
+
+new McpPool({ load, log: { info: logger.debug, error: logger.warn } });
+```
+
+Both halves are optional, so `{}` is silence and `{ error: logger.warn }` keeps the failures and
+drops the rest. `PoolLog` is exported so a consumer can declare one rather than infer it.
 
 ## Notifications
 
