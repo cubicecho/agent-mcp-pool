@@ -3,8 +3,9 @@ import type { Notification } from "@modelcontextprotocol/sdk/types.js";
 import type OpenAI from "openai";
 import { sameConnection, scope } from "./config.ts";
 import { errorMessage } from "./errors.ts";
-import { couldQualify, type PooledTool, pooledTool, slugOf } from "./naming.ts";
+import { couldQualify, labelOf, type PooledTool, pooledTool, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
+import { resultText } from "./results.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type {
   CatalogServer,
@@ -43,6 +44,17 @@ interface Entry {
   idleTimer?: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * Where the pool's own progress goes.
+ *
+ * Named so a consumer wiring its own logger in has something to type the adapter against —
+ * `McpPoolOptions["log"]` is optional, so it had to unwrap the `undefined` first.
+ */
+export interface PoolLog {
+  info?: (message: string) => void;
+  error?: (message: string) => void;
+}
+
 export interface McpPoolOptions {
   /**
    * Where the configured servers come from when `sync()` is called with nothing.
@@ -55,7 +67,7 @@ export interface McpPoolOptions {
   /** How this process introduces itself to the servers it connects to. */
   clientName?: string;
   /** Where the pool's own progress goes. Defaults to the console; pass `{}` to silence it. */
-  log?: { info?: (message: string) => void; error?: (message: string) => void };
+  log?: PoolLog;
   /** How long a failed server is left alone before it is dialled again. Defaults to 5s. */
   crashBackoffMs?: number;
   /**
@@ -120,7 +132,7 @@ export class McpPool {
 
   private readonly load?: () => Promise<McpServerConfig[]>;
   private readonly clientName: string;
-  private readonly log: NonNullable<McpPoolOptions["log"]>;
+  private readonly log: PoolLog;
   private readonly crashBackoffMs: number;
   private readonly childEnv?: readonly string[];
   private readonly connectTimeoutMs?: number;
@@ -448,8 +460,14 @@ export class McpPool {
     const allowed = scope(servers);
     const entries = names ? names.map((name) => this.index.get(name)) : [...this.index.values()];
     const definitions: OpenAI.ChatCompletionTool[] = [];
+    // A model asking for the same tool twice would otherwise be sent two definitions under one
+    // function name, which OpenAI rejects — a bad request rather than a bad answer, and one that
+    // reads as the caller's bug. Caller order is kept; the first mention wins.
+    const seen = new Set<string>();
     for (const found of entries) {
       if (!found || (allowed && !allowed.has(found.serverId))) continue;
+      if (seen.has(found.tool.qualified)) continue;
+      seen.add(found.tool.qualified);
       definitions.push(found.tool.definition);
     }
     return definitions;
@@ -538,7 +556,6 @@ export class McpPool {
       const current = this.entries.get(entry.config.id);
       if (!current || current !== entry || current.status !== "ready") return;
       await this.close(current);
-      current.closing = false;
       current.status = "idle";
       current.tools = [];
       this.reindex();
@@ -561,7 +578,7 @@ export class McpPool {
       if (allowed && !allowed.has(entry.config.id)) continue;
       out.push({
         id: entry.config.id,
-        label: entry.config.label || slugOf(entry.config),
+        label: labelOf(entry.config),
         tools: entry.tools.map(({ qualified, description }) => ({
           name: qualified,
           description,
@@ -633,14 +650,7 @@ export class McpPool {
       arguments: (input ?? {}) as Record<string, unknown>,
     });
 
-    const content = Array.isArray(result.content) ? result.content : [];
-    const text = content
-      .map((block: { type?: string; text?: string }) =>
-        block.type === "text" ? block.text : `[${block.type ?? "unknown"} content]`,
-      )
-      .join("\n")
-      .trim();
-
+    const text = resultText(result);
     if (result.isError) throw new Error(text || "tool call failed");
     return text || "(no output)";
   }
@@ -666,7 +676,7 @@ export class McpPool {
     return [...this.entries.values()].map((entry) => ({
       id: entry.config.id,
       slug: slugOf(entry.config),
-      label: entry.config.label,
+      label: labelOf(entry.config),
       config: entry.config,
       status: entry.status,
       error: entry.error ?? "",
