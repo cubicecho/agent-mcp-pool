@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
-import { couldQualify, pooledTool, qualify, SEPARATOR, slugOf } from "../src/naming.ts";
+import { couldQualify, labelOf, pooledTool, qualify, SEPARATOR, slugOf } from "../src/naming.ts";
 import type { McpServerConfig } from "../src/types.ts";
 
 const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
@@ -167,4 +167,14 @@ test("couldQualify refuses a name of the right length that is not a hash", () =>
   const name = `notes__${"t".repeat(64 - 7)}`;
   expect(name).toHaveLength(64);
   expect(couldQualify(slug, name)).toBe(false);
+});
+
+/**
+ * The same fallback as `slugOf`, and it exists for the same reason: three places wrote it out and
+ * one of them wrote it differently.
+ */
+test("labelOf falls back through the slug to the id", () => {
+  expect(labelOf({ id: "notes-1", slug: "notes", label: "Notes" })).toBe("Notes");
+  expect(labelOf({ id: "notes-1", slug: "notes", label: "" })).toBe("notes");
+  expect(labelOf({ id: "notes-1", slug: undefined, label: "" })).toBe("notes-1");
 });

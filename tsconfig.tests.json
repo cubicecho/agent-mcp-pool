@@ -1,3 +1,5 @@
+// What `npm run typecheck` runs. The base config is scoped to what ships — `src`, with the emit
+// settings the build needs — so a type error in a test used to reach main unseen.
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "noEmit": true, "rootDir": "." },

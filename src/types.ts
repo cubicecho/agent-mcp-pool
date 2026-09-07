@@ -57,6 +57,7 @@ export interface McpServerState {
   id: string;
   /** The effective namespace — the row's `slug`, or its `id` when the row set none. */
   slug: string;
+  /** The effective display name — the row's `label`, or its slug when the row set none. */
   label: string;
   /**
    * The row this server is configured from, exactly as it was passed in.

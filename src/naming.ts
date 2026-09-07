@@ -47,6 +47,17 @@ export function slugOf(config: Pick<McpServerConfig, "id" | "slug">) {
 }
 
 /**
+ * What an operator calls this server: its `label`, or the namespace its tools live under.
+ *
+ * The same fallback as `slugOf` and for the same reason — it was written out at each site that
+ * needed it, and the site that forgot showed an operator an empty name for a server the model
+ * was being told about by its slug.
+ */
+export function labelOf(config: Pick<McpServerConfig, "id" | "slug" | "label">) {
+  return config.label || slugOf(config);
+}
+
+/**
  * The one place a tool's wire name is built, so `call` and `tools` agree.
  *
  * Plain truncation at OpenAI's 64-character limit made two tools sharing a 64-character prefix
@@ -95,7 +106,6 @@ export function pooledTool(
   tool: { name: string; description: string; parameters: Record<string, unknown> },
 ): PooledTool {
   const slug = slugOf(config);
-  const label = config.label || slug;
   const qualified = qualify(slug, tool.name);
   return {
     ...tool,
@@ -104,7 +114,7 @@ export function pooledTool(
       type: "function",
       function: {
         name: qualified,
-        description: `[${label}] ${tool.description}`.trim(),
+        description: `[${labelOf(config)}] ${tool.description}`.trim(),
         parameters: tool.parameters,
       },
     },

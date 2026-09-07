@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type OpenAI from "openai";
 import { afterAll, afterEach, expect, test } from "vitest";
 import { qualify, SEPARATOR } from "../src/naming.ts";
 import { McpPool } from "../src/pool.ts";
@@ -69,9 +70,13 @@ const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
 const makePool = (load?: () => Promise<McpServerConfig[]>, crashBackoffMs?: number) =>
   new McpPool({ load, clientName: "mcp-pool-test", log: {}, crashBackoffMs });
 
-/** The qualified names on offer. A definition is a union; only the function arm is used here. */
-const toolNames = (pool: McpPool, servers?: string[]) =>
-  pool.tools(undefined, servers).flatMap((t) => (t.type === "function" ? [t.function.name] : []));
+/** The qualified names in a set of definitions. A definition is a union; only the function arm
+ * is used here. */
+const names = (definitions: OpenAI.ChatCompletionTool[]) =>
+  definitions.flatMap((t) => (t.type === "function" ? [t.function.name] : []));
+
+/** The qualified names on offer. */
+const toolNames = (pool: McpPool, servers?: string[]) => names(pool.tools(undefined, servers));
 
 let pool = makePool();
 
@@ -536,6 +541,35 @@ test("a row with neither slug nor label is labelled by its id", async () => {
   expect(pool.tools(["notes__ping"])[0]).toMatchObject({
     function: { description: "[notes] replies pong" },
   });
+});
+
+/**
+ * The fallback the model and the catalogue already applied, now applied on the operator page too.
+ * A row with an empty label was introduced to the model as `[notes]` and listed as `notes`, and
+ * `state()` — the one surface an operator reads — showed an empty name for it.
+ */
+test("state reports the label a server is actually known by", async () => {
+  await pool.sync([config({ id: "notes", slug: undefined, label: "" })]);
+
+  expect(pool.state()).toMatchObject([{ id: "notes", slug: "notes", label: "notes" }]);
+  // The row itself is still handed back exactly as it was configured.
+  expect(pool.state()[0]?.config.label).toBe("");
+});
+
+/**
+ * On-demand loading is driven by a model naming the tools it wants, and a model can name one
+ * twice. Two definitions under one function name is a request OpenAI rejects outright.
+ */
+test("a name asked for twice is offered once", async () => {
+  await pool.sync([config()]);
+
+  expect(toolNames(pool, undefined)).toHaveLength(3);
+  expect(pool.tools(["echo__ping", "echo__ping", "echo__add"])).toHaveLength(2);
+  // Caller order, first mention winning.
+  expect(names(pool.tools(["echo__add", "echo__ping", "echo__add"]))).toEqual([
+    "echo__add",
+    "echo__ping",
+  ]);
 });
 
 /**
