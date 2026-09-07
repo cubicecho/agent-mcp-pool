@@ -44,6 +44,8 @@ export function createTransport(config: McpConnection, options: TransportOptions
       command: config.command,
       args: config.args ?? [],
       env: { ...inheritedEnv(options.childEnv), ...(config.env ?? {}) },
+      // Undefined rather than null when unset: the SDK reads an explicit null as a cwd.
+      cwd: config.cwd ?? undefined,
       // Piped rather than inherited: when a stdio server fails to start, what it wrote on the
       // way out is usually the only useful explanation, and `inherit` sends it to this process's
       // console where no status page can quote it back. Something must then read it — see

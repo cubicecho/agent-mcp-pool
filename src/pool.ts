@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Notification } from "@modelcontextprotocol/sdk/types.js";
 import type OpenAI from "openai";
 import { errorMessage } from "./errors.ts";
 import { probe as probeConfig } from "./probe.ts";
@@ -130,6 +131,9 @@ export class McpPool {
    * remembers a tool from a wider run would otherwise still reach it.
    */
   private index = new Map<string, { client: Client; tool: PooledTool; serverId: string }>();
+
+  /** Everything currently subscribed to server→client notifications, across every server. */
+  private listeners = new Set<(id: string, notification: Notification) => void>();
 
   private readonly load?: () => Promise<McpServerConfig[]>;
   private readonly clientName: string;
@@ -275,6 +279,9 @@ export class McpPool {
       a.transport === b.transport &&
       a.command === b.command &&
       a.url === b.url &&
+      // Nullish-collapsed because the field is optional: a row that has never had one and a row
+      // whose one was cleared reach the same child, and must not restart each other.
+      (a.cwd ?? "") === (b.cwd ?? "") &&
       isDeepStrictEqual(a.args ?? [], b.args ?? []) &&
       isDeepStrictEqual(a.env ?? {}, b.env ?? {}) &&
       isDeepStrictEqual(a.headers ?? {}, b.headers ?? {})
@@ -338,6 +345,13 @@ export class McpPool {
 
     try {
       const client = new Client({ name: this.clientName, version: "0.1.0" });
+      // Before the connect, and per connection rather than once at construction: a server can
+      // send `logging/message` or `tools/list_changed` during its own startup, and a handler
+      // installed after `listTools` would have missed it. Unlike `onclose` there is no race to
+      // avoid here — a notification from a server that then dies is still one that was sent.
+      client.fallbackNotificationHandler = async (notification) => {
+        this.notify(config.id, notification);
+      };
       const transport = createTransport(config, { childEnv: this.childEnv });
       // Listening before the connect, because a server that dies during startup says whatever
       // it has to say then and the connect only reports that the pipe closed.
@@ -473,6 +487,42 @@ export class McpPool {
       definitions.push(found.tool.definition);
     }
     return definitions;
+  }
+
+  /**
+   * Subscribe to notifications from any connected server. Returns an unsubscribe function.
+   *
+   * The SDK drops whatever it does not handle itself, so without this a `tools/list_changed`, a
+   * `resources/updated` or a `logging/message` goes nowhere. An agent loop rarely misses them —
+   * the index is rebuilt on `sync()` regardless — but a consumer relaying the protocol onward has
+   * no other way to see that a server added a tool at runtime, and a client that called
+   * `resources/subscribe` waits forever for an update the pool swallowed.
+   *
+   * The server id comes first because a listener hears from every server at once and the
+   * notification itself does not say which one it came from.
+   */
+  onNotification(listener: (id: string, notification: Notification) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Hands one notification to every listener.
+   *
+   * A throwing listener is logged and stepped over rather than allowed to take the others with
+   * it: this runs inside the SDK's handler, where a rejection becomes a protocol-level error on
+   * a server that did nothing wrong.
+   */
+  private notify(id: string, notification: Notification) {
+    for (const listener of this.listeners) {
+      try {
+        listener(id, notification);
+      } catch (error) {
+        this.log.error?.(`[mcp] ${id}: notification listener threw: ${errorMessage(error)}`);
+      }
+    }
   }
 
   /**

@@ -20,6 +20,10 @@ export const mcp = new McpPool({
 });
 ```
 
+A stdio server may also name a `cwd`; absent, it inherits this process's. Several servers resolve
+relative paths — a filesystem root, a sqlite file — against their working directory rather than
+against an argument, and it counts as part of the connection: editing it restarts the child.
+
 `sync(configs?)` reconciles against what it is given, or against `load` when given nothing.
 `syncSoon()` debounces a reconcile past a transaction commit, and `flush()` pays one off early
 for a reader that would otherwise be shown the pool as it stood before its own write.
@@ -44,6 +48,24 @@ A failed server is then retried, which is the other half: `sync` leaves a *healt
 server alone but treats a failed one as work to do, and `call` brings back a server that is
 merely down rather than telling the model its tool does not exist. Both are held off by
 `crashBackoffMs` (5s), or a server that cannot start would be respawned on every write.
+
+## Notifications
+
+Anything a server sends that the SDK does not handle itself — `tools/list_changed`,
+`resources/list_changed`, `prompts/list_changed`, `resources/updated`, `logging/message` — is
+dropped unless someone is listening:
+
+```ts
+const stop = pool.onNotification((id, notification) => {
+  if (notification.method === "notifications/tools/list_changed") reload(id);
+});
+```
+
+The server id comes first because a listener hears from every server at once and the notification
+does not say where it came from. The handler is installed before each connect and reinstalled on
+a respawn, so a `logging/message` sent during a server's own startup is not missed. An agent loop
+can ignore all of this — the index is rebuilt on `sync()` — but a consumer relaying the protocol
+onward cannot.
 
 ## The child's environment
 

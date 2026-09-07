@@ -13,6 +13,11 @@ if (process.env.MCP_ECHO_SPAWN_LOG)
 if (process.env.MCP_ECHO_ENV_DUMP)
   writeFileSync(process.env.MCP_ECHO_ENV_DUMP, JSON.stringify(process.env));
 
+// Where the child was started. A stdio server that resolves relative paths against its cwd — a
+// filesystem root, a sqlite file — reaches different data depending on this, so a test has to be
+// able to see it rather than infer it.
+if (process.env.MCP_ECHO_CWD_DUMP) writeFileSync(process.env.MCP_ECHO_CWD_DUMP, process.cwd());
+
 // Fails the way a misconfigured server does: one line of explanation on stderr, then a non-zero
 // exit. Nothing the client sees says more than "the connection closed", which is the point.
 if (process.env.MCP_ECHO_FAIL) {
@@ -54,11 +59,33 @@ server.setRequestHandler(CallToolRequestSchema, (request) => ({
   ],
 }));
 
+// The SDK has one `oninitialized`, and two things here want it, so they queue rather than
+// overwrite each other — a test setting both env vars would otherwise silently get only one.
+const onInitialized = [];
+
 // How the client introduced itself. Only the server ever sees which name arrived, and the pool
 // and a probe deliberately use different ones, so it writes the name down for the tests.
 if (process.env.MCP_ECHO_CLIENT_DUMP) {
   const dump = process.env.MCP_ECHO_CLIENT_DUMP;
-  server.oninitialized = () => writeFileSync(dump, JSON.stringify(server.getClientVersion() ?? {}));
+  onInitialized.push(() => writeFileSync(dump, JSON.stringify(server.getClientVersion() ?? {})));
+}
+
+// Unprompted, the way a server that gained a tool at runtime announces it — and sent during
+// startup, which is when a real server's `logging/message` arrives too. The SDK has no handler
+// for either, so they reach a client only through its fallback.
+if (process.env.MCP_ECHO_NOTIFY) {
+  onInitialized.push(() => {
+    server.notification({
+      method: "notifications/tools/list_changed",
+      params: { reason: process.env.MCP_ECHO_NOTIFY },
+    });
+  });
+}
+
+if (onInitialized.length > 0) {
+  server.oninitialized = () => {
+    for (const hook of onInitialized) hook();
+  };
 }
 
 await server.connect(new StdioServerTransport());
