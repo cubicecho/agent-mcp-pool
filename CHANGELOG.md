@@ -1,3 +1,10 @@
+# [0.6.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.5.0...v0.6.0) (2026-09-07)
+
+
+### Features
+
+* default a server's slug to its id ([4ec04b7](https://github.com/cubicecho/agent-mcp-pool/commit/4ec04b7159dfd3992844050f457ec2b090203215)), closes [#18](https://github.com/cubicecho/agent-mcp-pool/issues/18)
+
 # [0.5.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.4.0...v0.5.0) (2026-09-07)
 
 
