@@ -1,3 +1,10 @@
+## [2.4.3](https://github.com/cubicecho/agent-mcp-pool/compare/v2.4.2...v2.4.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* spend one connect timeout across the whole connect ([b79f546](https://github.com/cubicecho/agent-mcp-pool/commit/b79f54602bc9d0c97e8f9bf96bcce53fc5bc6000)), closes [#67](https://github.com/cubicecho/agent-mcp-pool/issues/67)
+
 ## [2.4.2](https://github.com/cubicecho/agent-mcp-pool/compare/v2.4.1...v2.4.2) (2026-09-07)
 
 
