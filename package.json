@@ -41,7 +41,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "npm run build",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -61,6 +61,6 @@
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "dependencies": {
-    "@cubicecho/agent-core": "file:../agent-core"
+    "@cubicecho/agent-core": "git+https://github.com/cubicecho/agent-core.git"
   }
 }
