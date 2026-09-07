@@ -1,3 +1,10 @@
+## [2.4.2](https://github.com/cubicecho/agent-mcp-pool/compare/v2.4.1...v2.4.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* honour a row's connectTimeoutMs in the free probe ([4f6d8e7](https://github.com/cubicecho/agent-mcp-pool/commit/4f6d8e707d59f758467530ab4fd8a3a4931f9985)), closes [#66](https://github.com/cubicecho/agent-mcp-pool/issues/66)
+
 ## [2.4.1](https://github.com/cubicecho/agent-mcp-pool/compare/v2.4.0...v2.4.1) (2026-09-07)
 
 
