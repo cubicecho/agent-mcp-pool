@@ -91,3 +91,22 @@ export interface CatalogServer {
   label: string;
   tools: { name: string; description: string }[];
 }
+
+/**
+ * One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's
+ * `ChatCompletionTool`, and assignable to it.
+ *
+ * Declared here rather than imported for the same reason as `CatalogServer`: the shape is a
+ * literal and two fields, and TypeScript is structural. `openai` was a *required* peer for this
+ * one type position, so a consumer that never calls a model — a gateway proxying MCP — installed
+ * 24 MB to satisfy a type that is erased at compile time. A test typechecks the two together.
+ */
+export interface ToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    /** The tool's JSON Schema, as its server described it. */
+    parameters?: Record<string, unknown>;
+  };
+}

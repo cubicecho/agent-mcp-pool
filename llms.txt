@@ -4,7 +4,7 @@
 
 What is here is connection management: reconciling configured servers against the clients actually running, naming their tools so a model can call them, and refusing a call to a server the run was not scoped to. Where the configuration comes from is the caller's — see `McpPoolOptions.load`.
 
-Requires Node >=22, with `@modelcontextprotocol/sdk` >=1.30 and `openai` >=6 as peer dependencies. ESM only.
+Requires Node >=22, with `@modelcontextprotocol/sdk` >=1.30 as peer dependency. ESM only.
 Full prose, worked examples and the reasoning behind each seam are in README.md; this file is the index.
 
 ## Exports
@@ -47,3 +47,4 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 - `McpServerConfig` (type) — A configured MCP server, as this package needs it.
 - `McpServerState` (type) — One connected server as an operator sees it.
 - `McpStatus` (type) — `idle` is registered-but-not-connected, and where an idle-reaped server goes — a success state: nothing is wrong, there is simply no child right now.
+- `ToolDefinition` (type) — One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's `ChatCompletionTool`, and assignable to it.

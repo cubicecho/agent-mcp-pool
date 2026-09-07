@@ -1,6 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Notification } from "@modelcontextprotocol/sdk/types.js";
-import type OpenAI from "openai";
 import { sameConnection, scope } from "./config.ts";
 import { errorMessage } from "./errors.ts";
 import { listAllTools } from "./listing.ts";
@@ -15,6 +14,7 @@ import type {
   McpServerConfig,
   McpServerState,
   McpStatus,
+  ToolDefinition,
 } from "./types.ts";
 
 /**
@@ -523,9 +523,9 @@ export class McpPool {
    * @param servers The run's scope. Absent is every server, empty is none — the two must not
    *   collapse, since "no servers linked" is a real state.
    */
-  tools(names?: string[], servers?: Iterable<string>): OpenAI.ChatCompletionTool[] {
+  tools(names?: string[], servers?: Iterable<string>): ToolDefinition[] {
     const allowed = scope(servers);
-    const definitions: OpenAI.ChatCompletionTool[] = [];
+    const definitions: ToolDefinition[] = [];
     // A model asking for the same tool twice would otherwise be sent two definitions under one
     // function name, which OpenAI rejects — a bad request rather than a bad answer, and one that
     // reads as the caller's bug. Caller order is kept; the first mention wins.

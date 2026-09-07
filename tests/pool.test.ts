@@ -98,6 +98,18 @@ test("connects a configured server and offers its tools qualified by slug", asyn
   expect(await pool.call("echo__ping", {})).toBe("ping({})");
 });
 
+/**
+ * `openai` stopped being a peer dependency: `ToolDefinition` is declared structurally, so a
+ * consumer that never calls a model no longer installs 24 MB for a type that is erased anyway.
+ * The annotation is the assertion — this fails at `npm run typecheck` if the two shapes drift.
+ */
+test("the definitions the pool hands back are still OpenAI's chat tools", async () => {
+  await pool.sync([config()]);
+
+  const definitions: OpenAI.ChatCompletionTool[] = pool.tools();
+  expect(names(definitions)).toEqual(["echo__ping", "echo__echo", "echo__add"]);
+});
+
 test("an unchanged config is left alone rather than reconnected", async () => {
   await pool.sync([config()]);
   await pool.sync([config()]);

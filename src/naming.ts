@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import type OpenAI from "openai";
-import type { McpServerConfig } from "./types.ts";
+import type { McpServerConfig, ToolDefinition } from "./types.ts";
 
 /** Between a server's namespace and its tool's own name, in every name the model sees. */
 export const SEPARATOR = "__";
@@ -32,7 +31,7 @@ export interface PooledTool {
   parameters: Record<string, unknown>;
   /** `<slug>__<name>`: what the model sees, and what it calls. */
   qualified: string;
-  definition: OpenAI.ChatCompletionTool;
+  definition: ToolDefinition;
 }
 
 /**

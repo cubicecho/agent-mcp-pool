@@ -27,4 +27,5 @@ export type {
   McpServerConfig,
   McpServerState,
   McpStatus,
+  ToolDefinition,
 } from "./types.ts";

@@ -9,12 +9,15 @@ spawning one per run would cost more than the run.
 ## Install
 
 ```sh
-npm install @cubicecho/agent-mcp-pool @modelcontextprotocol/sdk openai
+npm install @cubicecho/agent-mcp-pool @modelcontextprotocol/sdk
 ```
 
-Both are peer dependencies — `@modelcontextprotocol/sdk` (`>=1.30`) because `client()` hands back
-the SDK's own `Client` and an `instanceof` against a second copy in the tree means nothing, and
-`openai` (`>=6`) because `tools()` returns its `ChatCompletionTool`. ESM only, Node >=22.
+`@modelcontextprotocol/sdk` (`>=1.30`) is the one peer dependency, because `client()` hands back
+the SDK's own `Client` and an `instanceof` against a second copy in the tree means nothing.
+`openai` is **not** one: `tools()` returns `ToolDefinition`, which is declared here and assignable
+to OpenAI's `ChatCompletionTool` because TypeScript is structural. It was a required peer for two
+type positions that are erased at compile time, so a consumer proxying MCP and never calling a
+model installed 24 MB to satisfy them. ESM only, Node >=22.
 
 ## The seam
 
