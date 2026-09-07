@@ -81,6 +81,10 @@ export interface McpServerState {
   config: McpServerPublicConfig;
   status: McpStatus;
   error: string;
+  /**
+   * What this server offers, while it is connected. Empty under `indexTools: false`, which is the
+   * honest answer: a consumer that opted out of indexing is not the one drawing a tool list.
+   */
   tools: { name: string; description: string }[];
   /**
    * The stdio child's pid. Absent over http, and while the server is not connected.
