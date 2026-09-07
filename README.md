@@ -205,7 +205,8 @@ const { resources } = await (await pool.client(id)).listResources();
 the page size is the **server's** choice rather than the caller's, and a tool left on page two is
 not merely unlisted — it is absent from the index, so `call()` refuses it as one that does not
 exist. The pool and `probe()` both drain the cursor; a consumer driving the client itself wants
-the same walk rather than one `listTools`.
+the same walk rather than one `listTools`. A `timeout` in `options` bounds that walk rather than
+each page of it, for the reason above; everything else in `options` is passed to every page.
 
 `resultText` is the flattening `call()` does, exported separately: MCP answers with a list of
 content blocks and a message array holds one string. A consumer driving the client itself and
@@ -260,6 +261,15 @@ reconcile open for the full timeout, so the number to pick is the one your start
 not the one a healthy server needs.
 
 Unset is the SDK's 60s, which is a ceiling rather than a budget.
+
+It is one budget for the **whole connect**, not a fresh allowance per request: `initialize` and
+every page of `tools/list` spend the same clock, and what is left when the handshake finishes is
+what the walk gets. Page size is the server's choice — a hundred-tool server answering ten at a
+time is eleven requests — so a per-request bound would really have been `connectTimeoutMs × (1 +
+pages)`, which is not a number a startup budget can be picked from without knowing a server's page
+count in advance. A connect that runs out fails as a timeout rather than keeping the pages it
+managed: a tool missing from the index is one `call()` refuses as a tool that does not exist, and
+a short list is a wrong answer that looks right.
 
 `McpServerConfig.connectTimeoutMs` overrides it per server, the way `idleTimeoutMs` does, because
 connect cost is a property of the server rather than of the pool:

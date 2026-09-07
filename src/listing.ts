@@ -1,5 +1,6 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import { requestBudget } from "./budget.ts";
 
 /**
  * One tool as the SDK reports it, derived from the client rather than restated.
@@ -18,10 +19,13 @@ type ListedTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
  * is missing from the index, so `call()` refuses it as a tool that does not exist.
  *
  * @param client A connected client.
- * @param options Passed to every page, so a timeout bounds each request rather than the walk.
+ * @param options Passed to every page, except that `timeout` bounds the walk rather than each
+ *   page of it: the page count is the server's choice, so a per-page number is a ceiling the
+ *   caller cannot compute in advance.
  * @returns The pages concatenated, in the order the server sent them.
- * @throws If the server repeats a cursor, which would otherwise page forever. A truncated list is
- *   a wrong answer that looks right; a server that cannot paginate should be visible as broken.
+ * @throws If the walk outlasts `timeout`, or if the server repeats a cursor, which would otherwise
+ *   page forever. Either way a truncated list is a wrong answer that looks right; a server that
+ *   cannot paginate inside its budget should be visible as broken.
  */
 export async function listAllTools(
   client: Client,
@@ -29,9 +33,11 @@ export async function listAllTools(
 ): Promise<ListedTool[]> {
   const tools: ListedTool[] = [];
   const seen = new Set<string>();
+  // One countdown across the pages rather than the caller's number handed to each of them.
+  const remaining = requestBudget(options?.timeout);
   let cursor: string | undefined;
   do {
-    const page = await client.listTools({ cursor }, options);
+    const page = await client.listTools({ cursor }, { ...options, ...remaining() });
     tools.push(...page.tools);
     cursor = page.nextCursor;
     if (cursor === undefined) break;

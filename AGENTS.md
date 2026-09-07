@@ -72,6 +72,11 @@ tool left on page two is not merely unlisted — it is absent from `index`, so `
 as one that does not exist. `listAllTools` is the one walk; a `resources/list` or `prompts/list`
 added later paginates the same way.
 
+**A connect timeout is a deadline, not a per-request allowance.** `initialize` and every page of
+the drain spend one clock — `requestBudget` is the countdown they share. Handing the same number
+to each request instead makes the real ceiling `timeout × (1 + pages)`, and the page count is not
+knowable when a consumer picks the number.
+
 **The pool holds its own copy of every row, and `state()` hands back another.** An entry aliasing
 the caller's object makes `sameConnection` compare a row against itself, so an in-place edit never
 reconnects. `state()` also drops `env` and `headers` unless asked: the documented reader of that

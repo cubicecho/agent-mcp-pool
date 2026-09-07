@@ -1153,6 +1153,73 @@ test("a probe takes the row's connect timeout over the pool's probe timeout", as
 });
 
 /**
+ * `connectTimeoutMs` is sold as what a boot can afford to stall for, and it was handed to each
+ * request separately — `initialize`, then a `tools/list` per page. Page size is the server's
+ * choice, so the real ceiling was `timeout × (1 + pages)`: a ten-page server answering each page
+ * just inside a 10s limit stalled a reconcile for a minute and a half, and nothing errored, so it
+ * read as a slow pool rather than as a timeout that did not apply.
+ */
+test("a connect timeout bounds the whole connect, not each page of tools/list", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 600 });
+  // Three pages at 300ms: every one of them answers inside the 600ms a per-request reading would
+  // have given it, and together they cannot fit in the budget.
+  await pool.sync([
+    config({
+      env: {
+        MCP_ECHO_SPAWN_LOG: spawnLog,
+        MCP_ECHO_PAGE_SIZE: "1",
+        MCP_ECHO_PAGE_DELAY_MS: "300",
+      },
+    }),
+  ]);
+
+  // A short tool list is the wrong answer here: a tool missing from the index is one `call()`
+  // refuses as a tool that does not exist, so an overrun has to fail as a timeout.
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "error" }]);
+  expect(pool.state()[0]?.error).toMatch(/timed out/i);
+  expect(toolNames(pool)).toEqual([]);
+  expect(await stillAlive(spawnedPids())).toEqual([]);
+});
+
+test("a paginated server that fits inside the budget still connects", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 30_000 });
+  await pool.sync([
+    config({
+      env: {
+        MCP_ECHO_SPAWN_LOG: spawnLog,
+        MCP_ECHO_PAGE_SIZE: "1",
+        MCP_ECHO_PAGE_DELAY_MS: "50",
+      },
+    }),
+  ]);
+
+  // The deadline is spent down across the pages, so the walk must not start each one poorer than
+  // it is: a budget subtracted twice would fail a server with time to spare.
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready" }]);
+  expect(toolNames(pool)).toEqual(["echo__ping", "echo__echo", "echo__add"]);
+});
+
+test("a probe's timeout covers its whole walk too", async () => {
+  const started = Date.now();
+  const result = await probe(
+    config({
+      connectTimeoutMs: 600,
+      env: {
+        MCP_ECHO_SPAWN_LOG: spawnLog,
+        MCP_ECHO_PAGE_SIZE: "1",
+        MCP_ECHO_PAGE_DELAY_MS: "300",
+      },
+    }),
+  );
+
+  expect(result.ok).toBe(false);
+  expect(result.error).toMatch(/timed out/i);
+  // The button is what a person is waiting on, so the multiplier is worse here than at boot.
+  expect(Date.now() - started).toBeLessThan(10_000);
+  expect(await stillAlive(spawnedPids())).toEqual([]);
+});
+
+/**
  * The free `probe` is the one a caller with no pool has, and it read only its own options — so
  * the field `McpConnection` was widened to carry was dropped by the very function the widening
  * was for, and a row that says it needs two minutes to start was failed at the SDK's sixty

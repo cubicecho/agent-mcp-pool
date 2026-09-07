@@ -73,6 +73,13 @@ const offered = process.env.MCP_ECHO_NO_TOOLS ? [] : tools;
 // then reports fewer tools than the server has.
 const pageSize = Number(process.env.MCP_ECHO_PAGE_SIZE ?? 0);
 
+// How long each `tools/list` takes to answer. A server that is slow rather than wedged, which is
+// the one that shows whether a connect timeout is a budget for the walk or a fresh allowance per
+// page: every page answers inside a per-page limit, and the walk still runs past it.
+const pageDelayMs = Number(process.env.MCP_ECHO_PAGE_DELAY_MS ?? 0);
+const pageDelay = () =>
+  pageDelayMs > 0 ? new Promise((resolve) => setTimeout(resolve, pageDelayMs)) : undefined;
+
 // Answers `initialize` and then never answers `tools/list`. A server that fails to start is the
 // easy case; this is the one that starts, so the client has a live child on the end of it, and
 // then leaves the handshake half-finished.
@@ -86,7 +93,8 @@ if (process.env.MCP_ECHO_HANG_TOOLS) {
     nextCursor: "stuck",
   }));
 } else if (pageSize > 0) {
-  server.setRequestHandler(ListToolsRequestSchema, (request) => {
+  server.setRequestHandler(ListToolsRequestSchema, async (request) => {
+    await pageDelay();
     const start = Number(request.params?.cursor ?? 0);
     const next = start + pageSize;
     return {
@@ -95,7 +103,10 @@ if (process.env.MCP_ECHO_HANG_TOOLS) {
     };
   });
 } else {
-  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: offered }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    await pageDelay();
+    return { tools: offered };
+  });
 }
 server.setRequestHandler(CallToolRequestSchema, (request) => {
   // A non-text content block on demand: what a tool returning a chart or a screenshot sends, and

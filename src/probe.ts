@@ -1,4 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { requestBudget } from "./budget.ts";
 import { errorMessage } from "./errors.ts";
 import { listAllTools } from "./listing.ts";
 import type { TransportOptions } from "./transport.ts";
@@ -9,7 +10,8 @@ import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
 /** What a probe takes from the caller: the child's environment, and its patience. */
 export interface ProbeOptions extends TransportOptions {
   /**
-   * How long to wait for the server to answer `initialize` and `tools/list`.
+   * How long the whole probe gets: `initialize` and every page of `tools/list` together, rather
+   * than each of them.
    *
    * Outranks the probed row's own `connectTimeoutMs`, which is what an unset one falls back to: a
    * number passed at the call site is a decision about this probe, and the field is a property of
@@ -54,18 +56,20 @@ export async function probe(
   try {
     const transport = createTransport(config, transportOptions);
     stderrTail = readStderrTail(transport);
-    // Both requests, not just the dial: a server that completes the handshake and then wedges on
-    // `tools/list` is exactly the kind of misconfiguration a probe is asked about.
     // The row's own patience where the caller named none. `connectTimeoutMs` is part of reaching a
     // server rather than of naming it, so a row that needs two minutes to start needs them behind
     // the "Test connection" button too — read past it, and the button reports a failure for a
     // server that works. The argument still wins: it was passed about this call.
     const patience = timeoutMs ?? config.connectTimeoutMs ?? undefined;
-    const timeout = patience === undefined ? undefined : { timeout: patience };
-    await mcpClient.connect(transport, timeout);
+    // Both requests and not just the dial — a server that completes the handshake and then wedges
+    // on `tools/list` is exactly the kind of misconfiguration a probe is asked about — but one
+    // budget across them rather than one each: what a person waiting on a button is owed is a
+    // bound on the wait, and a paginated server spends a per-request number once per page.
+    const remaining = requestBudget(patience);
+    await mcpClient.connect(transport, remaining());
     // Every page of them: a probe that under-reports shows a person fewer tools than the server
     // has, which is the same wrong answer the pool used to give.
-    const tools = await listAllTools(mcpClient, timeout);
+    const tools = await listAllTools(mcpClient, remaining());
     return {
       ok: true,
       error: "",

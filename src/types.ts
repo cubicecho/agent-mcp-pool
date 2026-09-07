@@ -35,7 +35,8 @@ export interface McpServerConfig {
    */
   idleTimeoutMs?: number | null;
   /**
-   * How long *this* server gets to answer `initialize` and `tools/list`, overriding the pool's.
+   * How long *this* server gets to connect — `initialize` and every page of `tools/list` together
+   * — overriding the pool's.
    *
    * Connect cost is a property of the server rather than of the pool: a local `node` child is up
    * in milliseconds, and `uvx some-server@latest` on a cold cache resolves and downloads a package
