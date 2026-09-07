@@ -1,3 +1,10 @@
+# [0.9.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.8.0...v0.9.0) (2026-09-07)
+
+
+### Features
+
+* say when a name nothing offers is skipped ([7dd1421](https://github.com/cubicecho/agent-mcp-pool/commit/7dd14211b548b7ed648c3ecb66bedccac0f23758)), closes [#36](https://github.com/cubicecho/agent-mcp-pool/issues/36)
+
 # [0.8.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.7.2...v0.8.0) (2026-09-07)
 
 
