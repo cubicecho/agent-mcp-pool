@@ -1,3 +1,10 @@
+# [0.10.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.9.0...v0.10.0) (2026-09-07)
+
+
+### Features
+
+* generate llms.txt from the index ([ee6d322](https://github.com/cubicecho/agent-mcp-pool/commit/ee6d32293aad2adadfd67f738156ef2f5f1fea6a)), closes [#45](https://github.com/cubicecho/agent-mcp-pool/issues/45)
+
 # [0.9.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.8.0...v0.9.0) (2026-09-07)
 
 
