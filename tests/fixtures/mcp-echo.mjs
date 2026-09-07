@@ -41,7 +41,10 @@ const tools = [
 ];
 
 const server = new Server({ name: "echo", version: "0.0.1" }, { capabilities: { tools: {} } });
-server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
+// A server that connects cleanly and offers nothing. Rarer than a broken one and easier to miss,
+// because every status the pool reports about it says it is fine.
+const offered = process.env.MCP_ECHO_NO_TOOLS ? [] : tools;
+server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: offered }));
 server.setRequestHandler(CallToolRequestSchema, (request) => ({
   content: [
     {
