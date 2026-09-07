@@ -443,3 +443,48 @@ test("a ready server with no tools is kept out of the catalogue but not out of s
     { slug: "echo", status: "ready" },
   ]);
 });
+
+test("a stdio server starts in the cwd its config names", async () => {
+  const dump = path.join(dir, "cwd.txt");
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-pool-cwd-"));
+  await pool.sync([config({ cwd: elsewhere, env: { MCP_ECHO_CWD_DUMP: dump } })]);
+
+  // A server that resolves a relative path — a filesystem root, a sqlite file — against its cwd
+  // reaches different data depending on this, and had no way to say where it wanted to be.
+  expect(fs.realpathSync(fs.readFileSync(dump, "utf8"))).toBe(fs.realpathSync(elsewhere));
+  expect(fs.realpathSync(elsewhere)).not.toBe(fs.realpathSync(process.cwd()));
+  fs.rmSync(elsewhere, { recursive: true, force: true });
+});
+
+test("editing only the cwd restarts the server, since it is part of the connection", async () => {
+  let rows = [config()];
+  pool = makePool(async () => rows);
+  await pool.sync();
+
+  // A no-op sync first: an optional field absent on both rows must not read as a difference.
+  await pool.sync();
+  expect(spawned()).toBe(1);
+
+  rows = [config({ cwd: dir })];
+  await pool.sync();
+  expect(spawned()).toBe(2);
+});
+
+test("notifications from a server reach a subscriber, tagged with which server sent them", async () => {
+  const heard: [string, string][] = [];
+  const stop = pool.onNotification((id, notification) =>
+    heard.push([id, notification.method as string]),
+  );
+
+  await pool.sync([config({ env: { MCP_ECHO_NOTIFY: "a tool appeared" } })]);
+  // The SDK handles none of these itself, so before the fallback handler they were dropped: a
+  // server that gained a tool at runtime was invisible to anyone relaying the protocol onward.
+  await until(() => heard.length > 0, "the list_changed notification");
+  expect(heard).toEqual([["echo-1", "notifications/tools/list_changed"]]);
+
+  stop();
+  const before = heard.length;
+  await pool.sync([config({ id: "second", slug: "two", env: { MCP_ECHO_NOTIFY: "again" } })]);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(heard.length).toBe(before);
+});

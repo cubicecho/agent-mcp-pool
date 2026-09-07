@@ -17,6 +17,15 @@ export interface McpServerConfig {
   command: string;
   args: string[] | null;
   env: Record<string, string> | null;
+  /**
+   * Working directory for a stdio child. Absent means this process's own.
+   *
+   * Optional because the three consumers that predate it store no such column and must keep
+   * satisfying this type. Several real servers resolve relative paths — a filesystem root, a
+   * sqlite file — against their cwd rather than against an argument, and a gateway that installs
+   * each server into its own directory has nowhere else to say so.
+   */
+  cwd?: string | null;
   // streamable http
   url: string;
   headers: Record<string, string> | null;
@@ -25,7 +34,7 @@ export interface McpServerConfig {
 /** What it takes to reach a server — the connection half of a row, without its identity. */
 export type McpConnection = Pick<
   McpServerConfig,
-  "transport" | "command" | "args" | "env" | "url" | "headers"
+  "transport" | "command" | "args" | "env" | "cwd" | "url" | "headers"
 >;
 
 export type McpStatus = "disabled" | "connecting" | "ready" | "error";
