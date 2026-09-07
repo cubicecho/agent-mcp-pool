@@ -382,16 +382,22 @@ test("a server that dies on startup is reported with what it wrote to stderr", a
  * earlier in the index. Pinned rather than fixed: the fix is a short hash suffix, which changes
  * wire names for every existing server and deserves to be its own change.
  */
-test("tool names that collide after truncation overwrite each other in the index", async () => {
+test("tool names too long for the limit stay distinct instead of collapsing", async () => {
   const slug = "e".repeat(62); // 62 + "__" is already the whole budget
   await pool.sync([config({ slug })]);
 
-  // The catalogue still advertises three tools...
   const [server] = pool.catalog();
   expect(server?.tools).toHaveLength(3);
-  // ...under a single name, and only one of the three can actually be called.
-  expect(new Set(server?.tools.map((tool) => tool.name)).size).toBe(1);
-  expect(toolNames(pool)).toEqual([`${slug}__`]);
+
+  // Three tools, three names, none over the limit. Plain truncation gave all three `${slug}__`.
+  const names = server?.tools.map((tool) => tool.name) ?? [];
+  expect(new Set(names).size).toBe(3);
+  for (const name of names) expect(name.length).toBeLessThanOrEqual(64);
+  expect(toolNames(pool).toSorted()).toEqual(names.toSorted());
+
+  // And each one reaches its own tool rather than whichever survived the overwrite.
+  const called = await Promise.all(names.map((name) => pool.call(name, {})));
+  expect(called.map((result) => result.split("(")[0]).toSorted()).toEqual(["add", "echo", "ping"]);
 });
 
 /**

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type OpenAI from "openai";
@@ -14,6 +15,18 @@ import type {
 } from "./types.ts";
 
 const SEPARATOR = "__";
+
+/** OpenAI rejects a function name longer than this, so every qualified name has to fit. */
+const NAME_LIMIT = 64;
+
+/**
+ * Hex characters of the disambiguating hash on a truncated name.
+ *
+ * Six is 24 bits: enough that a collision needs thousands of over-long names on one pool, short
+ * enough that the readable prefix survives. It buys uniqueness with room a name that long has
+ * already spent.
+ */
+const HASH_LENGTH = 6;
 
 /**
  * How long a server that failed is left alone before anything dials it again.
@@ -414,9 +427,23 @@ export class McpPool {
     entry.client = undefined;
   }
 
-  /** The one place a tool's wire name is built, so `call` and `tools` agree. */
+  /**
+   * The one place a tool's wire name is built, so `call` and `tools` agree.
+   *
+   * 64 characters is OpenAI's hard limit on a function name. Plain truncation made two tools
+   * whose qualified names shared a 64-character prefix collapse onto one key, and the second
+   * silently replaced the first in the index — the model was then offered a name that dispatched
+   * to the wrong tool. A long slug plus two verbosely-named tools is enough to reach it.
+   *
+   * So an over-long name keeps as much of itself as fits and gives up the tail to a hash of the
+   * *whole* name, which is what tells the two apart. Names that already fit are returned
+   * untouched, so this changes no wire name that was not already ambiguous.
+   */
   private static qualify(slug: string, tool: string) {
-    return `${slug}${SEPARATOR}${tool}`.slice(0, 64);
+    const full = `${slug}${SEPARATOR}${tool}`;
+    if (full.length <= NAME_LIMIT) return full;
+    const digest = createHash("sha256").update(full).digest("hex").slice(0, HASH_LENGTH);
+    return `${full.slice(0, NAME_LIMIT - HASH_LENGTH - 1)}_${digest}`;
   }
 
   /**
@@ -476,8 +503,8 @@ export class McpPool {
    */
   async call(qualifiedName: string, input: unknown, servers?: Iterable<string>): Promise<string> {
     const allowed = McpPool.scope(servers);
-    // Resolved by the whole qualified name rather than by splitting it: `qualify` truncates at
-    // 64 characters, and the split of a truncated name names a tool its server never had.
+    // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
+    // that pass 64 characters, and the split of a shortened name names a tool its server never had.
     let found = this.index.get(qualifiedName);
     if (!found) {
       // A crashed server took its tools out of the index with it. Before telling the model the
