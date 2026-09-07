@@ -35,13 +35,16 @@
   },
   "files": [
     "dist",
+    "llms.txt",
     "scripts"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/llms-txt.mjs",
+    "llms": "node scripts/llms-txt.mjs",
+    "llms:check": "node scripts/llms-txt.mjs --check",
     "prepare": "node scripts/prepare.mjs",
     "typecheck": "tsc -p tsconfig.tests.json",
     "test": "vitest run",

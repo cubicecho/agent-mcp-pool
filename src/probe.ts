@@ -4,6 +4,7 @@ import type { TransportOptions } from "./transport.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type { McpConnection, McpProbe } from "./types.ts";
 
+/** What a probe takes from the caller: the child's environment, and its patience. */
 export interface ProbeOptions extends TransportOptions {
   /**
    * How long to wait for the server to answer `initialize` and `tools/list`.
@@ -20,6 +21,12 @@ export interface ProbeOptions extends TransportOptions {
  * What a "Test connection" button calls: a config is easy to get subtly wrong, and finding out
  * at 3am when the task runs is too late. The client is disposable — the pool keeps the
  * long-lived ones.
+ *
+ * @param config The server to dial. Nothing is stored, so it need not be saved first.
+ * @param clientName How this process introduces itself; `-probe` is appended.
+ * @param options `childEnv` narrows a stdio child's inheritance, `timeoutMs` bounds the wait.
+ * @returns Never throws — a failure is `{ ok: false }` carrying the child's stderr where there is
+ *   any, since that is usually the only real explanation.
  */
 export async function probe(
   config: McpConnection,

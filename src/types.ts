@@ -72,6 +72,7 @@ export interface McpServerState {
   tools: { name: string; description: string }[];
 }
 
+/** What `probe` found: whether the config works, and what it offers if it does. */
 export interface McpProbe {
   ok: boolean;
   error: string;

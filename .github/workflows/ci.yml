@@ -43,6 +43,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      # `npm ci` above already ran `prepare`, which runs `build`, which regenerates
+      # this file — so the diff is the check. Running `llms:check` here would only
+      # re-derive what the working tree has already been made to say.
+      - name: llms.txt matches the exports it indexes
+        run: git diff --exit-code -- llms.txt
+
       # dist is gitignored, so the tarball is entirely what this step just
       # emitted. A tsc that succeeds while emitting nothing would otherwise ship
       # a package with nothing to import.
@@ -57,7 +63,7 @@ jobs:
         run: |
           npm pack --silent >/dev/null
           tar -tzf ./*.tgz > packed.txt
-          for f in package/dist/index.js package/scripts/prepare.mjs; do
+          for f in package/dist/index.js package/scripts/prepare.mjs package/llms.txt; do
             grep -qxF "$f" packed.txt \
               || { echo "::error::$f is not in the tarball"; exit 1; }
           done
