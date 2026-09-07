@@ -261,6 +261,27 @@ test("flush pays off a debounced sync, so a reader sees its own write", async ()
   expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready" }]);
 });
 
+/**
+ * The half of the window `owed` cannot see. Once the timer has fired, `settle` clears the flag
+ * and only then starts reconciling — so a reader arriving during the reconnect found `owed`
+ * already false, and `flush` handed back a pool still spawning the server it had just been told
+ * about. That is most of the wait, not a sliver of it.
+ */
+test("flush waits for a debounced sync that has already started", async () => {
+  let rows: McpServerConfig[] = [];
+  pool = makePool(async () => rows);
+
+  rows = [config()];
+  pool.syncSoon();
+  // `connect` registers the entry before it dials, so a row at all means the reconcile is under
+  // way and the debounce is spent — the state `owed` reports nothing about.
+  await until(() => pool.state().length > 0, "the debounced sync to start");
+
+  await pool.flush();
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready" }]);
+  expect(spawned()).toBe(1);
+});
+
 test("flush is a no-op when nothing is owed", async () => {
   await pool.sync([config()]);
   await pool.flush();

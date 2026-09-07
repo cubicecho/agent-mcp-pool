@@ -250,6 +250,8 @@ export class McpPool {
   }
 
   private async settle() {
+    // Cleared before the await, so from here on `owed` says a reconcile is *owed*, not that one
+    // has finished. `flush` has to ask the queue about the latter.
     this.owed = false;
     await this.sync().catch((error) =>
       this.log.error?.(`[mcp] sync failed: ${errorMessage(error)}`),
@@ -267,6 +269,10 @@ export class McpPool {
    */
   async flush() {
     if (this.owed) await this.settle();
+    // A debounce that has already fired is not a debt any more, and `owed` stays false for the
+    // whole of the reconcile it started — which is the wait, not the end of it. The queue knows
+    // about both, and awaiting it never rejects: `queue` keeps the chain alive past a failure.
+    await this.running;
   }
 
   private async reconcile(configs?: McpServerConfig[]) {
