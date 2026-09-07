@@ -1,3 +1,10 @@
+# [0.4.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.3.0...v0.4.0) (2026-09-07)
+
+
+### Features
+
+* expose the connected client, past the agent-loop surface ([6dd8bf4](https://github.com/cubicecho/agent-mcp-pool/commit/6dd8bf43caef9dc532c10b733e823b78bce48ab8))
+
 # [0.3.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.2.1...v0.3.0) (2026-09-07)
 
 
