@@ -393,3 +393,29 @@ test("tool names that collide after truncation overwrite each other in the index
   expect(new Set(server?.tools.map((tool) => tool.name)).size).toBe(1);
   expect(toolNames(pool)).toEqual([`${slug}__`]);
 });
+
+/**
+ * The pool already knows what this process calls itself, so a consumer with a "Test connection"
+ * button should not have to say it again. Repeating it is the bug: a wrapper that passes a
+ * different name gives a probe one identity and the pool another, and the mismatch is visible
+ * only in a remote server's logs.
+ */
+test("the pool probes under its own name, rather than one the caller repeats", async () => {
+  const dump = path.join(dir, "probe-client.json");
+  const result = await pool.probe(config({ env: { MCP_ECHO_CLIENT_DUMP: dump } }));
+
+  expect(result).toMatchObject({ ok: true, error: "" });
+  expect(result.tools.map((tool) => tool.name)).toEqual(["ping", "echo", "add"]);
+  // `makePool` names this pool `mcp-pool-test`; the probe is that name, not the default.
+  expect(JSON.parse(fs.readFileSync(dump, "utf8")).name).toBe("mcp-pool-test-probe");
+});
+
+test("a probe reports a server that will not start, rather than throwing", async () => {
+  const result = await pool.probe(
+    config({ env: { MCP_ECHO_FAIL: "no module named mcp_server_git" } }),
+  );
+
+  expect(result.ok).toBe(false);
+  expect(result.error).toContain("no module named mcp_server_git");
+  expect(result.tools).toEqual([]);
+});
