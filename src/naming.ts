@@ -62,6 +62,28 @@ export function qualify(slug: string, tool: string) {
   return `${full.slice(0, NAME_LIMIT - HASH_LENGTH - 1)}_${digest}`;
 }
 
+/** The shape `qualify` leaves behind when it truncates: the hash it ends every long name with. */
+const TRUNCATED_TAIL = new RegExp(`_[0-9a-f]{${HASH_LENGTH}}$`);
+
+/**
+ * Whether `qualified` could be a name this slug produced.
+ *
+ * For a name the pool does not recognise — a tool on a server that is not connected yet, or one
+ * the model invented — this is the only sound way to ask which server it would belong to.
+ * Splitting the name back into slug and tool is not: `qualify` truncates a long name, and the
+ * split of a truncated one names a tool that never existed.
+ *
+ * A name that was not truncated still carries its whole slug, so the prefix settles it. A
+ * truncated name is `NAME_LIMIT` characters ending in its hash, and a slug long enough to be cut
+ * into lost its own tail as well — so only its head is there to compare.
+ */
+export function couldQualify(slug: string, qualified: string) {
+  const prefix = `${slug}${SEPARATOR}`;
+  if (qualified.startsWith(prefix)) return true;
+  if (qualified.length !== NAME_LIMIT || !TRUNCATED_TAIL.test(qualified)) return false;
+  return prefix.startsWith(qualified.slice(0, NAME_LIMIT - HASH_LENGTH - 1));
+}
+
 /**
  * Everything about a tool that its server's name decides.
  *

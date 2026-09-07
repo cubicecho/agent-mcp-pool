@@ -3,7 +3,7 @@ import type { Notification } from "@modelcontextprotocol/sdk/types.js";
 import type OpenAI from "openai";
 import { sameConnection, scope } from "./config.ts";
 import { errorMessage } from "./errors.ts";
-import { type PooledTool, pooledTool, SEPARATOR, slugOf } from "./naming.ts";
+import { couldQualify, type PooledTool, pooledTool, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type {
@@ -227,8 +227,9 @@ export class McpPool {
 
   private async reconcile(configs?: McpServerConfig[]) {
     const wanted = configs ?? (this.load ? await this.load() : []);
+    const keep = new Set(wanted.map((config) => config.id));
     for (const [id, entry] of this.entries) {
-      if (!wanted.some((config) => config.id === id)) {
+      if (!keep.has(id)) {
         await this.close(entry);
         this.entries.delete(id);
       }
@@ -300,19 +301,20 @@ export class McpPool {
 
   /**
    * Connects whatever might answer a name the index does not know: failed servers due a retry,
-   * plus — under `lazy` — the idle ones.
+   * plus — under `lazy` — the idle servers whose slug could have produced the name.
    *
-   * Idle servers are narrowed by testing each known slug against the name rather than by
-   * splitting the name, since `qualify` shortens long names and the split of a shortened one
-   * names a tool that never existed. A name no slug claims wakes everything, because a slug
-   * shortened away is the case the prefix test misses.
+   * `couldQualify` decides which those are, and it is exact in the direction that matters: every
+   * server that really owns the name is woken. A name none of them could have produced is a name
+   * no server has, and starting them to find that out is what a model inventing a tool used to
+   * cost — one child process per configured server, dialled one after another, before the call
+   * failed anyway.
    */
   private async wake(qualifiedName: string): Promise<void> {
-    const idle = [...this.entries.values()].filter((entry) => entry.status === "idle");
-    const claimed = idle.filter((entry) =>
-      qualifiedName.startsWith(`${slugOf(entry.config)}${SEPARATOR}`),
-    );
-    for (const entry of claimed.length > 0 ? claimed : idle) await this.ensure(entry);
+    for (const entry of this.entries.values()) {
+      if (entry.status !== "idle") continue;
+      if (!couldQualify(slugOf(entry.config), qualifiedName)) continue;
+      await this.ensure(entry);
+    }
     await this.retryFailed();
   }
 

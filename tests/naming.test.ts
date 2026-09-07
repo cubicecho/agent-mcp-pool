@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
-import { pooledTool, qualify, SEPARATOR, slugOf } from "../src/naming.ts";
+import { couldQualify, pooledTool, qualify, SEPARATOR, slugOf } from "../src/naming.ts";
 import type { McpServerConfig } from "../src/types.ts";
 
 const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
@@ -127,4 +127,44 @@ test("the server's schema is passed through untouched, not rebuilt", () => {
   expect(pooled.definition.type === "function" && pooled.definition.function.parameters).toEqual(
     parameters,
   );
+});
+
+/**
+ * The question `wake` asks of a name nothing has claimed yet. It has to be exact in one
+ * direction — a server that really owns the name must always be woken — and is allowed to be
+ * generous in the other, since waking a server that turns out not to have the tool costs a
+ * process, not a wrong answer.
+ */
+test("couldQualify claims a name its slug built", () => {
+  expect(couldQualify("echo", "echo__ping")).toBe(true);
+  expect(couldQualify("echo", "notes__ping")).toBe(false);
+  // The separator is part of the claim: a slug is not a prefix of another server's slug.
+  expect(couldQualify("echo", "echoes__ping")).toBe(false);
+});
+
+test("couldQualify claims a truncated name whose slug was cut into", () => {
+  const slug = "s".repeat(60);
+  const qualified = qualify(slug, "ping");
+  expect(qualified).toHaveLength(64);
+  // The prefix test alone cannot see this one: `<slug>__ping` is 66 characters, so the slug lost
+  // its own tail to the truncation and the name does not start with `<slug>__` at all.
+  expect(qualified.startsWith(`${slug}__`)).toBe(false);
+  expect(couldQualify(slug, qualified)).toBe(true);
+  expect(couldQualify(`${"d".repeat(60)}`, qualified)).toBe(false);
+});
+
+test("couldQualify claims every long name its slug built, whatever the tool", () => {
+  const slug = "s".repeat(60);
+  for (const tool of ["ping", "echo", "add", "a-much-longer-tool-name"]) {
+    expect(couldQualify(slug, qualify(slug, tool))).toBe(true);
+  }
+});
+
+test("couldQualify refuses a name of the right length that is not a hash", () => {
+  const slug = "echo";
+  // 64 characters, but the tail is not six hex digits, so it was never truncated — which means
+  // it carries its whole slug and the prefix test already answered.
+  const name = `notes__${"t".repeat(64 - 7)}`;
+  expect(name).toHaveLength(64);
+  expect(couldQualify(slug, name)).toBe(false);
 });
