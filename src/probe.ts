@@ -4,6 +4,16 @@ import type { TransportOptions } from "./transport.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type { McpConnection, McpProbe } from "./types.ts";
 
+export interface ProbeOptions extends TransportOptions {
+  /**
+   * How long to wait for the server to answer `initialize` and `tools/list`.
+   *
+   * Unset leaves the SDK's own 60s default, which is a ceiling rather than a budget: a person is
+   * watching a spinner, and a minute of it tells them nothing the tenth second did not.
+   */
+  timeoutMs?: number;
+}
+
 /**
  * Connects to a config that may not be saved yet, lists its tools, and hangs up.
  *
@@ -16,15 +26,18 @@ export async function probe(
   clientName = "agent-mcp-pool",
   // The same environment policy as the pool: a probe that hands the child a different
   // environment answers a question nobody asked.
-  options: TransportOptions = {},
+  { timeoutMs, ...transportOptions }: ProbeOptions = {},
 ): Promise<McpProbe> {
   const client = new Client({ name: `${clientName}-probe`, version: "0.1.0" });
   let stderrTail = () => "";
   try {
-    const transport = createTransport(config, options);
+    const transport = createTransport(config, transportOptions);
     stderrTail = readStderrTail(transport);
-    await client.connect(transport);
-    const { tools } = await client.listTools();
+    // Both requests, not just the dial: a server that completes the handshake and then wedges on
+    // `tools/list` is exactly the kind of misconfiguration a probe is asked about.
+    const timeout = timeoutMs === undefined ? undefined : { timeout: timeoutMs };
+    await client.connect(transport, timeout);
+    const { tools } = await client.listTools(undefined, timeout);
     return {
       ok: true,
       error: "",
