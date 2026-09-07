@@ -37,3 +37,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # `files` is ["dist"] and dist is gitignored, so the tarball is entirely
+      # what this step just emitted. A tsc that succeeds while emitting nothing
+      # would otherwise ship a package with nothing to import.
+      - name: The build emitted something to import
+        run: test -s dist/index.js && test -s dist/index.d.ts
