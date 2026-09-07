@@ -147,6 +147,10 @@ export class McpPool {
   private readonly connectTimeoutMs?: number;
   private readonly probeTimeoutMs?: number;
 
+  /**
+   * @param options See `McpPoolOptions`. All optional: a pool with no `load` is one driven by
+   *   `sync(configs)` instead.
+   */
   constructor({
     load,
     clientName = "agent-mcp-pool",
@@ -182,7 +186,13 @@ export class McpPool {
   /** A write has landed that the pool has not been reconciled for yet. */
   private owed = false;
 
-  /** Runs `work` after whatever is already queued. See `running`. */
+  /**
+   * Runs `work` after whatever is already queued. See `running`.
+   *
+   * @param work Runs once the queue reaches it.
+   * @returns `work`'s own promise, rejection included — the copy that keeps the chain alive is a
+   *   separate one.
+   */
   private queue(work: () => Promise<void>): Promise<void> {
     const next = this.running.then(work);
     // The chain has to outlive a failure, or every later reconcile inherits its rejection. The
@@ -191,7 +201,13 @@ export class McpPool {
     return next;
   }
 
-  /** Reconciles the pool against `configs`, or against `options.load` when given nothing. */
+  /**
+   * Reconciles the pool against `configs`, or against `options.load` when given nothing.
+   *
+   * @param configs The servers to reconcile against. Omitted, `load` is asked — and with no
+   *   `load` either that is an empty set, which closes every server the pool has.
+   * @returns Resolves when the reconcile this call queued has finished.
+   */
   sync(configs?: McpServerConfig[]): Promise<void> {
     return this.queue(() => this.reconcile(configs));
   }
@@ -201,6 +217,10 @@ export class McpPool {
    *
    * `sync` leaves an unchanged row alone, so it is no use when a server has wedged. Dropping the
    * entry first leaves the reconcile no choice but to connect it afresh.
+   *
+   * @param id The server to drop and redial. An id the pool does not know is not an error; the
+   *   reconcile still runs.
+   * @param configs Passed on to that reconcile, exactly as `sync` takes it.
    */
   reconnect(id: string, configs?: McpServerConfig[]): Promise<void> {
     return this.queue(async () => {
@@ -240,6 +260,9 @@ export class McpPool {
    *
    * The debounce is left standing rather than disarmed: the timer may belong to someone else's
    * write whose transaction has not committed.
+   *
+   * @returns Resolves once any owed reconcile, and whatever else was queued, have finished. Never
+   *   rejects — a failed sync is logged, not thrown here.
    */
   async flush() {
     if (this.owed) await this.settle();
@@ -249,6 +272,12 @@ export class McpPool {
     await this.running;
   }
 
+  /**
+   * Brings the entry set in line with the configured servers: closes what is gone, connects what
+   * is new or changed, and leaves a healthy unchanged server alone.
+   *
+   * @param configs The wanted set, or `load`'s answer when omitted.
+   */
   private async reconcile(configs?: McpServerConfig[]) {
     const wanted = configs ?? (this.load ? await this.load() : []);
     const keep = new Set(wanted.map((config) => config.id));
@@ -286,6 +315,8 @@ export class McpPool {
    * `reconcile` connects under `Promise.all`, so without this an operator's list reshuffles every
    * boot by whichever child was quickest. Rebuilt rather than sorted: the order is the caller's
    * array, and nothing on a row can reconstruct it.
+   *
+   * @param wanted The configs in the caller's order. Entries it does not name keep their places.
    */
   private order(wanted: McpServerConfig[]) {
     const ordered = new Map<string, Entry>();
@@ -305,6 +336,9 @@ export class McpPool {
    * `slug` and `label` are baked into every tool's wire name and description at connect time, so
    * once a rename no longer restarts the server the derived half has to be rebuilt here — or the
    * model keeps being offered the old names.
+   *
+   * @param entry The live entry, mutated in place.
+   * @param config Its new row. Only the derived half — names, descriptions, idle clock — is read.
    */
   private relabel(entry: Entry, config: McpServerConfig) {
     const renamed = slugOf(entry.config) !== slugOf(config) || entry.config.label !== config.label;
@@ -332,6 +366,8 @@ export class McpPool {
    * no server has, and starting them to find that out is what a model inventing a tool used to
    * cost — one child process per configured server, dialled one after another, before the call
    * failed anyway.
+   *
+   * @param qualifiedName The `<slug>__<tool>` a call asked for and the index could not answer.
    */
   private async wake(qualifiedName: string): Promise<void> {
     for (const entry of this.entries.values()) {
@@ -372,6 +408,12 @@ export class McpPool {
     }
   }
 
+  /**
+   * Registers a server as an entry and, unless the pool is lazy, dials it.
+   *
+   * @param config The row to connect. A disabled one is registered at `disabled` and left there.
+   * @param force Dial even under `lazy` — what a use does when it needs the child now.
+   */
   private async connect(config: McpServerConfig, force = false) {
     const status = !config.enabled ? "disabled" : this.lazy && !force ? "idle" : "connecting";
     const entry: Entry = { config, status, tools: [] };
@@ -450,6 +492,11 @@ export class McpPool {
     this.log.error?.(`[mcp] ${slugOf(entry.config)}: ${entry.error}`);
   }
 
+  /**
+   * Closes a server's client and stops its idle clock, without touching its status.
+   *
+   * @param entry Marked `closing` first, so the close does not read as a crash to `onClose`.
+   */
   private async close(entry: Entry) {
     entry.closing = true;
     this.disarm(entry);
@@ -467,6 +514,11 @@ export class McpPool {
    *
    * `servers` is the run's scope, applied here as well as in `catalog` because a name can also
    * arrive from `load_tools`, where the model rather than the pool chose it.
+   *
+   * @param names Qualified names, in the caller's order. A name asked for twice is sent once; a
+   *   name nothing offers is skipped and logged. Omitted means every indexed tool.
+   * @param servers The run's scope. Absent is every server, empty is none — the two must not
+   *   collapse, since "no servers linked" is a real state.
    */
   tools(names?: string[], servers?: Iterable<string>): OpenAI.ChatCompletionTool[] {
     const allowed = scope(servers);
@@ -503,6 +555,9 @@ export class McpPool {
    * Deliberately not `error`. The pool cannot tell a caller's stale name from a model's invented
    * one, and the second arrives through `load_tools` as a matter of course — a level that says
    * "something is wrong" would be wrong most of the time it fired.
+   *
+   * @param qualifiedName The name that missed.
+   * @returns True while some idle or connecting server could still own it.
    */
   private expected(qualifiedName: string) {
     for (const entry of this.entries.values()) {
@@ -519,6 +574,10 @@ export class McpPool {
    * `resources/updated` or `logging/message` goes nowhere — and a consumer relaying the protocol
    * onward has no other way to see them. The id comes first because a listener hears from every
    * server at once and the notification does not say which one sent it.
+   *
+   * @param listener Called with the sending server's id and the notification. Throwing is
+   *   contained — the other listeners still run.
+   * @returns Unsubscribes. Safe to call more than once.
    */
   onNotification(listener: (id: string, notification: Notification) => void): () => void {
     this.listeners.add(listener);
@@ -533,6 +592,9 @@ export class McpPool {
    * A throwing listener is logged and stepped over rather than allowed to take the others with
    * it: this runs inside the SDK's handler, where a rejection becomes a protocol-level error on a
    * server that did nothing wrong.
+   *
+   * @param id The server it came from — the notification itself does not say.
+   * @param notification Whatever the SDK did not handle.
    */
   private notify(id: string, notification: Notification) {
     for (const listener of this.listeners) {
@@ -549,6 +611,10 @@ export class McpPool {
    *
    * The single door every use goes through, so lazy connect and the idle clock cannot disagree
    * about what counts as a use.
+   *
+   * @param entry The server wanted.
+   * @returns The entry as it stands afterwards, re-read from the map — a reconnect replaces the
+   *   object, so this is not always the one passed in.
    */
   private async ensure(entry: Entry): Promise<Entry> {
     if (entry.status === "idle" || this.retryDue(entry)) {
@@ -589,6 +655,8 @@ export class McpPool {
    * Deliberately not the crash path, though the index mutation is the same: no `error`, no
    * `failedAt`, so no backoff stands between this server and the next call that wants it. An
    * operator reading `state()` sees a server that is fine and simply not running.
+   *
+   * @param entry The server whose clock fired. Ignored if it has been replaced or is not `ready`.
    */
   private reap(entry: Entry) {
     void this.queue(async () => {
@@ -608,6 +676,9 @@ export class McpPool {
    * A ready server offering no tools is dropped rather than listed empty, or a prompt builder
    * that short-circuits on an empty catalogue spends its preamble introducing a list of nothing.
    * `state()` still reports the server: the operator wants that row.
+   *
+   * @param servers The run's scope, read the same way `tools` reads it.
+   * @returns One entry per ready server that has tools, in configuration order.
    */
   catalog(servers?: Iterable<string>): CatalogServer[] {
     const allowed = scope(servers);
@@ -638,6 +709,10 @@ export class McpPool {
    * **This bypasses the scope check `call()` makes, by construction.** That guard is against a
    * model calling a name it remembers; a caller reaching for the client is not driving a model.
    * A disabled server is still refused — it is off, not merely unscoped.
+   *
+   * @param id The config id, not the slug.
+   * @returns The connected client. Throws when no server has that id, when it is disabled, or
+   *   when it could not be connected — the last carrying the child's stderr where there is any.
    */
   async client(id: string): Promise<Client> {
     const entry = this.entries.get(id);
@@ -662,6 +737,12 @@ export class McpPool {
    * `servers` is checked again here rather than trusted from the definitions the caller was
    * given: a model that has seen a tool name once will call it again from memory, and a run must
    * not reach a server it was not scoped to however it learned the name.
+   *
+   * @param qualifiedName `<slug>__<tool>`, resolved whole rather than split on `__`.
+   * @param input The tool's arguments. Null or undefined is sent as `{}`.
+   * @param servers The run's scope. A tool outside it is refused as one that does not exist.
+   * @returns The result as text, or `"(no output)"` when the server returned none. A tool that
+   *   answers with `isError` throws instead.
    */
   async call(qualifiedName: string, input: unknown, servers?: Iterable<string>): Promise<string> {
     const allowed = scope(servers);
@@ -704,6 +785,9 @@ export class McpPool {
    * The patience is bound the same way: `probeTimeoutMs`, or the pool's own `connectTimeoutMs`
    * when there is no separate one. A pool told to give up on a wedged server in five seconds
    * should not sit on the SDK's sixty for the same server behind a button.
+   *
+   * @param config The server to test. Nothing is stored and no entry is touched, so this is safe
+   *   against a row that does not exist yet.
    */
   probe(config: McpConnection): Promise<McpProbe> {
     return probeConfig(config, this.clientName, {
@@ -717,6 +801,9 @@ export class McpPool {
    *
    * The row is handed back rather than projected away: a consumer drawing an edit form beside a
    * connection status would otherwise keep its own copy, and that copy is the one that goes stale.
+   *
+   * @returns One row per configured server, in configuration order — not in the order they
+   *   happened to connect.
    */
   state(): McpServerState[] {
     return [...this.entries.values()].map((entry) => ({
@@ -730,6 +817,12 @@ export class McpPool {
     }));
   }
 
+  /**
+   * Closes every server and forgets them, after whatever is already queued.
+   *
+   * @returns Resolves once every child is closed. The pool stays usable: a later `sync()` builds
+   *   it again from nothing.
+   */
   async shutdown() {
     clearTimeout(this.pending);
     this.owed = false;
