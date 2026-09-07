@@ -1,3 +1,10 @@
+# [0.5.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.4.0...v0.5.0) (2026-09-07)
+
+
+### Features
+
+* make the connection lifecycle a policy — lazy connect, idle reap ([058a23d](https://github.com/cubicecho/agent-mcp-pool/commit/058a23dfd8b5aba0e6454c6c2a1baa9d41137181))
+
 # [0.4.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.3.0...v0.4.0) (2026-09-07)
 
 
