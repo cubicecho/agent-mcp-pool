@@ -39,9 +39,14 @@ export interface TransportOptions {
 /**
  * The transport a config asks for, stdio or streamable HTTP, ready to connect.
  *
- * Exported because the pool is not the only thing that dials: `probe` uses it against a config
- * that is not saved yet, and a consumer proxying MCP may want the same construction the pool
- * would have done rather than a second, subtly different one.
+ * Exported because the pool is not the only thing that dials: `probe` uses it on a config that is
+ * not saved yet, and a consumer proxying MCP wants the pool's construction rather than a second,
+ * subtly different one.
+ *
+ * @param config The connection half of a row. `transport` picks the arm; the field that arm needs
+ *   — `command` or `url` — must be set, or this throws.
+ * @param options `childEnv`, which narrows what a stdio child inherits. Ignored over http.
+ * @returns An unconnected transport. Over stdio the child is not spawned until `connect`.
  */
 export function createTransport(config: McpConnection, options: TransportOptions = {}) {
   if (config.transport === "stdio") {
@@ -82,6 +87,9 @@ function inheritedEnv(allowed?: readonly string[]): Record<string, string> {
  * Safe to call before connecting — the SDK hands back its `PassThrough` as soon as the transport
  * exists, which matters because a server that dies during startup does all its talking then.
  * Attaching also keeps the pipe drained. A no-op for an http transport.
+ *
+ * @param transport From `createTransport`, connected or not.
+ * @returns A reader for the last 4000 characters written, trimmed — always empty over http.
  */
 export function readStderrTail(transport: PoolTransport): () => string {
   let tail = "";

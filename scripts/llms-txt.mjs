@@ -1,16 +1,14 @@
 /**
  * Writes `llms.txt` from what `src/index.ts` actually exports.
  *
- * Generated rather than written because the hand-maintained alternative is a second copy of the
- * API surface that drifts from the first, which is the failure this repo has already had to fix
- * once. Anything wrong here should be fixed in the doc comment it came from.
+ * Generated because a hand-written copy of an API surface drifts from the surface. Fix anything
+ * wrong here in the doc comment it came from.
  *
- * The parse is deliberately small and hand-rolled. TypeScript 7 is the native compiler and no
- * longer ships the JS API this would otherwise have used; its replacement is published under
- * `typescript/unstable/*`, and `build` is what `prepare` runs, so an unstable API breaking under
- * a caret range would break publishing. The shape being read is our own and regular, so reading
- * it directly costs less than that risk — and every assumption below throws rather than guessing,
- * so a source file that stops matching fails the build instead of quietly emitting less.
+ * The parse is hand-rolled and small. TypeScript 7 is native and no longer ships the JS API this
+ * would have used; the replacement sits under `typescript/unstable/*`, and `build` is what
+ * `prepare` runs, so an unstable API breaking under a caret range would break publishing. Every
+ * assumption below throws, so a source file that stops matching fails the build rather than
+ * quietly emitting less.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -20,11 +18,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(join(root, path), "utf8");
 
 /**
- * Every doc comment in a file, with the line that follows it.
+ * Every doc comment in a file, paired with the line that follows it.
  *
- * Both spellings are read: the one-line `/** text *\/` these files use for a short note, and the
- * block form. What follows the closing delimiter is what says who the comment belongs to — a
- * declaration means the comment documents it, a blank line means it documents the file.
+ * That line is what says who the comment belongs to: a declaration means it documents that
+ * declaration, a blank line means it documents the file. Both the one-line `/** text *\/`
+ * spelling and the block form are read.
+ *
+ * @param source Full text of a `.ts` file.
+ * @returns One `{ body, next }` per comment in source order, `body` stripped of its `*` margin.
  */
 function docBlocks(source) {
   const blocks = [];
@@ -56,7 +57,11 @@ function docBlocks(source) {
   return blocks;
 }
 
-/** The paragraphs of a doc comment body, each collapsed to a single line. */
+/**
+ * Blank-line-separated paragraphs of a comment body, each collapsed to one line.
+ *
+ * @param body Comment lines, as `docBlocks` returns them.
+ */
 function paragraphs(body) {
   const out = [];
   let current = [];
@@ -70,7 +75,12 @@ function paragraphs(body) {
   return out.filter((entry) => entry !== "");
 }
 
-/** The declared name on a line, for the declaration forms this source actually uses. */
+/**
+ * The name a line declares, for the declaration forms this source actually uses.
+ *
+ * @param line One line — in practice the `next` of a doc block.
+ * @returns The declared name, or null when the line declares nothing exported.
+ */
 function declaredName(line) {
   const match = line.match(
     /^export\s+(?:declare\s+)?(?:async\s+)?(?:function\s*\*?|const|let|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/,
@@ -78,13 +88,19 @@ function declaredName(line) {
   return match?.[1] ?? null;
 }
 
-/** First sentence of a doc comment, as one line. Abbreviations are not sentence ends. */
+/**
+ * First sentence of a comment body, as one line.
+ *
+ * `e.g.`, `i.e.`, `vs.`, `etc.` and `cf.` end a clause rather than a sentence, so the scan reads
+ * past them instead of cutting a summary in half.
+ *
+ * @param body Comment lines, as `docBlocks` returns them.
+ */
 function summarize(body) {
   const text = paragraphs(body)[0] ?? "";
   if (text === "") return "";
   const match = text.match(/^(.*?[.!?])(?:\s|$)/s);
   if (!match) return text;
-  // `e.g.`/`i.e.`/`vs.` end a clause, not a sentence: keep reading past them.
   let end = match[1];
   let rest = text.slice(end.length);
   while (/(?:^|\s)(?:e\.g|i\.e|vs|etc|cf)\.$/.test(end) && rest.trim() !== "") {
@@ -97,11 +113,15 @@ function summarize(body) {
 }
 
 /**
- * Every `export ... from "..."` in index order, with the names each one re-exports.
+ * Every `export ... from "..."` in the index, in order, with the names each one re-exports.
  *
- * The specifier is kept rather than only the local module name, because this index re-exports one
- * type from the SDK. A parser that quietly skipped what it could not place would drop a public
- * export from the file whose whole job is to list them, so an unmatched export statement throws.
+ * The specifier is kept rather than only a local module name, because this index also re-exports
+ * a type from the SDK — and a parser that skipped what it could not place would drop a public
+ * export from the one file whose job is to list them. So an unread statement throws instead.
+ *
+ * @param indexSource Full text of `src/index.ts`.
+ * @returns One entry per statement: `specifier`, `module` (null unless a local `./x.ts`), and
+ *   `names`, each tagged with whether it is type-only.
  */
 function reexports(indexSource) {
   const found = [];
@@ -120,7 +140,7 @@ function reexports(indexSource) {
     found.push({ specifier, module: local?.[1] ?? null, names });
   }
   if (found.length === 0) throw new Error("no re-exports found in src/index.ts — parser is stale");
-  // Counted over the whole source rather than per line, because several of these span lines.
+  // Counted over the whole source, not per line: several of these statements span lines.
   const statements = indexSource.match(/export\s[^;]*?\sfrom\s"[^"]+";/g)?.length ?? 0;
   if (statements !== found.length)
     throw new Error(
@@ -137,8 +157,8 @@ const intro = docBlocks(index).find((block) => block.next.trim() === "");
 if (!intro) throw new Error("src/index.ts has no leading module comment");
 
 const out = [`# ${pkg.name}`, "", `> ${pkg.description}`, ""];
-// The opening paragraph restates the description directly above it; the rest is what a reader
-// does not already have, so the blockquote takes the first and the body takes what follows.
+// The first paragraph restates the description directly above it; the rest is what a reader does
+// not already have.
 for (const paragraph of paragraphs(intro.body).slice(1)) out.push(paragraph, "");
 const peers = Object.entries(pkg.peerDependencies).map(([name, range]) => `\`${name}\` ${range}`);
 out.push(
@@ -156,8 +176,8 @@ let described = 0;
 const undocumented = [];
 
 for (const { specifier, module, names } of reexports(index)) {
-  // Nothing local to read for a name that comes from a dependency, and no gap either: the comment
-  // that matters is the one in that package. Listed so the index stays complete.
+  // A name from a dependency has no local source to read, and no gap either — the comment that
+  // matters lives in that package. Listed anyway so the index stays complete.
   if (!module) {
     out.push(`### ${specifier}`, "");
     for (const { name, isType } of names) out.push(`- \`${name}\`${isType ? " (type)" : ""}`);
@@ -195,9 +215,8 @@ const rendered = `${out
   .trimEnd()}\n`;
 const target = join(root, "llms.txt");
 
-// `--check` is what CI runs. The file is committed, so an export added or a doc comment reworded
-// without regenerating leaves a stale index — and not having to notice that by hand is the
-// reason this is generated at all.
+// `--check` is what CI runs. The file is committed, so an export added or a comment reworded
+// without regenerating leaves a stale index, and noticing that by hand is what this replaces.
 if (process.argv.includes("--check")) {
   const existing = existsSync(target) ? readFileSync(target, "utf8") : "";
   if (existing !== rendered) {
@@ -208,8 +227,7 @@ if (process.argv.includes("--check")) {
 } else {
   writeFileSync(target, rendered);
   console.log(`llms.txt written: ${described}/${total} exports carry a description`);
-  // Named rather than only counted: an undocumented export is a gap in the source, and the
-  // generator is the only thing positioned to notice. Not an error — a missing comment is worth
-  // knowing about, not worth failing a build over.
+  // Named rather than only counted: the gap is in the source, and this is the only thing
+  // positioned to notice. Not an error — worth knowing, not worth failing a build over.
   if (undocumented.length > 0) console.log(`no doc comment: ${undocumented.join(", ")}`);
 }

@@ -21,7 +21,7 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 
 ### probe
 
-- `ProbeOptions` (type) — What a probe is allowed to take from the caller: the child's environment, and its patience.
+- `ProbeOptions` (type) — What a probe takes from the caller: the child's environment, and its patience.
 - `probe` — Connects to a config that may not be saved yet, lists its tools, and hangs up.
 
 ### results
