@@ -296,7 +296,32 @@ export class McpPool {
         await this.connect(config);
       }),
     );
+    this.order(wanted);
     this.reindex();
+  }
+
+  /**
+   * Puts the entries back in the order they were configured in.
+   *
+   * `connect` inserts each entry as it reaches it, and `reconcile` runs those under
+   * `Promise.all` — so `entries` ends up in whichever order the servers finished connecting in,
+   * and an operator's list reshuffles itself every boot according to which child was quickest.
+   * `reconnect` does the same to one row, sending it to the bottom.
+   *
+   * Rebuilt rather than sorted, because the order is the caller's array and nothing derived from
+   * a row can reconstruct it. Everything that iterates `entries` — `state`, `catalog`, `reindex`
+   * and so `tools` — inherits it.
+   */
+  private order(wanted: McpServerConfig[]) {
+    const ordered = new Map<string, Entry>();
+    for (const { id } of wanted) {
+      const entry = this.entries.get(id);
+      if (entry) ordered.set(id, entry);
+    }
+    // Anything `wanted` did not name keeps its place rather than being dropped: this method
+    // decides order, and losing an entry here would close nothing and leak its child.
+    for (const [id, entry] of this.entries) if (!ordered.has(id)) ordered.set(id, entry);
+    this.entries = ordered;
   }
 
   /**
@@ -788,11 +813,19 @@ export class McpPool {
     return probeConfig(config, this.clientName, { childEnv: this.childEnv });
   }
 
+  /**
+   * Every configured server, in the order it was configured, with the row it came from.
+   *
+   * The row is handed back rather than projected away because the pool is the only thing holding
+   * both halves: a consumer drawing an edit form beside a connection status would otherwise keep
+   * its own copy of the same rows, and that copy is the one that goes stale.
+   */
   state(): McpServerState[] {
     return [...this.entries.values()].map((entry) => ({
       id: entry.config.id,
       slug: McpPool.slugOf(entry.config),
       label: entry.config.label,
+      config: entry.config,
       status: entry.status,
       error: entry.error ?? "",
       tools: entry.tools.map(({ name, description }) => ({ name, description })),

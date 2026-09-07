@@ -144,6 +144,76 @@ test("renaming a server keeps its child and re-labels its tools in place", async
   expect(pool.state()).toMatchObject([{ label: "Echo, renamed", status: "ready" }]);
 });
 
+/**
+ * `state()` is what an operator's list is drawn from, so its order is the list's order. It used
+ * to be `entries` insertion order, which a reconcile's parallel connects and `reconnect`'s
+ * delete-then-redial both scramble — so the list reshuffled itself under the operator and a
+ * consumer that wanted it still kept its own ordered array and drove the screen from that.
+ */
+test("state() is in the configured order, not the order the servers connected in", async () => {
+  const rows = ["a", "b", "c"].map((id) => config({ id, slug: id }));
+  await pool.sync(rows);
+  expect(pool.state().map((entry) => entry.id)).toEqual(["a", "b", "c"]);
+
+  // A pure reorder: every row is unchanged, so the reconcile leaves all three children up and
+  // touches nothing but the order. Nothing derived from a row could reconstruct this.
+  await pool.sync([rows[2], rows[0], rows[1]] as McpServerConfig[]);
+  expect(spawned()).toBe(3);
+  expect(pool.state().map((entry) => entry.id)).toEqual(["c", "a", "b"]);
+
+  // A new row at the front, which is where an operator adding a server to a positioned list puts
+  // it. The entry is created by whichever callback reaches it first, not by where it belongs.
+  await pool.sync([config({ id: "d", slug: "d" }), ...rows]);
+  expect(pool.state().map((entry) => entry.id)).toEqual(["d", "a", "b", "c"]);
+});
+
+test("reconnecting a server leaves it where it was in the list", async () => {
+  const rows = ["a", "b", "c"].map((id) => config({ id, slug: id }));
+  await pool.sync(rows);
+
+  // The redial drops the entry and makes it again, which used to send it to the bottom — so the
+  // row an operator pressed "reconnect" on jumped out from under them.
+  await pool.reconnect("a", rows);
+
+  expect(pool.state().map((entry) => entry.id)).toEqual(["a", "b", "c"]);
+  expect(pool.state()[0]).toMatchObject({ status: "ready" });
+});
+
+/**
+ * The pool holds every configured row already. Projecting them away made a consumer keep a
+ * second map of the same rows to draw an edit form beside a connection status — and that copy
+ * goes stale the moment anything reconciles without going through it, which is exactly what
+ * `syncSoon()` and a `load`-driven `sync()` do.
+ */
+test("state() hands back the row a server was configured from", async () => {
+  const row = config({ cwd: "/tmp", idleTimeoutMs: 0 });
+  await pool.sync([row]);
+
+  const [entry] = pool.state();
+  expect(entry?.config).toEqual(row);
+  // The identity fields stay alongside it: those are what the pool actually used.
+  expect(entry).toMatchObject({ id: "echo-1", slug: "echo", label: "Echo", status: "ready" });
+});
+
+test("a renamed server reports the new row, not the one it connected under", async () => {
+  let rows = [config()];
+  pool = makePool(async () => rows);
+  await pool.sync();
+
+  rows = [config({ label: "Echo, renamed" })];
+  await pool.sync();
+
+  // `relabel` swaps the row in place without restarting the child; `state()` has to follow it.
+  expect(pool.state()[0]?.config).toEqual(rows[0]);
+});
+
+test("a server the pool never dialled still reports its row", async () => {
+  const row = config({ enabled: false });
+  await pool.sync([row]);
+
+  expect(pool.state()).toMatchObject([{ status: "disabled", config: row }]);
+});
+
 test("overlapping syncs settle on the last config and orphan nothing", async () => {
   const first = pool.sync([config({ slug: "one" })]);
   const second = pool.sync([config({ slug: "two" })]);

@@ -66,6 +66,19 @@ export interface McpServerState {
   /** The effective namespace — the row's `slug`, or its `id` when the row set none. */
   slug: string;
   label: string;
+  /**
+   * The row this server is configured from, exactly as it was passed in.
+   *
+   * The pool is already holding it, and a consumer whose UI draws the edit form and the
+   * connection state as one row otherwise has to keep a second copy of rows the pool has —
+   * a shadow that goes stale the moment anything reconciles without going through it, which
+   * `syncSoon()` and a `load`-driven `sync()` both do.
+   *
+   * `id`, `slug` and `label` stay alongside it rather than being folded into it: those are the
+   * *effective* values the pool actually used, and duplicating three derived fields inside one
+   * object is not the same failure as keeping a second map that can disagree with this one.
+   */
+  config: McpServerConfig;
   status: McpStatus;
   error: string;
   tools: { name: string; description: string }[];
