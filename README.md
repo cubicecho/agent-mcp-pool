@@ -63,10 +63,15 @@ when it happens.
 
 ## Naming
 
-Tools are `<slug>__<tool name>`, truncated to 64 characters for OpenAI's function-name limit, and
-resolved by whole-string lookup rather than by splitting on `__` — the split of a truncated name
-is a tool its server never had. **Known gap:** two tools that collide after truncation overwrite
-each other in the index; there is a test pinning the behaviour.
+Tools are `<slug>__<tool name>`, capped at 64 characters for OpenAI's function-name limit, and
+resolved by whole-string lookup rather than by splitting on `__` — the split of a shortened name
+is a tool its server never had.
+
+A name that does not fit keeps its first 57 characters and spends the rest on `_` plus six hex
+digits of a SHA-256 of the *whole* name. Truncating alone made two tools sharing a 64-character
+prefix collapse onto one key, so the second silently replaced the first and the model was offered
+a name that dispatched to the wrong tool. Names that already fit are returned byte-for-byte, so
+nothing that was unambiguous before changes on the wire.
 
 `mcp-router` has a namespacing scheme that looks identical and is not: it splits names a *foreign*
 MCP client invented, longest-prefix-first, and applies the same scheme to resource URIs and prompt
