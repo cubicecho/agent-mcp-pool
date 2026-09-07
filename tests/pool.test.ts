@@ -1152,6 +1152,43 @@ test("a probe takes the row's connect timeout over the pool's probe timeout", as
   expect(await stillAlive(spawnedPids())).toEqual([]);
 });
 
+/**
+ * The free `probe` is the one a caller with no pool has, and it read only its own options — so
+ * the field `McpConnection` was widened to carry was dropped by the very function the widening
+ * was for, and a row that says it needs two minutes to start was failed at the SDK's sixty
+ * seconds behind the button.
+ */
+test("the free probe takes the row's own connect timeout", async () => {
+  const started = Date.now();
+  const result = await probe(
+    config({
+      connectTimeoutMs: 1000,
+      env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" },
+    }),
+  );
+
+  expect(result.ok).toBe(false);
+  // Sixty seconds if the row had been ignored, which is the SDK's own default.
+  expect(Date.now() - started).toBeLessThan(10_000);
+  expect(await stillAlive(spawnedPids())).toEqual([]);
+});
+
+test("an explicit timeoutMs outranks the row's connect timeout", async () => {
+  const started = Date.now();
+  const result = await probe(
+    config({
+      connectTimeoutMs: 30_000,
+      env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" },
+    }),
+    undefined,
+    { timeoutMs: 1000 },
+  );
+
+  expect(result.ok).toBe(false);
+  // Thirty seconds if the row had won: an argument at the call site is about this one probe.
+  expect(Date.now() - started).toBeLessThan(10_000);
+});
+
 test("a ready server with no tools is kept out of the catalogue but not out of state", async () => {
   await pool.sync([
     config({ id: "empty", slug: "empty", env: { MCP_ECHO_NO_TOOLS: "1" } }),

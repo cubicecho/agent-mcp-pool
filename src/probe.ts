@@ -11,8 +11,11 @@ export interface ProbeOptions extends TransportOptions {
   /**
    * How long to wait for the server to answer `initialize` and `tools/list`.
    *
-   * Unset leaves the SDK's own 60s default, which is a ceiling rather than a budget: a person is
-   * watching a spinner, and a minute of it tells them nothing the tenth second did not.
+   * Outranks the probed row's own `connectTimeoutMs`, which is what an unset one falls back to: a
+   * number passed at the call site is a decision about this probe, and the field is a property of
+   * the server. Neither leaves the SDK's own 60s default, which is a ceiling rather than a budget:
+   * a person is watching a spinner, and a minute of it tells them nothing the tenth second did
+   * not.
    */
   timeoutMs?: number;
 }
@@ -27,7 +30,8 @@ export interface ProbeOptions extends TransportOptions {
  * @param config The server to dial. Nothing is stored, so it need not be saved first.
  * @param client How this process introduces itself; `-probe` is appended to the name. A bare
  *   string is the name alone, and reports this package's own version beside it.
- * @param options `childEnv` narrows a stdio child's inheritance, `timeoutMs` bounds the wait.
+ * @param options `childEnv` narrows a stdio child's inheritance, `timeoutMs` bounds the wait —
+ *   and where it is unset, the row's own `connectTimeoutMs` does.
  * @returns Never throws — a failure is `{ ok: false }` carrying the child's stderr where there is
  *   any, since that is usually the only real explanation.
  */
@@ -52,7 +56,12 @@ export async function probe(
     stderrTail = readStderrTail(transport);
     // Both requests, not just the dial: a server that completes the handshake and then wedges on
     // `tools/list` is exactly the kind of misconfiguration a probe is asked about.
-    const timeout = timeoutMs === undefined ? undefined : { timeout: timeoutMs };
+    // The row's own patience where the caller named none. `connectTimeoutMs` is part of reaching a
+    // server rather than of naming it, so a row that needs two minutes to start needs them behind
+    // the "Test connection" button too — read past it, and the button reports a failure for a
+    // server that works. The argument still wins: it was passed about this call.
+    const patience = timeoutMs ?? config.connectTimeoutMs ?? undefined;
+    const timeout = patience === undefined ? undefined : { timeout: patience };
     await mcpClient.connect(transport, timeout);
     // Every page of them: a probe that under-reports shows a person fewer tools than the server
     // has, which is the same wrong answer the pool used to give.
