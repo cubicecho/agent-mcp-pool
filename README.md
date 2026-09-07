@@ -32,6 +32,23 @@ has no servers linked" is a real and correct state. `call` re-checks the scope r
 trusting the definitions the caller was given: a model that has seen a tool name once will call
 it again from memory.
 
+## Past the agent surface
+
+`tools()` returns OpenAI definitions and `call()` returns a string, because a string is what goes
+back into a message array. A consumer that is proxying MCP rather than driving a model wants
+neither, and wants resources, prompts, subscriptions and logging that a string was never going to
+carry. `client(id)` hands back the connected client:
+
+```ts
+const { resources } = await (await pool.client(id)).listResources();
+```
+
+Everything else the pool does applies unchanged — reconcile, the queue, crash detection with the
+stderr tail, backoff, retry-on-use. A server that is merely down is retried first, the same as
+`call()` does; a disabled one is refused, because off is not the same as out of scope. **It
+bypasses the scope check by construction:** that guard defends against a model calling a name it
+remembers, and a caller holding a server id is not a model.
+
 ## Failure
 
 A stdio server is a child process, and child processes die. The pool watches for it: an
