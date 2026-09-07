@@ -1,3 +1,10 @@
+## [0.2.1](https://github.com/cubicecho/agent-mcp-pool/compare/v0.2.0...v0.2.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* keep a ready server with no tools out of the catalogue ([98282ff](https://github.com/cubicecho/agent-mcp-pool/commit/98282ffe6aa16b616a65d0d516bc60ff407a9064))
+
 # [0.2.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.1.0...v0.2.0) (2026-09-07)
 
 
