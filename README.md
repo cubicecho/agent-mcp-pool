@@ -307,6 +307,15 @@ who has just pressed "Test connection" cannot. A row's own `connectTimeoutMs` ou
 server that needs two minutes to start needs them behind the button too, or the button reports a
 failure for a server that works.
 
+The free `probe()` reads that row too, having no pool to ask — `probe(row)` waits as long as the
+row says. Its `timeoutMs` option outranks the row, since a number passed at the call site is a
+decision about that one probe, and neither set leaves the SDK's 60s:
+
+```ts
+await probe(row);                          // the row's connectTimeoutMs, else the SDK's 60s
+await probe(row, "my-gateway", { timeoutMs: 5_000 }); // this probe, whatever the row says
+```
+
 ## Logging
 
 The pool logs — a server's tool count on connect, what it wrote on the way out, a name nothing
