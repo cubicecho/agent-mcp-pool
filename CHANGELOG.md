@@ -1,3 +1,10 @@
+## [0.7.2](https://github.com/cubicecho/agent-mcp-pool/compare/v0.7.1...v0.7.2) (2026-09-07)
+
+
+### Performance Improvements
+
+* wake only the servers that could own the name ([b75d706](https://github.com/cubicecho/agent-mcp-pool/commit/b75d7069b523994c078a8516bb3124987be1e4b7))
+
 ## [0.7.1](https://github.com/cubicecho/agent-mcp-pool/compare/v0.7.0...v0.7.1) (2026-09-07)
 
 
