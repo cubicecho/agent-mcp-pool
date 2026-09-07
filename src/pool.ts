@@ -1,10 +1,19 @@
-import { type CatalogServer, errorMessage } from "@cubicecho/agent-core";
+import { isDeepStrictEqual } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type OpenAI from "openai";
-import { createTransport } from "./transport.ts";
-import type { McpServerConfig, McpServerState, McpStatus } from "./types.ts";
+import { errorMessage } from "./errors.ts";
+import { createTransport, readStderrTail } from "./transport.ts";
+import type { CatalogServer, McpServerConfig, McpServerState, McpStatus } from "./types.ts";
 
 const SEPARATOR = "__";
+
+/**
+ * How long a server that failed is left alone before anything dials it again.
+ *
+ * `syncSoon()` fires on every write to the server table, so without a floor a server that cannot
+ * start is respawned once per keystroke in the admin UI.
+ */
+const CRASH_BACKOFF_MS = 5000;
 
 /**
  * One tool of one connected server, in every shape anything asks for it.
@@ -17,6 +26,13 @@ interface PooledTool {
   /** As the server named it — what `state()` reports and what a call is sent back under. */
   name: string;
   description: string;
+  /**
+   * The server's own JSON Schema for its arguments.
+   *
+   * Kept alongside the built definition so a rename can rebuild the model-facing half without
+   * reconnecting to ask for the schemas again.
+   */
+  parameters: Record<string, unknown>;
   /** `<slug>__<name>`: what the model sees, and what it calls. */
   qualified: string;
   definition: OpenAI.ChatCompletionTool;
@@ -28,6 +44,16 @@ interface Entry {
   status: McpStatus;
   error?: string;
   tools: PooledTool[];
+  /**
+   * Set while this entry is being torn down on purpose, so `onClose` can tell a shutdown we
+   * asked for from a child that died on its own. Without it, `shutdown()` marks every server
+   * crashed on the way out.
+   */
+  closing?: boolean;
+  /** When this server last failed to start or dropped its connection. Drives the backoff. */
+  failedAt?: number;
+  /** The last of what this server's child wrote to stderr; usually why it would not start. */
+  stderrTail?: () => string;
 }
 
 export interface McpPoolOptions {
@@ -43,6 +69,22 @@ export interface McpPoolOptions {
   clientName?: string;
   /** Where the pool's own progress goes. Defaults to the console; pass `{}` to silence it. */
   log?: { info?: (message: string) => void; error?: (message: string) => void };
+  /** How long a failed server is left alone before it is dialled again. Defaults to 5s. */
+  crashBackoffMs?: number;
+  /**
+   * Which of this process's environment variables a stdio child inherits. Defaults to all of
+   * them; `MINIMAL_CHILD_ENV` is a sensible allowlist to narrow to.
+   */
+  childEnv?: readonly string[];
+  /**
+   * How long to wait for a server to answer `initialize` and `tools/list`.
+   *
+   * The SDK already applies its own 60s default, so this is not about an unbounded hang — it is
+   * about how long a boot is willing to stall. `sync` connects servers in parallel, but one
+   * wedged server still holds the whole reconcile open for the full timeout, and a minute is a
+   * long time to keep an agent from starting over a server that is not coming back.
+   */
+  connectTimeoutMs?: number;
 }
 
 /**
@@ -71,10 +113,23 @@ export class McpPool {
   private readonly load?: () => Promise<McpServerConfig[]>;
   private readonly clientName: string;
   private readonly log: NonNullable<McpPoolOptions["log"]>;
+  private readonly crashBackoffMs: number;
+  private readonly childEnv?: readonly string[];
+  private readonly connectTimeoutMs?: number;
 
-  constructor({ load, clientName = "agent-mcp-pool", log }: McpPoolOptions = {}) {
+  constructor({
+    load,
+    clientName = "agent-mcp-pool",
+    log,
+    crashBackoffMs = CRASH_BACKOFF_MS,
+    childEnv,
+    connectTimeoutMs,
+  }: McpPoolOptions = {}) {
     this.load = load;
     this.clientName = clientName;
+    this.crashBackoffMs = crashBackoffMs;
+    this.childEnv = childEnv;
+    this.connectTimeoutMs = connectTimeoutMs;
     this.log = log ?? {
       info: (message) => console.log(message),
       error: (message) => console.error(message),
@@ -169,13 +224,78 @@ export class McpPool {
     await Promise.all(
       wanted.map(async (config) => {
         const existing = this.entries.get(config.id);
-        // Reconnecting an unchanged server would restart its child process for nothing.
-        if (existing && JSON.stringify(existing.config) === JSON.stringify(config)) return;
+        if (existing && McpPool.sameConnection(existing.config, config)) {
+          // Nothing about how to reach it moved, so the child stays up; a new name for it is
+          // applied in place.
+          this.relabel(existing, config);
+          // Restarting a healthy server would cost a process spawn for nothing. A failed one is
+          // exactly what a later sync should pick up — but not faster than the backoff.
+          if (existing.status === "ready" || existing.status === "disabled") return;
+          if (!this.retryDue(existing)) return;
+        }
         if (existing) await this.close(existing);
         await this.connect(config);
       }),
     );
     this.reindex();
+  }
+
+  /**
+   * Whether two rows describe the same live connection.
+   *
+   * Only the fields a child process is actually made of. This used to be a `JSON.stringify`
+   * comparison of the whole row, which bounced a running server — dropping whatever state it
+   * held — because someone corrected a typo in its label. `null` and empty are the same absence
+   * here: a row moving between them has not changed how the server is reached.
+   */
+  private static sameConnection(a: McpServerConfig, b: McpServerConfig) {
+    return (
+      a.enabled === b.enabled &&
+      a.transport === b.transport &&
+      a.command === b.command &&
+      a.url === b.url &&
+      isDeepStrictEqual(a.args ?? [], b.args ?? []) &&
+      isDeepStrictEqual(a.env ?? {}, b.env ?? {}) &&
+      isDeepStrictEqual(a.headers ?? {}, b.headers ?? {})
+    );
+  }
+
+  /**
+   * Takes a server's new name without touching its connection.
+   *
+   * `slug` and `label` are baked into every tool's wire name and description at connect time, so
+   * once a rename no longer restarts the server the derived half has to be rebuilt here — or the
+   * model keeps being offered the old names.
+   */
+  private relabel(entry: Entry, config: McpServerConfig) {
+    const renamed = entry.config.slug !== config.slug || entry.config.label !== config.label;
+    entry.config = config;
+    if (!renamed) return;
+    entry.tools = entry.tools.map((tool) => McpPool.pooledTool(config, tool));
+  }
+
+  /** Whether a failed server is enabled, down, and has waited out its backoff. */
+  private retryDue(entry: Entry) {
+    if (!entry.config.enabled || entry.status !== "error") return false;
+    return entry.failedAt === undefined || Date.now() - entry.failedAt >= this.crashBackoffMs;
+  }
+
+  /**
+   * Dials every failed server that is due another attempt, using the configs already held.
+   *
+   * Deliberately not a `sync()`: this runs from `call`, where the pool must not go back to
+   * `load` for rows — a pool driven by explicit `sync(configs)` has no `load` at all, and asking
+   * an absent one would reconcile against an empty set and close every server it has.
+   */
+  private retryFailed(): Promise<void> {
+    return this.queue(async () => {
+      const due = [...this.entries.values()].filter((entry) => this.retryDue(entry));
+      for (const entry of due) {
+        await this.close(entry);
+        await this.connect(entry.config);
+      }
+      if (due.length > 0) this.reindex();
+    });
   }
 
   /** Rebuilt whenever the pool changes, so `call` resolves a name without scanning for it. */
@@ -197,38 +317,87 @@ export class McpPool {
 
     try {
       const client = new Client({ name: this.clientName, version: "0.1.0" });
-      await client.connect(createTransport(config));
-      const { tools } = await client.listTools();
+      const transport = createTransport(config, { childEnv: this.childEnv });
+      // Listening before the connect, because a server that dies during startup says whatever
+      // it has to say then and the connect only reports that the pipe closed.
+      entry.stderrTail = readStderrTail(transport);
+      const timeout =
+        this.connectTimeoutMs === undefined ? undefined : { timeout: this.connectTimeoutMs };
+      await client.connect(transport, timeout);
+      const { tools } = await client.listTools(undefined, timeout);
 
-      const label = config.label || config.slug;
       entry.client = client;
       entry.status = "ready";
-      entry.tools = tools.map((tool) => {
-        const qualified = McpPool.qualify(config.slug, tool.name);
-        const description = tool.description ?? "";
-        return {
+      entry.tools = tools.map((tool) =>
+        McpPool.pooledTool(config, {
           name: tool.name,
-          description,
-          qualified,
-          definition: {
-            type: "function",
-            function: {
-              name: qualified,
-              description: `[${label}] ${description}`.trim(),
-              parameters: (tool.inputSchema ?? { type: "object" }) as Record<string, unknown>,
-            },
-          },
-        };
-      });
+          description: tool.description ?? "",
+          parameters: (tool.inputSchema ?? { type: "object" }) as Record<string, unknown>,
+        }),
+      );
+      // Installed only once the server is up: a child that dies mid-handshake is reported by
+      // `connect` rejecting, and `onClose` firing then would race the success path below.
+      client.onclose = () => this.onClose(entry);
       this.log.info?.(`[mcp] ${config.slug}: ${entry.tools.length} tool(s)`);
     } catch (error) {
       entry.status = "error";
-      entry.error = errorMessage(error);
+      // What the child said on the way out, when it managed to say anything: "ModuleNotFoundError:
+      // no module named mcp_server_git" beats "MCP error -32000: Connection closed".
+      entry.error = entry.stderrTail?.() || errorMessage(error);
+      entry.failedAt = Date.now();
       this.log.error?.(`[mcp] ${config.slug}: ${entry.error}`);
     }
   }
 
+  /**
+   * A connected server dropped its connection without being asked to.
+   *
+   * The pool used to have no idea this had happened: the entry stayed `ready`, `index` kept
+   * handing out its tools, and the model was offered tools whose child process was gone — the
+   * failure arriving as a transport error inside a tool call rather than as a server that is
+   * down. Marking it failed is also what lets a later `sync` pick it back up.
+   */
+  private onClose(entry: Entry) {
+    if (entry.closing) return;
+    entry.client = undefined;
+    entry.status = "error";
+    entry.error = entry.stderrTail?.() || "the server closed the connection";
+    entry.failedAt = Date.now();
+    // Cleared rather than kept as a last-known list, so `state()` cannot read as a server that
+    // is down but still has tools to offer.
+    entry.tools = [];
+    this.reindex();
+    this.log.error?.(`[mcp] ${entry.config.slug}: ${entry.error}`);
+  }
+
+  /**
+   * Everything about a tool that its server's name decides.
+   *
+   * One place, because `connect` builds these and `relabel` rebuilds them, and a model calling a
+   * name the pool no longer indexes is the failure mode when the two drift.
+   */
+  private static pooledTool(
+    config: McpServerConfig,
+    tool: { name: string; description: string; parameters: Record<string, unknown> },
+  ): PooledTool {
+    const label = config.label || config.slug;
+    const qualified = McpPool.qualify(config.slug, tool.name);
+    return {
+      ...tool,
+      qualified,
+      definition: {
+        type: "function",
+        function: {
+          name: qualified,
+          description: `[${label}] ${tool.description}`.trim(),
+          parameters: tool.parameters,
+        },
+      },
+    };
+  }
+
   private async close(entry: Entry) {
+    entry.closing = true;
     try {
       await entry.client?.close();
     } catch {
@@ -301,7 +470,14 @@ export class McpPool {
     const allowed = McpPool.scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` truncates at
     // 64 characters, and the split of a truncated name names a tool its server never had.
-    const found = this.index.get(qualifiedName);
+    let found = this.index.get(qualifiedName);
+    if (!found) {
+      // A crashed server took its tools out of the index with it. Before telling the model the
+      // tool does not exist — which is how you teach it to stop asking for a tool that is merely
+      // down — bring back whatever is due a retry and look once more.
+      await this.retryFailed();
+      found = this.index.get(qualifiedName);
+    }
     // A tool outside this run's scope is answered as one that does not exist, because to this
     // run it does not: saying "that server is not yours" would teach the model to ask again.
     if (!found || (allowed && !allowed.has(found.serverId))) {

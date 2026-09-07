@@ -45,3 +45,17 @@ export interface McpProbe {
   error: string;
   tools: { name: string; description: string }[];
 }
+
+/**
+ * One server's tools, without their JSON schemas — the cheap half of a tool definition.
+ *
+ * This mirrors `CatalogServer` in `@cubicecho/agent-core`, which is what that package's
+ * on-demand tool loading reads. It is declared here rather than imported because the shape is
+ * three fields and TypeScript is structural: `catalog()`'s return value satisfies agent-core's
+ * interface without this package depending on it. Keep the two in step.
+ */
+export interface CatalogServer {
+  id: string;
+  label: string;
+  tools: { name: string; description: string }[];
+}

@@ -1,6 +1,7 @@
-import { errorMessage } from "@cubicecho/agent-core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { createTransport } from "./transport.ts";
+import { errorMessage } from "./errors.ts";
+import type { TransportOptions } from "./transport.ts";
+import { createTransport, readStderrTail } from "./transport.ts";
 import type { McpConnection, McpProbe } from "./types.ts";
 
 /**
@@ -13,10 +14,16 @@ import type { McpConnection, McpProbe } from "./types.ts";
 export async function probe(
   config: McpConnection,
   clientName = "agent-mcp-pool",
+  // Takes the same environment policy as the pool: a probe that hands the child a different
+  // environment than the pool will is a button that answers a question nobody asked.
+  options: TransportOptions = {},
 ): Promise<McpProbe> {
   const client = new Client({ name: `${clientName}-probe`, version: "0.1.0" });
+  let stderrTail = () => "";
   try {
-    await client.connect(createTransport(config));
+    const transport = createTransport(config, options);
+    stderrTail = readStderrTail(transport);
+    await client.connect(transport);
     const { tools } = await client.listTools();
     return {
       ok: true,
@@ -24,7 +31,7 @@ export async function probe(
       tools: tools.map((tool) => ({ name: tool.name, description: tool.description ?? "" })),
     };
   } catch (error) {
-    return { ok: false, error: errorMessage(error), tools: [] };
+    return { ok: false, error: stderrTail() || errorMessage(error), tools: [] };
   } finally {
     await client.close().catch(() => {});
   }

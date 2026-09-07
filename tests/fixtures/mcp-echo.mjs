@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -7,6 +7,18 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 // and nothing it exposes can tell one child from two — so the children say so themselves.
 if (process.env.MCP_ECHO_SPAWN_LOG)
   appendFileSync(process.env.MCP_ECHO_SPAWN_LOG, `${process.pid}\n`);
+
+// What this child actually inherited. Written to a file rather than reported through a tool, so
+// a test can assert on the environment policy without the server choosing what to say about it.
+if (process.env.MCP_ECHO_ENV_DUMP)
+  writeFileSync(process.env.MCP_ECHO_ENV_DUMP, JSON.stringify(process.env));
+
+// Fails the way a misconfigured server does: one line of explanation on stderr, then a non-zero
+// exit. Nothing the client sees says more than "the connection closed", which is the point.
+if (process.env.MCP_ECHO_FAIL) {
+  process.stderr.write(`${process.env.MCP_ECHO_FAIL}\n`);
+  process.exit(1);
+}
 
 /** A stdio MCP server with three trivial tools, for the runner tests to connect to. */
 const tools = [

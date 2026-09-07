@@ -9,8 +9,14 @@
 
 export { McpPool, type McpPoolOptions } from "./pool.ts";
 export { probe } from "./probe.ts";
-export { createTransport } from "./transport.ts";
+export {
+  createTransport,
+  MINIMAL_CHILD_ENV,
+  readStderrTail,
+  type TransportOptions,
+} from "./transport.ts";
 export type {
+  CatalogServer,
   McpConnection,
   McpProbe,
   McpServerConfig,

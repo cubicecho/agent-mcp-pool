@@ -1,0 +1,61 @@
+# Publishes the package to npm.
+#
+# npm authenticates over OIDC trusted publishing, so there is no NPM_TOKEN to
+# set: the `id-token: write` permission below is the whole credential. npm
+# matches the trusted-publisher entry against this workflow's filename, so an
+# entry naming anything but `release.yml` will not match.
+#
+# Versions come from the commit log — `feat:` for a minor, `fix:` for a patch,
+# `BREAKING CHANGE:` in a body for a major. Anything else publishes nothing.
+name: Release
+
+on:
+  # Never in parallel with the tests: CI has to have passed on this commit.
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    # A red CI run must not become a published version.
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The commit CI actually tested, not whatever main has drifted to.
+          ref: ${{ github.event.workflow_run.head_sha }}
+          # semantic-release reads the whole log to work out the next version.
+          fetch-depth: 0
+          # It authenticates with GITHUB_TOKEN itself; the checkout credentials
+          # would only shadow that.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      # `npm publish` runs the `prepare` script, which is what builds dist/ —
+      # so the devDependencies have to be here before semantic-release starts.
+      - run: npm ci
+
+      - name: Semantic release
+        uses: cycjimmy/semantic-release-action@v6
+        with:
+          # Neither is bundled with semantic-release: changelog writes
+          # CHANGELOG.md, git commits it and the bumped package.json back to
+          # main.
+          extra_plugins: |
+            @semantic-release/changelog@7
+            @semantic-release/git@11
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

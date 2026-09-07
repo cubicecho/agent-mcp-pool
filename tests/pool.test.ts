@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, expect, test } from "vitest";
 import { McpPool } from "../src/pool.ts";
+import { MINIMAL_CHILD_ENV } from "../src/transport.ts";
 import type { McpServerConfig } from "../src/types.ts";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-pool-"));
@@ -41,6 +42,14 @@ async function stillAlive(pids: number[]): Promise<number[]> {
   return alive();
 }
 
+/** Waits for something the pool does off the back of a child exiting, rather than for a duration. */
+async function until(done: () => boolean, what: string) {
+  for (let attempt = 0; attempt < 100 && !done(); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (!done()) throw new Error(`timed out waiting for ${what}`);
+}
+
 const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
   id: "echo-1",
   slug: "echo",
@@ -56,8 +65,8 @@ const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
 });
 
 /** Silent: these tests spawn servers that fail on purpose, and say so on stderr. */
-const makePool = (load?: () => Promise<McpServerConfig[]>) =>
-  new McpPool({ load, clientName: "mcp-pool-test", log: {} });
+const makePool = (load?: () => Promise<McpServerConfig[]>, crashBackoffMs?: number) =>
+  new McpPool({ load, clientName: "mcp-pool-test", log: {}, crashBackoffMs });
 
 /** The qualified names on offer. A definition is a union; only the function arm is used here. */
 const toolNames = (pool: McpPool, servers?: string[]) =>
@@ -97,7 +106,8 @@ test("overlapping syncs off the source reconnect an edited server once", async (
   pool = makePool(async () => rows);
   await pool.sync();
 
-  rows = [config({ label: "Echo, renamed" })];
+  // An edit the connection is actually made of, so the server has to be restarted for it.
+  rows = [config({ args: [FIXTURE, "--restarted"] })];
   // Two callers arriving together is what a batch of writes through a GraphQL hook looks like.
   // Both read the source, both compared the edited row against the entry the other had not
   // replaced yet, and both reconnected — the second's entry overwriting the first, whose child
@@ -105,12 +115,33 @@ test("overlapping syncs off the source reconnect an edited server once", async (
   // throughout.
   await Promise.all([pool.sync(), pool.sync()]);
 
-  expect(pool.state()).toMatchObject([{ label: "Echo, renamed", status: "ready" }]);
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready" }]);
   expect(spawned()).toBe(2);
 
   const pids = spawnedPids();
   await pool.shutdown();
   expect(await stillAlive(pids)).toEqual([]);
+});
+
+/**
+ * The other half of the differ: `sync` used to compare whole rows with `JSON.stringify`, so
+ * correcting a typo in a label tore down a running server and everything it was holding.
+ */
+test("renaming a server keeps its child and re-labels its tools in place", async () => {
+  let rows = [config()];
+  pool = makePool(async () => rows);
+  await pool.sync();
+  const [first] = spawnedPids();
+
+  rows = [config({ slug: "echo2", label: "Echo, renamed" })];
+  await pool.sync();
+
+  expect(spawned()).toBe(1);
+  expect(await stillAlive([first as number])).toEqual([first]);
+  // The name is derived from the slug at connect time, so it has to be rebuilt without one.
+  expect(toolNames(pool)).toEqual(["echo2__ping", "echo2__echo", "echo2__add"]);
+  expect(await pool.call("echo2__ping", {})).toBe("ping({})");
+  expect(pool.state()).toMatchObject([{ label: "Echo, renamed", status: "ready" }]);
 });
 
 test("overlapping syncs settle on the last config and orphan nothing", async () => {
@@ -169,8 +200,12 @@ test("flush is a no-op when nothing is owed", async () => {
 
 test("a removed server is closed and its tools stop being offered", async () => {
   await pool.sync([config()]);
+  const pids = spawnedPids();
   await pool.sync([]);
 
+  // Dropping the entry is not the same as ending the process: once the map no longer holds it,
+  // nothing — not even `shutdown` — can reach the child to close it.
+  expect(await stillAlive(pids)).toEqual([]);
   expect(pool.state()).toEqual([]);
   expect(pool.tools()).toEqual([]);
   await expect(pool.call("echo__ping", {})).rejects.toThrow(/no connected MCP server/);
@@ -220,4 +255,141 @@ test("reconnecting a server that is not configured leaves the rest connected", a
 
   expect(spawned()).toBe(1);
   expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready" }]);
+});
+
+/**
+ * The pool had no `onclose` at all: a child that died left the entry `ready` with its tools still
+ * in the index, so `state()` showed a healthy server and the model was handed tools whose process
+ * was gone. The failure surfaced as a transport error inside a tool call instead.
+ */
+test("a child that dies on its own is reported as failed and stops offering tools", async () => {
+  await pool.sync([config()]);
+  const [child] = spawnedPids();
+
+  process.kill(child as number, "SIGKILL");
+  await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
+
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "error", tools: [] }]);
+  expect(pool.tools()).toEqual([]);
+  expect(pool.catalog()).toEqual([]);
+});
+
+test("shutting down is not mistaken for a crash", async () => {
+  await pool.sync([config()]);
+  await pool.shutdown();
+
+  // `close` fires `onclose` exactly like a crash does; only the flag it sets tells them apart.
+  expect(pool.state()).toEqual([]);
+});
+
+/**
+ * The other half of the same bug: `sync` skipped any server whose row was unchanged, health
+ * included, so one that died at 3am was passed over by every later sync and only a manual
+ * `reconnect` brought it back.
+ */
+test("a later sync retries a crashed server, but not before the backoff", async () => {
+  const rows = [config()];
+  pool = makePool(async () => rows, 10_000);
+  await pool.sync();
+  const [child] = spawnedPids();
+
+  process.kill(child as number, "SIGKILL");
+  await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
+
+  await pool.sync();
+  expect(spawned()).toBe(1);
+  expect(pool.state()).toMatchObject([{ status: "error" }]);
+
+  // Same again with no backoff to wait out, which is the 3am case once the timer has passed.
+  await pool.shutdown();
+  pool = makePool(async () => rows, 0);
+  await pool.sync();
+  const before = spawned();
+  process.kill(spawnedPids().at(-1) as number, "SIGKILL");
+  await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
+
+  await pool.sync();
+  expect(spawned()).toBe(before + 1);
+  expect(pool.state()).toMatchObject([{ status: "ready" }]);
+  expect(toolNames(pool)).toContain("echo__ping");
+});
+
+test("a call to a tool whose server crashed brings the server back", async () => {
+  pool = makePool(undefined, 0);
+  await pool.sync([config()]);
+
+  process.kill(spawnedPids()[0] as number, "SIGKILL");
+  await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
+
+  // Not "no such tool": the tool exists, its server was merely down a moment ago.
+  expect(await pool.call("echo__ping", {})).toBe("ping({})");
+  expect(spawned()).toBe(2);
+});
+
+/**
+ * `createTransport` spread the whole of `process.env` into every child, so an MCP server — which
+ * is third-party code running as this user — was handed every database URL, API key and session
+ * secret this process was started with. The inherit-everything default is kept for compatibility;
+ * what matters is that narrowing it is possible and that it works.
+ */
+test("a stdio child inherits the whole environment by default, and only the allowlist when asked", async () => {
+  const dump = path.join(dir, "env.json");
+  process.env.MCP_POOL_TEST_SECRET = "sk-do-not-share";
+  const inheriting = config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_ENV_DUMP: dump } });
+
+  await pool.sync([inheriting]);
+  const wide = JSON.parse(fs.readFileSync(dump, "utf8"));
+  expect(wide.MCP_POOL_TEST_SECRET).toBe("sk-do-not-share");
+
+  await pool.shutdown();
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, childEnv: MINIMAL_CHILD_ENV });
+  await pool.sync([inheriting]);
+
+  const narrow = JSON.parse(fs.readFileSync(dump, "utf8"));
+  expect(narrow.MCP_POOL_TEST_SECRET).toBeUndefined();
+  // The allowlist exists so a child can still find itself; a server that cannot resolve its own
+  // interpreter is not a security win.
+  expect(narrow.PATH).toBe(process.env.PATH);
+  // Per-server env is applied on top of the policy either way, or nothing would have connected.
+  expect(pool.state()).toMatchObject([{ status: "ready" }]);
+
+  delete process.env.MCP_POOL_TEST_SECRET;
+});
+
+/**
+ * A stdio server that cannot start says why on stderr and exits. That used to go to this
+ * process's console, where no status page could quote it, leaving the operator with the SDK's
+ * "MCP error -32000: Connection closed" and nothing else.
+ */
+test("a server that dies on startup is reported with what it wrote to stderr", async () => {
+  await pool.sync([
+    config({
+      env: {
+        MCP_ECHO_SPAWN_LOG: spawnLog,
+        MCP_ECHO_FAIL: "ModuleNotFoundError: no module named mcp_server_git",
+      },
+    }),
+  ]);
+
+  const [entry] = pool.state();
+  expect(entry.status).toBe("error");
+  expect(entry.error).toContain("no module named mcp_server_git");
+});
+
+/**
+ * `qualify` truncates at 64 characters for OpenAI's function-name limit, so a server whose slug
+ * is long enough gives several of its tools the same name and the later one silently replaces the
+ * earlier in the index. Pinned rather than fixed: the fix is a short hash suffix, which changes
+ * wire names for every existing server and deserves to be its own change.
+ */
+test("tool names that collide after truncation overwrite each other in the index", async () => {
+  const slug = "e".repeat(62); // 62 + "__" is already the whole budget
+  await pool.sync([config({ slug })]);
+
+  // The catalogue still advertises three tools...
+  const [server] = pool.catalog();
+  expect(server?.tools).toHaveLength(3);
+  // ...under a single name, and only one of the three can actually be called.
+  expect(new Set(server?.tools.map((tool) => tool.name)).size).toBe(1);
+  expect(toolNames(pool)).toEqual([`${slug}__`]);
 });
