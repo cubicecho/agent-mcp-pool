@@ -1,3 +1,10 @@
+# [0.7.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.6.0...v0.7.0) (2026-09-07)
+
+
+### Features
+
+* state() reports the configured row, in the configured order ([47fb97e](https://github.com/cubicecho/agent-mcp-pool/commit/47fb97ec2dc404a8e583e9f9e773cc1e7b82e48c)), closes [#17](https://github.com/cubicecho/agent-mcp-pool/issues/17)
+
 # [0.6.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.5.0...v0.6.0) (2026-09-07)
 
 
