@@ -430,8 +430,11 @@ export class McpPool {
     // `state()` is complete and a later use has something to connect. Only the child is deferred.
     if (status !== "connecting") return;
 
+    // Held outside the try so the catch can close it. Between `connect` resolving and
+    // `entry.client` being set there is a live child that only this variable names.
+    let client: Client | undefined;
     try {
-      const client = new Client({ name: this.clientName, version: "0.1.0" });
+      client = new Client({ name: this.clientName, version: "0.1.0" });
       // Before the connect, and per connection rather than once at construction: a server can
       // send `logging/message` or `tools/list_changed` during its own startup, and a handler
       // installed after `listTools` would have missed it. Unlike `onclose` there is no race to
@@ -466,6 +469,9 @@ export class McpPool {
       this.touch(entry);
       this.log.info?.(`[mcp] ${McpPool.slugOf(config)}: ${entry.tools.length} tool(s)`);
     } catch (error) {
+      // The handshake got far enough to start a child and not far enough to hand it over. Nothing
+      // else holds this client, so `close()` and `shutdown()` would never reach the process.
+      await client?.close().catch(() => {});
       entry.status = "error";
       // What the child said on the way out, when it managed to say anything: "ModuleNotFoundError:
       // no module named mcp_server_git" beats "MCP error -32000: Connection closed".
