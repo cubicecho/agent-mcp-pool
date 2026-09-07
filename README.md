@@ -142,6 +142,23 @@ offered tools whose process is gone, and records what the child last wrote to **
 for a server that failed to start is usually the only useful explanation ("no module named
 mcp_server_git" rather than "MCP error -32000: Connection closed").
 
+Every refusal from `client()` and `call()` is an `McpPoolError` with a `code`, because the
+message alone cannot separate the two that matter most:
+
+```ts
+try {
+  await pool.client(id);
+} catch (error) {
+  if (error instanceof McpPoolError) respond(status[error.code], error.detail);
+}
+```
+
+`unknown-server`, `disabled`, `backoff` (a failure recent enough that nothing was dialled — with
+`retryAt` for when one will be) and `connect-failed` (dialled just now, and could not — with the
+child's stderr in `detail`). `call()` adds `unknown-tool` and `out-of-scope`, which deliberately
+**share their message**: a run must not learn that a server it was not scoped to exists. The
+messages are unchanged from the plain `Error`s these replaced.
+
 A failed server is then retried, which is the other half: `sync` leaves a *healthy* unchanged
 server alone but treats a failed one as work to do, and `call` brings back a server that is
 merely down rather than telling the model its tool does not exist. Both are held off by

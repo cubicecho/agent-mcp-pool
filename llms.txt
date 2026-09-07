@@ -13,6 +13,12 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 
 - `Notification` (type)
 
+### errors
+
+- `McpPoolError` — A refusal from the pool, with a discriminant.
+- `McpPoolErrorCode` (type) — Which of the pool's refusals this is.
+- `McpPoolErrorOptions` (type) — What an `McpPoolError` carries beyond its message.
+
 ### listing
 
 - `listAllTools` — Every tool a server offers, following `tools/list`'s cursor to the end.

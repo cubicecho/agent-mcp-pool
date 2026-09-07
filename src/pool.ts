@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Notification } from "@modelcontextprotocol/sdk/types.js";
 import { sameConnection, scope } from "./config.ts";
-import { errorMessage } from "./errors.ts";
+import { errorMessage, McpPoolError } from "./errors.ts";
 import { listAllTools } from "./listing.ts";
 import { couldQualify, labelOf, type PooledTool, pooledTool, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
@@ -734,22 +734,39 @@ export class McpPool {
    * A disabled server is still refused — it is off, not merely unscoped.
    *
    * @param id The config id, not the slug.
-   * @returns The connected client. Throws when no server has that id, when it is disabled, or
-   *   when it could not be connected — the last carrying the child's stderr where there is any.
+   * @returns The connected client.
+   * @throws {McpPoolError} `unknown-server`, `disabled`, `backoff` when a recent failure is still
+   *   inside it, or `connect-failed` — the last carrying the child's stderr as `detail`.
    */
   async client(id: string): Promise<Client> {
     const entry = this.entries.get(id);
-    if (!entry) throw new Error(`no MCP server is configured with id "${id}"`);
+    if (!entry) {
+      throw new McpPoolError("unknown-server", `no MCP server is configured with id "${id}"`, {
+        serverId: id,
+      });
+    }
     const slug = slugOf(entry.config);
-    if (!entry.config.enabled) throw new Error(`the MCP server "${slug}" is disabled`);
+    if (!entry.config.enabled) {
+      throw new McpPoolError("disabled", `the MCP server "${slug}" is disabled`, { serverId: id });
+    }
 
+    // Read before the dial, because afterwards the two are indistinguishable: a connect that
+    // failed just now leaves exactly the state a backoff this call refused to break was already
+    // in, and a caller in front of an HTTP API answers 502 to one and 503 to the other.
+    const dialling = entry.status === "idle" || this.retryDue(entry);
     // The whole lazy path for a consumer that knows which server it wants: a cold entry is
     // dialled here, and a warm one has its idle clock restarted.
     const current = await this.ensure(entry);
     if (!current.client) {
-      throw new Error(
-        `the MCP server "${slug}" is not connected${current.error ? `: ${current.error}` : ""}`,
-      );
+      const message = `the MCP server "${slug}" is not connected${
+        current.error ? `: ${current.error}` : ""
+      }`;
+      const backoff = !dialling && current.status === "error";
+      throw new McpPoolError(backoff ? "backoff" : "connect-failed", message, {
+        serverId: id,
+        detail: current.error,
+        retryAt: backoff ? (current.failedAt ?? 0) + this.crashBackoffMs : undefined,
+      });
     }
     return current.client;
   }
@@ -766,6 +783,8 @@ export class McpPool {
    * @param servers The run's scope. A tool outside it is refused as one that does not exist.
    * @returns The result as text, or `"(no output)"` when the server returned none. A tool that
    *   answers with `isError` throws instead.
+   * @throws {McpPoolError} `unknown-tool`, or `out-of-scope` for a tool this run may not reach.
+   *   Both carry the same message, so the model cannot tell them apart.
    */
   async call(qualifiedName: string, input: unknown, servers?: Iterable<string>): Promise<string> {
     const allowed = scope(servers);
@@ -782,7 +801,13 @@ export class McpPool {
     // A tool outside this run's scope is answered as one that does not exist, because to this run
     // it does not: "that server is not yours" would teach the model to ask again.
     if (!found || (allowed && !allowed.has(found.serverId))) {
-      throw new Error(`no connected MCP server offers a tool called "${qualifiedName}"`);
+      // One message for both, so a run cannot learn that a server it was not scoped to exists.
+      // The code separates them for a caller that wants the refusals in its own log.
+      throw new McpPoolError(
+        found ? "out-of-scope" : "unknown-tool",
+        `no connected MCP server offers a tool called "${qualifiedName}"`,
+        { toolName: qualifiedName, serverId: found?.serverId },
+      );
     }
 
     const entry = this.entries.get(found.serverId);

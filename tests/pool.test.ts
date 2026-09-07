@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type OpenAI from "openai";
 import { afterAll, afterEach, expect, test } from "vitest";
+import { McpPoolError } from "../src/errors.ts";
 import { qualify, SEPARATOR } from "../src/naming.ts";
 import { McpPool } from "../src/pool.ts";
 import { MINIMAL_CHILD_ENV } from "../src/transport.ts";
@@ -77,6 +78,20 @@ const names = (definitions: OpenAI.ChatCompletionTool[]) =>
 
 /** The qualified names on offer. */
 const toolNames = (pool: McpPool, servers?: string[]) => names(pool.tools(undefined, servers));
+
+/**
+ * The pool's refusal itself rather than its message, since the message is deliberately the same
+ * for two of them.
+ */
+async function refusal(work: Promise<unknown>): Promise<McpPoolError> {
+  try {
+    await work;
+  } catch (error) {
+    if (error instanceof McpPoolError) return error;
+    throw error;
+  }
+  throw new Error("expected the pool to refuse");
+}
 
 let pool = makePool();
 
@@ -900,6 +915,55 @@ test("client() reports a server that stays down, rather than one that is not con
 
   // The stderr tail is the whole reason the pool keeps one: "boom" beats "connection closed".
   await expect(pool.client("echo-1")).rejects.toThrow(/is not connected: boom/);
+});
+
+test("client() says which of its refusals this is, rather than only what went wrong", async () => {
+  await pool.sync([config({ enabled: false })]);
+
+  expect((await refusal(pool.client("nope"))).code).toBe("unknown-server");
+  expect((await refusal(pool.client("echo-1"))).code).toBe("disabled");
+});
+
+/**
+ * The pair worth telling apart, and the two the message cannot: both read "is not connected", and
+ * a caller in front of an HTTP API answers 502 to a dial that just failed and 503 — retry
+ * shortly — to one it did not make because a failure 900ms ago is still inside its backoff.
+ */
+test("client() tells a backoff apart from a connect that failed on this call", async () => {
+  const broken = config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_FAIL: "boom" } });
+  pool = makePool(undefined, 60_000);
+  await pool.sync([broken]);
+
+  const held = await refusal(pool.client("echo-1"));
+  expect(held.code).toBe("backoff");
+  expect(held.retryAt).toBeGreaterThan(Date.now());
+  expect(held.detail).toContain("boom");
+  // The backoff is the point: nothing was dialled for this call.
+  expect(spawned()).toBe(1);
+
+  // No backoff to hold it off, so this one does dial, and does fail.
+  await pool.shutdown();
+  pool = makePool(undefined, 0);
+  await pool.sync([broken]);
+  const failed = await refusal(pool.client("echo-1"));
+  expect(failed.code).toBe("connect-failed");
+  expect(failed.retryAt).toBeUndefined();
+  expect(failed.detail).toContain("boom");
+});
+
+test("a refused call says whether the tool is missing or merely out of this run's scope", async () => {
+  await pool.sync([config()]);
+
+  const missing = await refusal(pool.call("echo__nope", {}));
+  const unscoped = await refusal(pool.call("echo__ping", {}, []));
+
+  expect(missing.code).toBe("unknown-tool");
+  expect(unscoped.code).toBe("out-of-scope");
+  expect(unscoped.serverId).toBe("echo-1");
+  // The model is told the same thing either way: a run must not learn that a server it was not
+  // scoped to exists.
+  expect(missing.message).toMatch(/no connected MCP server offers a tool called/);
+  expect(unscoped.message).toMatch(/no connected MCP server offers a tool called/);
 });
 
 /** A pool with the lifecycle options under test; silent for the same reason `makePool` is. */
