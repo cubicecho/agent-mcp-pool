@@ -68,7 +68,14 @@ const server = new Server(
 // A server that connects cleanly and offers nothing. Rarer than a broken one and easier to miss,
 // because every status the pool reports about it says it is fine.
 const offered = process.env.MCP_ECHO_NO_TOOLS ? [] : tools;
-server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: offered }));
+// Answers `initialize` and then never answers `tools/list`. A server that fails to start is the
+// easy case; this is the one that starts, so the client has a live child on the end of it, and
+// then leaves the handshake half-finished.
+if (process.env.MCP_ECHO_HANG_TOOLS) {
+  server.setRequestHandler(ListToolsRequestSchema, () => new Promise(() => {}));
+} else {
+  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: offered }));
+}
 server.setRequestHandler(CallToolRequestSchema, (request) => {
   // A non-text content block on demand: what a tool returning a chart or a screenshot sends, and
   // what a result flattened to a string cannot carry.

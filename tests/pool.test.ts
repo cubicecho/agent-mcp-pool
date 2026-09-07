@@ -427,6 +427,26 @@ test("a stdio child inherits the whole environment by default, and only the allo
 });
 
 /**
+ * The leak the startup tests all miss: those servers never start, and the SDK closes the
+ * transport itself when `initialize` fails. This one starts. `connect` used to bind the client to
+ * the entry only after `listTools` returned, so a server that answered the handshake and then
+ * stopped answering left a child with nothing naming it — `close()` and `shutdown()` both reach a
+ * child through `entry.client`, and there wasn't one.
+ */
+test("a server that hangs on tools/list does not leave its child behind", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 250 });
+  await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" } })]);
+
+  // The pool's own account of it is right either way, which is why this went unnoticed.
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "error" }]);
+  expect(spawned()).toBe(1);
+
+  const pids = spawnedPids();
+  await pool.shutdown();
+  expect(await stillAlive(pids)).toEqual([]);
+});
+
+/**
  * A stdio server that cannot start says why on stderr and exits. That used to go to this
  * process's console, where no status page could quote it, leaving the operator with the SDK's
  * "MCP error -32000: Connection closed" and nothing else.
