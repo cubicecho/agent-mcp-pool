@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { errorMessage } from "./errors.ts";
+import { listAllTools } from "./listing.ts";
 import type { TransportOptions } from "./transport.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type { McpConnection, McpProbe } from "./types.ts";
@@ -44,7 +45,9 @@ export async function probe(
     // `tools/list` is exactly the kind of misconfiguration a probe is asked about.
     const timeout = timeoutMs === undefined ? undefined : { timeout: timeoutMs };
     await client.connect(transport, timeout);
-    const { tools } = await client.listTools(undefined, timeout);
+    // Every page of them: a probe that under-reports shows a person fewer tools than the server
+    // has, which is the same wrong answer the pool used to give.
+    const tools = await listAllTools(client, timeout);
     return {
       ok: true,
       error: "",

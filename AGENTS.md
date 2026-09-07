@@ -63,6 +63,11 @@ no `failedAt`, so no backoff stands between it and the next call. Only a real fa
 same edited server and the second orphans the first — a live process with nothing holding a
 handle to close it.
 
+**`tools/list` is drained, never read one page deep.** Page size is the server's choice, and a
+tool left on page two is not merely unlisted — it is absent from `index`, so `call()` refuses it
+as one that does not exist. `listAllTools` is the one walk; a `resources/list` or `prompts/list`
+added later paginates the same way.
+
 **`llms.txt` is generated and committed.** Edit the doc comment it came from, then `npm run
 build`. CI fails on a diff.
 

@@ -678,6 +678,36 @@ test("a probe reports a server that will not start, rather than throwing", async
  * then dialled with no timeout at all, so a pool configured to give up on a wedged server in a
  * second sat on the SDK's sixty for the same server behind a "Test connection" button.
  */
+/**
+ * `tools/list` is paginated and the page size is the server's choice, so a server is free to
+ * answer with one tool at a time. Everything past the first page used to be dropped silently, and
+ * a dropped tool is worse than a short catalogue: it is missing from the index, so `call()`
+ * refuses it as a tool that does not exist.
+ */
+test("a server that pages its tool list is read to the end of it", async () => {
+  await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_PAGE_SIZE: "1" } })]);
+
+  expect(toolNames(pool)).toEqual(["echo__ping", "echo__echo", "echo__add"]);
+  // The half that matters: a tool off the last page is callable, not merely listed.
+  expect(await pool.call("echo__add", { a: 1, b: 2 })).toBe('add({"a":1,"b":2})');
+});
+
+test("a probe reads every page too, rather than under-reporting a paged server", async () => {
+  const result = await pool.probe(config({ env: { MCP_ECHO_PAGE_SIZE: "2" } }));
+
+  expect(result.ok).toBe(true);
+  expect(result.tools.map((tool) => tool.name)).toEqual(["ping", "echo", "add"]);
+});
+
+test("a server that repeats its cursor is failed rather than paged forever", async () => {
+  await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_STUCK_CURSOR: "1" } })]);
+
+  // A truncated list is a wrong answer that looks right; a server that cannot paginate is broken.
+  expect(pool.state()).toMatchObject([{ status: "error" }]);
+  expect(pool.state()[0]?.error).toContain("cursor");
+  expect(await stillAlive(spawnedPids())).toEqual([]);
+});
+
 test("a probe gives up on the pool's schedule, not the SDK's", async () => {
   pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 1000 });
 

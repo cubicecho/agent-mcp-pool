@@ -13,6 +13,10 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 
 - `Notification` (type)
 
+### listing
+
+- `listAllTools` — Every tool a server offers, following `tools/list`'s cursor to the end.
+
 ### pool
 
 - `McpPool` — One MCP client per configured server, exposing their tools to an agent loop as `<slug>__<tool name>`.

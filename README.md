@@ -105,6 +105,12 @@ carry. `client(id)` hands back the connected client:
 const { resources } = await (await pool.client(id)).listResources();
 ```
 
+`listAllTools(client, options?)` is the other half a raw client needs: `tools/list` is paginated,
+the page size is the **server's** choice rather than the caller's, and a tool left on page two is
+not merely unlisted — it is absent from the index, so `call()` refuses it as one that does not
+exist. The pool and `probe()` both drain the cursor; a consumer driving the client itself wants
+the same walk rather than one `listTools`.
+
 `resultText` is the flattening `call()` does, exported separately: MCP answers with a list of
 content blocks and a message array holds one string. A consumer driving the client itself and
 still putting the answer in front of a model wants the same rule rather than its own — everything

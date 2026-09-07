@@ -3,6 +3,7 @@ import type { Notification } from "@modelcontextprotocol/sdk/types.js";
 import type OpenAI from "openai";
 import { sameConnection, scope } from "./config.ts";
 import { errorMessage } from "./errors.ts";
+import { listAllTools } from "./listing.ts";
 import { couldQualify, labelOf, type PooledTool, pooledTool, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { resultText } from "./results.ts";
@@ -440,7 +441,9 @@ export class McpPool {
       const timeout =
         this.connectTimeoutMs === undefined ? undefined : { timeout: this.connectTimeoutMs };
       await client.connect(transport, timeout);
-      const { tools } = await client.listTools(undefined, timeout);
+      // Every page: a tool that landed on page two is missing from the index, and `call()` then
+      // refuses it as a tool that does not exist.
+      const tools = await listAllTools(client, timeout);
 
       entry.client = client;
       entry.status = "ready";
