@@ -461,7 +461,10 @@ test("a stdio child inherits the whole environment by default, and only the allo
  * child through `entry.client`, and there wasn't one.
  */
 test("a server that hangs on tools/list does not leave its child behind", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 250 });
+  // Generous on purpose. The budget has to outlast a cold `node` start under load, or the child
+  // is killed before it has run a line and the test fails at the handshake — the one stage it is
+  // not about. The hang never answers, so the timeout still expires either way.
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 1000 });
   await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" } })]);
 
   // The pool's own account of it is right either way, which is why this went unnoticed.
