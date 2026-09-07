@@ -1,3 +1,11 @@
+## [0.7.1](https://github.com/cubicecho/agent-mcp-pool/compare/v0.7.0...v0.7.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* close the client when a connect fails after the handshake ([73d0183](https://github.com/cubicecho/agent-mcp-pool/commit/73d018345285534f2b63b595d014b5ff7aa6fd6a)), closes [#22](https://github.com/cubicecho/agent-mcp-pool/issues/22)
+* flush waits for the reconcile, not for the flag that one is owed ([12d8a19](https://github.com/cubicecho/agent-mcp-pool/commit/12d8a19f892463a12a16731fdfced026e8cc7061)), closes [#23](https://github.com/cubicecho/agent-mcp-pool/issues/23)
+
 # [0.7.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.6.0...v0.7.0) (2026-09-07)
 
 
