@@ -8,8 +8,16 @@
  */
 export interface McpServerConfig {
   id: string;
-  /** Namespace for this server's tools: the model sees `<slug>__<tool name>`. */
-  slug: string;
+  /**
+   * Namespace for this server's tools: the model sees `<slug>__<tool name>`. Defaults to `id`.
+   *
+   * Optional because a consumer whose ids are already namespace-shaped has nothing else to put
+   * here, and a `slug` column beside such an id is a second name on the operator's screen with
+   * nothing to tell it from the first — and a way to make the two disagree. A consumer with a
+   * real slug column keeps passing one; `state()` reports the effective value either way, so
+   * neither has to work out what its tools ended up being called.
+   */
+  slug?: string;
   label: string;
   enabled: boolean;
   transport: "stdio" | "http";
@@ -55,6 +63,7 @@ export type McpStatus = "disabled" | "idle" | "connecting" | "ready" | "error";
 /** One connected server as an operator sees it. */
 export interface McpServerState {
   id: string;
+  /** The effective namespace — the row's `slug`, or its `id` when the row set none. */
   slug: string;
   label: string;
   status: McpStatus;

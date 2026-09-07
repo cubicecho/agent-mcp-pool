@@ -401,6 +401,52 @@ test("tool names too long for the limit stay distinct instead of collapsing", as
 });
 
 /**
+ * `slug` is optional so a consumer whose ids are already namespace-shaped can hand its rows over
+ * as they are. Before this it had to map every row on the way into `sync` and `reconnect`, which
+ * is the one thing the structural seam in `types.ts` says a consumer should not have to do.
+ */
+test("a row with no slug is namespaced by its id", async () => {
+  await pool.sync([config({ id: "notes", slug: undefined })]);
+
+  expect(toolNames(pool)).toEqual(["notes__ping", "notes__echo", "notes__add"]);
+  expect(await pool.call("notes__ping", {})).toBe("ping({})");
+  // Reported rather than left blank: a consumer that never set one still has to be able to see
+  // what its tools ended up being called.
+  expect(pool.state()).toMatchObject([{ id: "notes", slug: "notes", status: "ready" }]);
+  expect(pool.catalog()).toMatchObject([{ id: "notes", label: "Echo" }]);
+});
+
+/** The label falls back through the slug to the id, so no row can be introduced as `[]`. */
+test("a row with neither slug nor label is labelled by its id", async () => {
+  await pool.sync([config({ id: "notes", slug: undefined, label: "" })]);
+
+  expect(pool.catalog()).toMatchObject([{ id: "notes", label: "notes" }]);
+  expect(pool.tools(["notes__ping"])[0]).toMatchObject({
+    function: { description: "[notes] replies pong" },
+  });
+});
+
+/**
+ * The rename path reads the slug too, and reads it twice — once to notice the change and once to
+ * rebuild the names. A default applied in only one of them leaves the model offered names the
+ * index no longer holds.
+ */
+test("giving a slugless server a slug re-qualifies its tools without restarting it", async () => {
+  let rows = [config({ id: "notes", slug: undefined })];
+  pool = makePool(async () => rows);
+  await pool.sync();
+  const [first] = spawnedPids();
+
+  rows = [config({ id: "notes", slug: "scratch" })];
+  await pool.sync();
+
+  expect(spawned()).toBe(1);
+  expect(await stillAlive([first as number])).toEqual([first]);
+  expect(toolNames(pool)).toEqual(["scratch__ping", "scratch__echo", "scratch__add"]);
+  expect(await pool.call("scratch__ping", {})).toBe("ping({})");
+});
+
+/**
  * The pool already knows what this process calls itself, so a consumer with a "Test connection"
  * button should not have to say it again. Repeating it is the bug: a wrapper that passes a
  * different name gives a probe one identity and the pool another, and the mismatch is visible
@@ -563,6 +609,20 @@ test("a lazy pool registers a server without starting it, and starts it on use",
   expect(spawned()).toBe(1);
   expect(pool.state()).toMatchObject([{ status: "ready" }]);
   expect(toolNames(pool)).toContain("echo__ping");
+});
+
+/**
+ * `wake` narrows which cold servers to start by testing each configured slug against the name it
+ * was asked for. A default read only where names are *built* would leave a slugless server's own
+ * name unclaimed by it, so the pool would wake every other server and still not find the tool.
+ */
+test("a cold server with no slug is woken by a name its id claims", async () => {
+  pool = lazyPool();
+  await pool.sync([config({ id: "notes", slug: undefined }), config({ id: "other" })]);
+
+  expect(await pool.call("notes__ping", {})).toBe("ping({})");
+  // The one that claims the name, and only that one.
+  expect(spawned()).toBe(1);
 });
 
 test("a second sync leaves an idle server idle rather than dialling it", async () => {
