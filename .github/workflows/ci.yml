@@ -63,4 +63,6 @@ jobs:
           mkdir -p /tmp/consumer && cd /tmp/consumer
           npm init -y >/dev/null
           npm install --foreground-scripts "$GITHUB_WORKSPACE"/*.tgz
-          node -e "require.resolve('@cubicecho/agent-mcp-pool')"
+          # Imported rather than resolved: `exports` is ESM-only, so `require.resolve` reports a
+          # package with no main on a package that is perfectly importable.
+          node -e "import('@cubicecho/agent-mcp-pool').then(m => { if (!m.McpPool) process.exit(1) })"
