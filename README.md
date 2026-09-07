@@ -133,6 +133,11 @@ Tools are `<slug>__<tool name>`, capped at 64 characters for OpenAI's function-n
 resolved by whole-string lookup rather than by splitting on `__` — the split of a shortened name
 is a tool its server never had.
 
+`slug` is optional and defaults to `id`. A consumer whose ids are already namespace-shaped has
+nothing else to put in a slug column, and a second name beside such an id only gives an operator
+a way to make the two disagree. `state()` reports the effective value, so a consumer that never
+set one still sees what its tools are called.
+
 A name that does not fit keeps its first 57 characters and spends the rest on `_` plus six hex
 digits of a SHA-256 of the *whole* name. Truncating alone made two tools sharing a 64-character
 prefix collapse onto one key, so the second silently replaced the first and the model was offered

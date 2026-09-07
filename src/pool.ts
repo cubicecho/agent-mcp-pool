@@ -330,7 +330,9 @@ export class McpPool {
    * model keeps being offered the old names.
    */
   private relabel(entry: Entry, config: McpServerConfig) {
-    const renamed = entry.config.slug !== config.slug || entry.config.label !== config.label;
+    const renamed =
+      McpPool.slugOf(entry.config) !== McpPool.slugOf(config) ||
+      entry.config.label !== config.label;
     const reclocked = entry.config.idleTimeoutMs !== config.idleTimeoutMs;
     entry.config = config;
     // An edited idle timeout is not a reason to restart the child, but the armed timer is still
@@ -366,7 +368,7 @@ export class McpPool {
   private async wake(qualifiedName: string): Promise<void> {
     const idle = [...this.entries.values()].filter((entry) => entry.status === "idle");
     const claimed = idle.filter((entry) =>
-      qualifiedName.startsWith(`${entry.config.slug}${SEPARATOR}`),
+      qualifiedName.startsWith(`${McpPool.slugOf(entry.config)}${SEPARATOR}`),
     );
     for (const entry of claimed.length > 0 ? claimed : idle) await this.ensure(entry);
     await this.retryFailed();
@@ -437,14 +439,14 @@ export class McpPool {
       // asked for anything is reaped like any other — otherwise the one child an idle timeout is
       // most obviously meant to collect is the one it never touches.
       this.touch(entry);
-      this.log.info?.(`[mcp] ${config.slug}: ${entry.tools.length} tool(s)`);
+      this.log.info?.(`[mcp] ${McpPool.slugOf(config)}: ${entry.tools.length} tool(s)`);
     } catch (error) {
       entry.status = "error";
       // What the child said on the way out, when it managed to say anything: "ModuleNotFoundError:
       // no module named mcp_server_git" beats "MCP error -32000: Connection closed".
       entry.error = entry.stderrTail?.() || errorMessage(error);
       entry.failedAt = Date.now();
-      this.log.error?.(`[mcp] ${config.slug}: ${entry.error}`);
+      this.log.error?.(`[mcp] ${McpPool.slugOf(config)}: ${entry.error}`);
     }
   }
 
@@ -467,7 +469,7 @@ export class McpPool {
     // is down but still has tools to offer.
     entry.tools = [];
     this.reindex();
-    this.log.error?.(`[mcp] ${entry.config.slug}: ${entry.error}`);
+    this.log.error?.(`[mcp] ${McpPool.slugOf(entry.config)}: ${entry.error}`);
   }
 
   /**
@@ -480,8 +482,9 @@ export class McpPool {
     config: McpServerConfig,
     tool: { name: string; description: string; parameters: Record<string, unknown> },
   ): PooledTool {
-    const label = config.label || config.slug;
-    const qualified = McpPool.qualify(config.slug, tool.name);
+    const slug = McpPool.slugOf(config);
+    const label = config.label || slug;
+    const qualified = McpPool.qualify(slug, tool.name);
     return {
       ...tool,
       qualified,
@@ -505,6 +508,17 @@ export class McpPool {
       // a server that died on its own is already closed
     }
     entry.client = undefined;
+  }
+
+  /**
+   * The namespace this server's tools live under: its `slug`, or its `id` when it has none.
+   *
+   * One place, because every read of the field has to agree — a `qualify` defaulting to the id
+   * and a `wake` prefix test reading the raw field would build names one of them could not then
+   * recognise. Empty falls back too, since an empty slug would qualify a tool as `__name`.
+   */
+  private static slugOf(config: McpServerConfig) {
+    return config.slug || config.id;
   }
 
   /**
@@ -646,7 +660,7 @@ export class McpPool {
       current.status = "idle";
       current.tools = [];
       this.reindex();
-      this.log.info?.(`[mcp] ${current.config.slug}: idle, closed`);
+      this.log.info?.(`[mcp] ${McpPool.slugOf(current.config)}: idle, closed`);
     });
   }
 
@@ -667,7 +681,7 @@ export class McpPool {
       if (allowed && !allowed.has(entry.config.id)) continue;
       out.push({
         id: entry.config.id,
-        label: entry.config.label || entry.config.slug,
+        label: entry.config.label || McpPool.slugOf(entry.config),
         tools: entry.tools.map(({ qualified, description }) => ({
           name: qualified,
           description,
@@ -699,16 +713,15 @@ export class McpPool {
   async client(id: string): Promise<Client> {
     const entry = this.entries.get(id);
     if (!entry) throw new Error(`no MCP server is configured with id "${id}"`);
-    if (!entry.config.enabled) throw new Error(`the MCP server "${entry.config.slug}" is disabled`);
+    const slug = McpPool.slugOf(entry.config);
+    if (!entry.config.enabled) throw new Error(`the MCP server "${slug}" is disabled`);
 
     // The whole lazy path for a consumer that knows which server it wants: a cold entry is
     // dialled here, and a warm one has its idle clock restarted.
     const current = await this.ensure(entry);
     if (!current.client) {
       throw new Error(
-        `the MCP server "${entry.config.slug}" is not connected${
-          current.error ? `: ${current.error}` : ""
-        }`,
+        `the MCP server "${slug}" is not connected${current.error ? `: ${current.error}` : ""}`,
       );
     }
     return current.client;
@@ -778,7 +791,7 @@ export class McpPool {
   state(): McpServerState[] {
     return [...this.entries.values()].map((entry) => ({
       id: entry.config.id,
-      slug: entry.config.slug,
+      slug: McpPool.slugOf(entry.config),
       label: entry.config.label,
       status: entry.status,
       error: entry.error ?? "",
