@@ -30,8 +30,15 @@ import { McpPool } from "@cubicecho/agent-mcp-pool";
 export const mcp = new McpPool({
   load: () => db.select().from(mcpServers),
   clientName: "task-server",
+  clientVersion: SERVER_VERSION,
 });
 ```
+
+`clientName` and `clientVersion` are the `clientInfo` of the MCP handshake — the whole of what a
+dialled server learns about who is calling it, and so what it logs, gates a behaviour on, or
+quotes back in a support channel. The version defaults to this package's own, read from its
+manifest; set it beside the name, since a name that is yours next to a version that is the
+pool's tells the server something untrue.
 
 A stdio server may also name a `cwd`; absent, it inherits this process's. Several servers resolve
 relative paths — a filesystem root, a sqlite file — against their working directory rather than
@@ -259,10 +266,13 @@ It reports rather than throws, and `error` is the child's **stderr** where there
 tail that makes a failed server diagnosable above, which is the whole difference between "no
 module named mcp_server_git" and "MCP error -32000: Connection closed".
 
-Going through the pool is what binds the client name, the `childEnv` policy and the timeout to
+Going through the pool is what binds the client identity, the `childEnv` policy and the timeout to
 whatever this pool uses, so the probe dials the way the pool will. Every consumer that called the
 free `probe()` wrote that wrapper itself, and one that bound them differently showed up only in a
-remote server's logs. The free function stays exported for a caller with no pool.
+remote server's logs. The free function stays exported for a caller with no pool, and takes that
+identity as one argument — `probe(row, "my-gateway")` for the name alone, or
+`probe(row, { name: "my-gateway", version: "1.4.0" })` for both. A `-probe` suffix is appended to
+whichever name arrives, so a server's log tells a test connection apart from a real one.
 
 `probeTimeoutMs` overrides `connectTimeoutMs` for probes alone, defaulting to it. The two have
 different audiences: a reconcile of thirty servers at boot can afford to be patient, and a person

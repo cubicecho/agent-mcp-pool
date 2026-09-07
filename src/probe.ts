@@ -3,7 +3,8 @@ import { errorMessage } from "./errors.ts";
 import { listAllTools } from "./listing.ts";
 import type { TransportOptions } from "./transport.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
-import type { McpConnection, McpProbe } from "./types.ts";
+import type { ClientIdentity, McpConnection, McpProbe } from "./types.ts";
+import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
 
 /** What a probe takes from the caller: the child's environment, and its patience. */
 export interface ProbeOptions extends TransportOptions {
@@ -24,19 +25,27 @@ export interface ProbeOptions extends TransportOptions {
  * long-lived ones.
  *
  * @param config The server to dial. Nothing is stored, so it need not be saved first.
- * @param clientName How this process introduces itself; `-probe` is appended.
+ * @param client How this process introduces itself; `-probe` is appended to the name. A bare
+ *   string is the name alone, and reports this package's own version beside it.
  * @param options `childEnv` narrows a stdio child's inheritance, `timeoutMs` bounds the wait.
  * @returns Never throws — a failure is `{ ok: false }` carrying the child's stderr where there is
  *   any, since that is usually the only real explanation.
  */
 export async function probe(
   config: McpConnection,
-  clientName = "agent-mcp-pool",
+  client: string | ClientIdentity = DEFAULT_CLIENT_NAME,
   // The same environment policy as the pool: a probe that hands the child a different
   // environment answers a question nobody asked.
   { timeoutMs, ...transportOptions }: ProbeOptions = {},
 ): Promise<McpProbe> {
-  const client = new Client({ name: `${clientName}-probe`, version: "0.1.0" });
+  // One argument rather than a name and a version side by side: two adjacent strings are two
+  // arguments a caller can transpose, and a probe under `1.4.0-probe/my-gateway` is a mistake
+  // only the dialled server ever sees.
+  const identity = typeof client === "string" ? { name: client } : client;
+  const mcpClient = new Client({
+    name: `${identity.name}-probe`,
+    version: identity.version ?? POOL_VERSION,
+  });
   let stderrTail = () => "";
   try {
     const transport = createTransport(config, transportOptions);
@@ -44,10 +53,10 @@ export async function probe(
     // Both requests, not just the dial: a server that completes the handshake and then wedges on
     // `tools/list` is exactly the kind of misconfiguration a probe is asked about.
     const timeout = timeoutMs === undefined ? undefined : { timeout: timeoutMs };
-    await client.connect(transport, timeout);
+    await mcpClient.connect(transport, timeout);
     // Every page of them: a probe that under-reports shows a person fewer tools than the server
     // has, which is the same wrong answer the pool used to give.
-    const tools = await listAllTools(client, timeout);
+    const tools = await listAllTools(mcpClient, timeout);
     return {
       ok: true,
       error: "",
@@ -56,6 +65,6 @@ export async function probe(
   } catch (error) {
     return { ok: false, error: stderrTail() || errorMessage(error), tools: [] };
   } finally {
-    await client.close().catch(() => {});
+    await mcpClient.close().catch(() => {});
   }
 }

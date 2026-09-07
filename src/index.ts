@@ -29,6 +29,7 @@ export {
 } from "./transport.ts";
 export type {
   CatalogServer,
+  ClientIdentity,
   McpConnection,
   McpProbe,
   McpServerConfig,

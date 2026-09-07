@@ -39,6 +39,18 @@ export interface McpServerConfig {
   headers: Record<string, string> | null;
 }
 
+/**
+ * How this process introduces itself in a handshake: the `clientInfo` of MCP's `initialize`.
+ *
+ * The only thing a dialled server learns about who is calling it, so it is what a server logs,
+ * gates a behaviour on, or quotes back in a support channel. `version` is optional here and
+ * required by the protocol: absent, this package reports its own.
+ */
+export interface ClientIdentity {
+  name: string;
+  version?: string;
+}
+
 /** What it takes to reach a server — the connection half of a row, without its identity. */
 export type McpConnection = Pick<
   McpServerConfig,
