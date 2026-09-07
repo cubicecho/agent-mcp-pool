@@ -47,8 +47,9 @@ for a reader that would otherwise be shown the pool as it stood before its own w
 row it was configured from:
 
 ```ts
-for (const { config, status, error, tools } of mcp.state()) {
-  // config is the row you passed in; status/error/tools are what the pool made of it
+for (const { config, status, error, tools, pid, startedAt } of mcp.state()) {
+  // config is the row you passed in;
+  // status/error/tools/pid/startedAt are what the pool made of it
 }
 ```
 
@@ -61,6 +62,12 @@ this the operator's list reorders itself according to which child started quicke
 
 `id`, `slug` and `label` stay alongside `config` — those are the *effective* values the pool
 actually used.
+
+`pid` and `startedAt` describe the connection rather than the configuration, so both are absent
+unless one is up, and `pid` over http, which has no child. They are what make `ready` mean
+something concrete to an operator: a pid finds a wedged child in `ps`, and a start time is how a
+server that is quietly crash-looping is spotted, since `status` reads `ready` either side of a
+restart.
 
 ## Scope
 

@@ -232,6 +232,32 @@ test("a server the pool never dialled still reports its row", async () => {
   expect(pool.state()).toMatchObject([{ status: "disabled", config: row }]);
 });
 
+/**
+ * `ready` is not much to go on. A pid is what an operator reaches for to find a wedged child in
+ * `ps` or to kill it, and a start time is how a server that is quietly crash-looping is spotted —
+ * `status` reads `ready` either side of a restart. Neither is recoverable once the pool owns the
+ * transport.
+ */
+test("state() describes the running child: its pid, and when it started", async () => {
+  const before = Date.now();
+  await pool.sync([config()]);
+
+  const [entry] = pool.state();
+  expect(entry?.pid).toBe(spawnedPids()[0]);
+  expect(Date.parse(entry?.startedAt ?? "")).toBeGreaterThanOrEqual(before);
+});
+
+test("a pid does not outlive the child it named", async () => {
+  pool = makePool(undefined, 60_000);
+  await pool.sync([config()]);
+  process.kill(spawnedPids()[0] as number, "SIGKILL");
+  await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
+
+  // Pids are reused, so one kept past its process eventually names somebody else's.
+  expect(pool.state()[0]?.pid).toBeUndefined();
+  expect(pool.state()[0]?.startedAt).toBeUndefined();
+});
+
 test("overlapping syncs settle on the last config and orphan nothing", async () => {
   const first = pool.sync([config({ slug: "one" })]);
   const second = pool.sync([config({ slug: "two" })]);

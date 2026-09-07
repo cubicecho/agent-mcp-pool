@@ -43,6 +43,10 @@ interface Entry {
   stderrTail?: () => string;
   /** Armed on each use when an idle timeout applies; disarmed whenever the client goes away. */
   idleTimer?: ReturnType<typeof setTimeout>;
+  /** The stdio child's pid, while there is one. Cleared with the client it describes. */
+  pid?: number;
+  /** When this connection became ready, as a `Date.now()` stamp. Cleared with the client. */
+  startedAt?: number;
 }
 
 /**
@@ -447,6 +451,10 @@ export class McpPool {
 
       entry.client = client;
       entry.status = "ready";
+      // Only reachable from inside this method — the transport is the pool's from here on, and an
+      // operator with a wedged child has nothing else to find it in `ps` by.
+      entry.pid = "pid" in transport ? (transport.pid ?? undefined) : undefined;
+      entry.startedAt = Date.now();
       entry.tools = tools.map((tool) =>
         pooledTool(config, {
           name: tool.name,
@@ -484,7 +492,7 @@ export class McpPool {
   private onClose(entry: Entry) {
     if (entry.closing) return;
     this.disarm(entry);
-    entry.client = undefined;
+    this.forget(entry);
     entry.status = "error";
     entry.error = entry.stderrTail?.() || "the server closed the connection";
     entry.failedAt = Date.now();
@@ -508,7 +516,19 @@ export class McpPool {
     } catch {
       // a server that died on its own is already closed
     }
+    this.forget(entry);
+  }
+
+  /**
+   * Drops everything that only describes a live connection.
+   *
+   * The pid and the start time have to go with the client that made them, or `state()` names a
+   * process that is gone — and a pid is reused, so a stale one names somebody else's.
+   */
+  private forget(entry: Entry) {
     entry.client = undefined;
+    entry.pid = undefined;
+    entry.startedAt = undefined;
   }
 
   /**
@@ -817,6 +837,9 @@ export class McpPool {
       status: entry.status,
       error: entry.error ?? "",
       tools: entry.tools.map(({ name, description }) => ({ name, description })),
+      pid: entry.pid,
+      startedAt:
+        entry.startedAt === undefined ? undefined : new Date(entry.startedAt).toISOString(),
     }));
   }
 

@@ -70,6 +70,20 @@ export interface McpServerState {
   status: McpStatus;
   error: string;
   tools: { name: string; description: string }[];
+  /**
+   * The stdio child's pid. Absent over http, and while the server is not connected.
+   *
+   * What an operator reaches for to find a wedged child in `ps` or to `kill -9` it, and not
+   * recoverable from anywhere else once the pool owns the transport.
+   */
+  pid?: number;
+  /**
+   * When this connection became ready, ISO 8601. Absent while the server is not connected.
+   *
+   * How a server that is quietly crash-looping is spotted: `status` reads `ready` either side of
+   * a restart, and only the start time says the restart happened.
+   */
+  startedAt?: string;
 }
 
 /** What `probe` found: whether the config works, and what it offers if it does. */
