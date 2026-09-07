@@ -7,8 +7,10 @@ import { afterAll, afterEach, expect, test } from "vitest";
 import { McpPoolError } from "../src/errors.ts";
 import { qualify, SEPARATOR } from "../src/naming.ts";
 import { McpPool } from "../src/pool.ts";
+import { probe } from "../src/probe.ts";
 import { MINIMAL_CHILD_ENV } from "../src/transport.ts";
 import type { McpServerConfig } from "../src/types.ts";
+import { POOL_VERSION } from "../src/version.ts";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-pool-"));
 const FIXTURE = fileURLToPath(new URL("./fixtures/mcp-echo.mjs", import.meta.url));
@@ -891,6 +893,71 @@ test("the pool probes under its own name, rather than one the caller repeats", a
   expect(result.tools.map((tool) => tool.name)).toEqual(["ping", "echo", "add"]);
   // `makePool` names this pool `mcp-pool-test`; the probe is that name, not the default.
   expect(JSON.parse(fs.readFileSync(dump, "utf8")).name).toBe("mcp-pool-test-probe");
+});
+
+/**
+ * The other half of `clientInfo`, which used to be the literal `0.1.0` on every connection this
+ * package made. A server logging its callers, or gating a behaviour on a client version, has
+ * nothing else to read — and a constant version of a name that is the consumer's is not a
+ * missing value but a wrong one.
+ */
+test("the version a server is told is the consumer's, on a connection and on a probe", async () => {
+  const dump = path.join(dir, "client-version.json");
+  pool = new McpPool({ clientName: "mcp-pool-test", clientVersion: "4.2.0", log: {} });
+  await pool.sync([config({ env: { MCP_ECHO_CLIENT_DUMP: dump } })]);
+
+  expect(JSON.parse(fs.readFileSync(dump, "utf8"))).toMatchObject({
+    name: "mcp-pool-test",
+    version: "4.2.0",
+  });
+
+  // The probe binds the pair, not just the name: a probe under the pool's name and someone
+  // else's version is the same mismatch, visible only in the dialled server's log.
+  await pool.probe(config({ env: { MCP_ECHO_CLIENT_DUMP: dump } }));
+  expect(JSON.parse(fs.readFileSync(dump, "utf8"))).toMatchObject({
+    name: "mcp-pool-test-probe",
+    version: "4.2.0",
+  });
+});
+
+/**
+ * `probe` is exported for a caller with no pool, and took a bare name. It still does — the
+ * version rides along in one argument rather than a second string beside the first, since two
+ * adjacent strings are two a caller can swap, and the swap is only ever visible to the server.
+ */
+test("the free probe takes a name or a whole identity, and never invents a version", async () => {
+  const dump = path.join(dir, "free-probe.json");
+  const target = config({ env: { MCP_ECHO_CLIENT_DUMP: dump } });
+
+  expect(await probe(target)).toMatchObject({ ok: true });
+  expect(JSON.parse(fs.readFileSync(dump, "utf8"))).toMatchObject({
+    name: "agent-mcp-pool-probe",
+    version: POOL_VERSION,
+  });
+
+  expect(await probe(target, { name: "my-gateway", version: "1.4.0" })).toMatchObject({ ok: true });
+  expect(JSON.parse(fs.readFileSync(dump, "utf8"))).toMatchObject({
+    name: "my-gateway-probe",
+    version: "1.4.0",
+  });
+});
+
+/**
+ * The default has to be a real version of a real thing, or it is the bug again under a new
+ * number. It is read from the manifest rather than written down beside it, so this also fails if
+ * that read ever stops finding the manifest and falls back.
+ */
+test("a pool told no version introduces itself with this package's own", async () => {
+  const dump = path.join(dir, "default-version.json");
+  pool = new McpPool({ log: {} });
+  await pool.sync([config({ env: { MCP_ECHO_CLIENT_DUMP: dump } })]);
+
+  const manifest = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  expect(POOL_VERSION).toBe(manifest.version);
+  expect(JSON.parse(fs.readFileSync(dump, "utf8"))).toMatchObject({
+    name: "agent-mcp-pool",
+    version: manifest.version,
+  });
 });
 
 test("a probe reports a server that will not start, rather than throwing", async () => {

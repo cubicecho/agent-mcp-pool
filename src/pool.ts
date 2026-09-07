@@ -17,6 +17,7 @@ import type {
   McpStatus,
   ToolDefinition,
 } from "./types.ts";
+import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
 
 /**
  * How long a failed server is left alone before anything dials it again.
@@ -73,6 +74,15 @@ export interface McpPoolOptions {
   load?: () => Promise<McpServerConfig[]>;
   /** How this process introduces itself to the servers it connects to. */
   clientName?: string;
+  /**
+   * The version reported beside `clientName` in the handshake. Defaults to this package's own.
+   *
+   * `clientInfo` is the whole of what a dialled server learns about its caller, and the pool
+   * used to fill half of it in with a constant `0.1.0` — a version of nothing, indistinguishable
+   * from a real one. Set it with `clientName`: a name that is the consumer's beside a version
+   * that is the pool's still tells the server something untrue.
+   */
+  clientVersion?: string;
   /** Where the pool's own progress goes. Defaults to the console; pass `{}` to silence it. */
   log?: PoolLog;
   /** How long a failed server is left alone before it is dialled again. Defaults to 5s. */
@@ -197,6 +207,7 @@ export class McpPool {
 
   private readonly load?: () => Promise<McpServerConfig[]>;
   private readonly clientName: string;
+  private readonly clientVersion: string;
   private readonly log: PoolLog;
   private readonly crashBackoffMs: number;
   private readonly childEnv?: readonly string[];
@@ -209,7 +220,8 @@ export class McpPool {
    */
   constructor({
     load,
-    clientName = "agent-mcp-pool",
+    clientName = DEFAULT_CLIENT_NAME,
+    clientVersion = POOL_VERSION,
     log,
     crashBackoffMs = CRASH_BACKOFF_MS,
     childEnv,
@@ -221,6 +233,7 @@ export class McpPool {
   }: McpPoolOptions = {}) {
     this.load = load;
     this.clientName = clientName;
+    this.clientVersion = clientVersion;
     this.crashBackoffMs = crashBackoffMs;
     this.childEnv = childEnv;
     this.connectTimeoutMs = connectTimeoutMs;
@@ -532,7 +545,7 @@ export class McpPool {
     // `entry.client` being set there is a live child that only this variable names.
     let client: Client | undefined;
     try {
-      client = new Client({ name: this.clientName, version: "0.1.0" });
+      client = new Client({ name: this.clientName, version: this.clientVersion });
       // Before the connect, and per connection rather than once at construction: a server can
       // send `logging/message` or `tools/list_changed` during its own startup, and a handler
       // installed after `listTools` would have missed it.
@@ -941,16 +954,21 @@ export class McpPool {
    *
    * The patience is bound the same way: `probeTimeoutMs`, or the pool's own `connectTimeoutMs`
    * when there is no separate one. A pool told to give up on a wedged server in five seconds
-   * should not sit on the SDK's sixty for the same server behind a button.
+   * should not sit on the SDK's sixty for the same server behind a button. So is the version,
+   * for the same reason the name is: the two halves of `clientInfo` travel together.
    *
    * @param config The server to test. Nothing is stored and no entry is touched, so this is safe
    *   against a row that does not exist yet.
    */
   probe(config: McpConnection): Promise<McpProbe> {
-    return probeConfig(config, this.clientName, {
-      childEnv: this.childEnv,
-      timeoutMs: this.probeTimeoutMs ?? this.connectTimeoutMs,
-    });
+    return probeConfig(
+      config,
+      { name: this.clientName, version: this.clientVersion },
+      {
+        childEnv: this.childEnv,
+        timeoutMs: this.probeTimeoutMs ?? this.connectTimeoutMs,
+      },
+    );
   }
 
   /**
