@@ -1,3 +1,15 @@
+# [2.2.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.1.0...v2.2.0) (2026-09-07)
+
+
+### Bug Fixes
+
+* dial the server reconnect() names, even under lazy ([c47aa78](https://github.com/cubicecho/agent-mcp-pool/commit/c47aa784b85261e5eb88583730d9e77ef324db5c))
+
+
+### Features
+
+* add stop(), closing one server and keeping its row ([fe0ac93](https://github.com/cubicecho/agent-mcp-pool/commit/fe0ac93357b1476f9075c9efd38df080264cbd30)), closes [#58](https://github.com/cubicecho/agent-mcp-pool/issues/58)
+
 # [2.1.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.0.0...v2.1.0) (2026-09-07)
 
 
