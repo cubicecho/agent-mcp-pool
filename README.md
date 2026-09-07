@@ -32,6 +32,33 @@ has no servers linked" is a real and correct state. `call` re-checks the scope r
 trusting the definitions the caller was given: a model that has seen a tool name once will call
 it again from memory.
 
+## Lifecycle
+
+Eager and long-lived by default: `sync()` connects every enabled server and holds the connection,
+because for an agent loop spawning one child per run costs more than the run.
+
+A gateway has the opposite pressure — dozens of installed servers, most idle most of the time —
+so the lifecycle is a policy rather than a fixed behaviour:
+
+```ts
+new McpPool({
+  load,
+  lazy: true,             // sync() registers entries; the child waits for a use
+  idleTimeoutMs: 300_000, // close a server after five minutes without one
+});
+```
+
+A registered-but-unconnected server sits at `idle`, which is neither `disabled` (switched off) nor
+`error` (tried, failed, waiting out a backoff). `call()` and `client()` start it; **`tools()` and
+`catalog()` do not**, so a cold server offers nothing until something has used it. Listing a cold
+server's tools without spawning it needs a cached last-known tool list, which is its own change.
+
+`idleTimeoutMs` resets on every use, and `McpServerConfig.idleTimeoutMs` overrides it per server —
+`0` opts one out entirely. A reap is a **success** path, not a crash: the server goes back to
+`idle` with no error and no backoff, so the next call reconnects immediately rather than waiting
+out a penalty for something that did not go wrong. Both options absent is exactly today's
+behaviour.
+
 ## Past the agent surface
 
 `tools()` returns OpenAI definitions and `call()` returns a string, because a string is what goes

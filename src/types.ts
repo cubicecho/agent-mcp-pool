@@ -17,6 +17,13 @@ export interface McpServerConfig {
   command: string;
   args: string[] | null;
   env: Record<string, string> | null;
+  /**
+   * Close this server after this long without a call, overriding the pool's own timeout.
+   *
+   * Optional, and `null` is "use the pool's". `0` disables reaping for this one server, which is
+   * what a server too expensive to restart wants.
+   */
+  idleTimeoutMs?: number | null;
   // streamable http
   url: string;
   headers: Record<string, string> | null;
@@ -28,7 +35,13 @@ export type McpConnection = Pick<
   "transport" | "command" | "args" | "env" | "url" | "headers"
 >;
 
-export type McpStatus = "disabled" | "connecting" | "ready" | "error";
+/**
+ * `idle` is a lazy pool's registered-but-not-connected, and also where an idle-reaped server
+ * goes. It is a success state: nothing is wrong, there is simply no child right now, and the
+ * next use starts one. Kept distinct from `disabled` (switched off, will not connect) and from
+ * `error` (tried, failed, waiting out a backoff) because an operator reads all three differently.
+ */
+export type McpStatus = "disabled" | "idle" | "connecting" | "ready" | "error";
 
 /** One connected server as an operator sees it. */
 export interface McpServerState {
