@@ -107,6 +107,25 @@ export class McpPool {
   }
 
   /**
+   * Tears one server's connection down and dials it again, changed or not.
+   *
+   * `sync` deliberately leaves an unchanged server alone, so it cannot be what an operator
+   * presses when a server has wedged or its own backend went away — from the outside the row
+   * is identical and nothing happens. This drops the entry first, so the reconcile that
+   * follows has no choice but to connect it afresh.
+   */
+  reconnect(id: string, configs?: McpServerConfig[]): Promise<void> {
+    return this.queue(async () => {
+      const existing = this.entries.get(id);
+      if (existing) {
+        await this.close(existing);
+        this.entries.delete(id);
+      }
+      await this.reconcile(configs);
+    });
+  }
+
+  /**
    * Reconciles shortly after a write, rather than during it.
    *
    * A write hook that runs inside the mutation's transaction sees the table as it stood before

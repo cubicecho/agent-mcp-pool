@@ -199,3 +199,25 @@ test("a call to a server outside the run's scope is refused as one that does not
   await expect(pool.call("echo__ping", {}, [])).rejects.toThrow(/no connected MCP server/);
   expect(await pool.call("echo__ping", {}, ["echo-1"])).toBe("ping({})");
 });
+
+test("reconnect dials a server again that sync would have left alone", async () => {
+  const rows = [config()];
+  pool = makePool(async () => rows);
+  await pool.sync();
+  const [first] = spawnedPids();
+
+  // Nothing about the row has changed — which is exactly the case `sync` refuses to act on.
+  await pool.reconnect("echo-1");
+
+  expect(spawned()).toBe(2);
+  expect(await stillAlive([first as number])).toEqual([]);
+  expect(toolNames(pool)).toEqual(["echo__ping", "echo__echo", "echo__add"]);
+});
+
+test("reconnecting a server that is not configured leaves the rest connected", async () => {
+  await pool.sync([config()]);
+  await pool.reconnect("nobody", [config()]);
+
+  expect(spawned()).toBe(1);
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready" }]);
+});
