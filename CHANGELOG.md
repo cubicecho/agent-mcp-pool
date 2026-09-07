@@ -1,3 +1,31 @@
+# [1.0.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.10.0...v1.0.0) (2026-09-07)
+
+
+* feat!: drop openai as a peer dependency ([8139e0a](https://github.com/cubicecho/agent-mcp-pool/commit/8139e0a564340468afe58bcb1f85df7090f618e2)), closes [#48](https://github.com/cubicecho/agent-mcp-pool/issues/48)
+* feat!: leave env and headers out of state() ([5bc6385](https://github.com/cubicecho/agent-mcp-pool/commit/5bc63854db4a95e1e29fab503db726783cf636a9)), closes [#52](https://github.com/cubicecho/agent-mcp-pool/issues/52)
+
+
+### Bug Fixes
+
+* hold the pool's own copy of every configured row ([435c299](https://github.com/cubicecho/agent-mcp-pool/commit/435c299a66ec339aaa80667ba488373c94f16414)), closes [#51](https://github.com/cubicecho/agent-mcp-pool/issues/51)
+* read every page of tools/list ([961d073](https://github.com/cubicecho/agent-mcp-pool/commit/961d073f59fa85d438cc76d21522154566ac4a25)), closes [#47](https://github.com/cubicecho/agent-mcp-pool/issues/47)
+
+
+### Features
+
+* give every refusal from the pool a code ([5335d51](https://github.com/cubicecho/agent-mcp-pool/commit/5335d5102cc209f4dbf68ccd70ad422f905005b7)), closes [#50](https://github.com/cubicecho/agent-mcp-pool/issues/50)
+* report the running child's pid and when it started ([a1c6bd9](https://github.com/cubicecho/agent-mcp-pool/commit/a1c6bd9a3455f08e2a85435082daf002c4bd5b1c)), closes [#49](https://github.com/cubicecho/agent-mcp-pool/issues/49)
+
+
+### BREAKING CHANGES
+
+* `McpServerState.config` is now `McpServerPublicConfig`, whose
+`env` and `headers` are absent unless `state({ secrets: true })` is passed.
+* `openai` is no longer a peer dependency, so it is no longer
+installed alongside this package. A consumer that relied on that must depend on
+it directly. The definitions `tools()` returns are unchanged and still
+assignable to `OpenAI.ChatCompletionTool`.
+
 # [0.10.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.9.0...v0.10.0) (2026-09-07)
 
 
