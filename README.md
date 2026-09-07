@@ -28,6 +28,27 @@ against an argument, and it counts as part of the connection: editing it restart
 `syncSoon()` debounces a reconcile past a transaction commit, and `flush()` pays one off early
 for a reader that would otherwise be shown the pool as it stood before its own write.
 
+## State
+
+`state()` reports every configured server **in the order it was configured**, and hands back the
+row it was configured from:
+
+```ts
+for (const { config, status, error, tools } of mcp.state()) {
+  // config is the row you passed in; status/error/tools are what the pool made of it
+}
+```
+
+Both halves exist so a consumer does not have to keep its own copy of the rows beside the pool's.
+A UI that draws the edit form and the connection state as one line needs the row, and a shadow
+map of the same rows goes stale the moment anything reconciles without going through it — which
+`syncSoon()` and a `load`-driven `sync()` both do. The order is the caller's array rather than
+`Map` insertion order for the same reason: entries are created by parallel connects, so without
+this the operator's list reorders itself according to which child started quickest.
+
+`id`, `slug` and `label` stay alongside `config` — those are the *effective* values the pool
+actually used.
+
 ## Scope
 
 `tools`, `catalog` and `call` all take an optional set of server ids. **Absent means every
