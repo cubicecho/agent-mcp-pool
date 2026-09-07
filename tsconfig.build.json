@@ -1,6 +1,7 @@
 {
-  // The published build. Drops the maps: they point at `../src/*.ts`, which is not shipped
-  // (`files: ["dist"]`), so publishing them would leave consumers with dead references.
+  // The published build. Drops the maps: `src` ships so that a git install can rebuild inside
+  // the installed tree (see the `files` field), not so that consumers can step through it, and
+  // every map is weight in the tarball for a debugger most installs never open.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "sourceMap": false,
