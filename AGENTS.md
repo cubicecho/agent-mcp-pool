@@ -45,6 +45,10 @@ npm run llms:check       # fails if the committed llms.txt is stale
 optional set of ids, and the two cases must never collapse — "this agent has no servers linked"
 is a real and correct state, and collapsing it silently gives a scoped run the whole pool.
 
+**Two arguments of the same type get named, not ordered.** `tools({ names, servers })` takes one
+object because the positional pair was two collections of strings, and transposing them answered
+with an empty array — indistinguishable from a run scoped to servers that offer nothing.
+
 **A qualified name is resolved whole, never split on `__`.** Names past 64 characters keep 57 of
 them plus a hash of the whole, so the split of a shortened name is a tool its server never had.
 

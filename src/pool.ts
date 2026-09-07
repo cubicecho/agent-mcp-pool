@@ -118,6 +118,28 @@ export interface McpPoolOptions {
   idleTimeoutMs?: number;
 }
 
+/**
+ * What `tools()` takes: which tools to send, and which servers this run may reach.
+ *
+ * One object rather than two positional arguments because both are collections of strings, so
+ * swapping them is not a type error — and the answer to a swap is an empty array, which is also
+ * the correct answer for a run scoped to servers that offer nothing. A consumer adopting the pool
+ * transposed them, compiled, connected, and offered its model no tools at all.
+ */
+export interface ToolsOptions {
+  /**
+   * Qualified names, in the caller's order. A name asked for twice is sent once; a name nothing
+   * offers is skipped and logged. Omitted means every indexed tool — on-demand loading passes a
+   * handful rather than every schema.
+   */
+  names?: string[];
+  /**
+   * The run's scope. Absent is every server, empty is none — the two must not collapse, since
+   * "no servers linked" is a real state.
+   */
+  servers?: Iterable<string>;
+}
+
 /** What `state()` takes: whether the rows it reports come back with their credentials. */
 export interface StateOptions {
   /**
@@ -556,12 +578,10 @@ export class McpPool {
    * `servers` is the run's scope, applied here as well as in `catalog` because a name can also
    * arrive from `load_tools`, where the model rather than the pool chose it.
    *
-   * @param names Qualified names, in the caller's order. A name asked for twice is sent once; a
-   *   name nothing offers is skipped and logged. Omitted means every indexed tool.
-   * @param servers The run's scope. Absent is every server, empty is none — the two must not
-   *   collapse, since "no servers linked" is a real state.
+   * @param options `names` and `servers` — see `ToolsOptions`. Named rather than positional
+   *   because the two are the same type and transposing them answers with an empty array.
    */
-  tools(names?: string[], servers?: Iterable<string>): ToolDefinition[] {
+  tools({ names, servers }: ToolsOptions = {}): ToolDefinition[] {
     const allowed = scope(servers);
     const definitions: ToolDefinition[] = [];
     // A model asking for the same tool twice would otherwise be sent two definitions under one

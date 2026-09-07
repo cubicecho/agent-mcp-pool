@@ -77,7 +77,7 @@ const names = (definitions: OpenAI.ChatCompletionTool[]) =>
   definitions.flatMap((t) => (t.type === "function" ? [t.function.name] : []));
 
 /** The qualified names on offer. */
-const toolNames = (pool: McpPool, servers?: string[]) => names(pool.tools(undefined, servers));
+const toolNames = (pool: McpPool, servers?: string[]) => names(pool.tools({ servers }));
 
 /** A row as `state()` reports it by default: everything except the credentials. */
 const withoutSecrets = ({ env, headers, ...rest }: McpServerConfig) => rest;
@@ -654,7 +654,7 @@ test("a row with neither slug nor label is labelled by its id", async () => {
   await pool.sync([config({ id: "notes", slug: undefined, label: "" })]);
 
   expect(pool.catalog()).toMatchObject([{ id: "notes", label: "notes" }]);
-  expect(pool.tools(["notes__ping"])[0]).toMatchObject({
+  expect(pool.tools({ names: ["notes__ping"] })[0]).toMatchObject({
     function: { description: "[notes] replies pong" },
   });
 });
@@ -680,9 +680,9 @@ test("a name asked for twice is offered once", async () => {
   await pool.sync([config()]);
 
   expect(toolNames(pool, undefined)).toHaveLength(3);
-  expect(pool.tools(["echo__ping", "echo__ping", "echo__add"])).toHaveLength(2);
+  expect(pool.tools({ names: ["echo__ping", "echo__ping", "echo__add"] })).toHaveLength(2);
   // Caller order, first mention winning.
-  expect(names(pool.tools(["echo__add", "echo__ping", "echo__add"]))).toEqual([
+  expect(names(pool.tools({ names: ["echo__add", "echo__ping", "echo__add"] }))).toEqual([
     "echo__add",
     "echo__ping",
   ]);
@@ -704,7 +704,7 @@ test("a name no server offers is skipped, and said so", async () => {
   pool = new McpPool({ clientName: "mcp-pool-test", log });
   await pool.sync([config()]);
 
-  expect(names(pool.tools(["echo__ping", "gone__tool"]))).toEqual(["echo__ping"]);
+  expect(names(pool.tools({ names: ["echo__ping", "gone__tool"] }))).toEqual(["echo__ping"]);
   expect(lines.filter((line) => line.includes("no tool named"))).toEqual([
     "[mcp] no tool named gone__tool is offered",
   ]);
@@ -720,11 +720,32 @@ test("a cold server's tools are not reported as names nothing offers", async () 
   pool = new McpPool({ clientName: "mcp-pool-test", log, lazy: true });
   await pool.sync([config()]);
 
-  expect(pool.tools(["echo__ping"])).toEqual([]);
+  expect(pool.tools({ names: ["echo__ping"] })).toEqual([]);
   expect(lines.filter((line) => line.includes("no tool named"))).toEqual([]);
   // And a name that server could not have built is still reported, cold pool or not.
-  expect(pool.tools(["gone__tool"])).toEqual([]);
+  expect(pool.tools({ names: ["gone__tool"] })).toEqual([]);
   expect(lines.filter((line) => line.includes("no tool named"))).toHaveLength(1);
+});
+
+/**
+ * `tools(names, servers)` took two collections of strings, so transposing them was not a type
+ * error — and the answer to a swap is an empty array, which is also the correct answer for a run
+ * scoped to servers that offer nothing. A consumer adopting the pool did exactly that: it
+ * compiled, connected, and offered its model no tools at all, and only a test on the result
+ * caught it. The annotations are the assertion — this fails at `npm run typecheck` if either
+ * shape stops being rejected.
+ */
+test("the two collections cannot be transposed, because they are one named object now", async () => {
+  await pool.sync([config()]);
+
+  // The annotations are the assertion — `npm run typecheck` is where this test really runs, and
+  // it fails if either shape is accepted again.
+  // @ts-expect-error the old positional form: the names first, the run's scope second.
+  pool.tools(["echo__ping"], ["echo-1"]);
+  // @ts-expect-error and the transposition of it that started this.
+  pool.tools(["echo-1"], ["echo__ping"]);
+
+  expect(names(pool.tools({ names: ["echo__ping"], servers: ["echo-1"] }))).toEqual(["echo__ping"]);
 });
 
 /**
@@ -736,7 +757,7 @@ test("a name held back by the run's scope is not reported as missing", async () 
   pool = new McpPool({ clientName: "mcp-pool-test", log });
   await pool.sync([config()]);
 
-  expect(pool.tools(["echo__ping"], ["someone-else"])).toEqual([]);
+  expect(pool.tools({ names: ["echo__ping"], servers: ["someone-else"] })).toEqual([]);
   expect(lines.filter((line) => line.includes("no tool named"))).toEqual([]);
 });
 

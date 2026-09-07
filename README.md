@@ -91,6 +91,19 @@ has no servers linked" is a real and correct state. `call` re-checks the scope r
 trusting the definitions the caller was given: a model that has seen a tool name once will call
 it again from memory.
 
+`tools` names both of its own:
+
+```ts
+pool.tools({ names: ["echo__add"], servers: [agent.serverId] });
+```
+
+`tools(names, servers)` was two collections of strings in an order nothing could check, so a
+transposition was not a type error — and its answer is an empty array, which is also the right
+answer for a run scoped to servers that offer nothing. A consumer adopting the pool swapped them,
+and the migration compiled, connected and offered its model no tools at all. `catalog(servers)`
+and `call(name, input, servers)` stay positional: neither has two arguments that could be
+confused for each other.
+
 ## Lifecycle
 
 Eager and long-lived by default: `sync()` connects every enabled server and holds the connection,
