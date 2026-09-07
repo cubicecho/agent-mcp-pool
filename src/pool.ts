@@ -98,6 +98,9 @@ export interface McpPoolOptions {
    * The SDK already applies its own 60s default, so this is not about an unbounded hang — it is
    * about how long a boot is willing to stall. `sync` connects servers in parallel, but one
    * wedged server still holds the whole reconcile open for the full timeout.
+   *
+   * The pool-wide default. `McpServerConfig.connectTimeoutMs` overrides it for one server, which
+   * is where a `uvx` package that downloads itself on first run belongs.
    */
   connectTimeoutMs?: number;
   /**
@@ -105,7 +108,8 @@ export interface McpPoolOptions {
    *
    * Defaults to `connectTimeoutMs`, because a probe exists to dial the way the pool does. Set it
    * when the two have different audiences: a reconcile of thirty servers can afford to be
-   * patient, and a person who pressed "Test connection" cannot.
+   * patient, and a person who pressed "Test connection" cannot. A probed row's own
+   * `connectTimeoutMs` outranks both — see `McpPool.probe`.
    */
   probeTimeoutMs?: number;
   /**
@@ -556,8 +560,12 @@ export class McpPool {
       // Listening before the connect, because a server that dies during startup says whatever it
       // has to say then, and the connect only reports that the pipe closed.
       entry.stderrTail = readStderrTail(transport);
-      const timeout =
-        this.connectTimeoutMs === undefined ? undefined : { timeout: this.connectTimeoutMs };
+      // The row first, the pool's default behind it: connect cost belongs to the server, and a
+      // `uvx` package that downloads itself on first run and a local `node` child cannot share one
+      // number without the fast one losing its bound. Read here rather than held on the entry, so
+      // an edit reaches the next connect without a restart.
+      const timeoutMs = config.connectTimeoutMs ?? this.connectTimeoutMs;
+      const timeout = timeoutMs == null ? undefined : { timeout: timeoutMs };
       await client.connect(transport, timeout);
       // Every page: a tool that landed on page two is missing from the index, and `call()` then
       // refuses it as a tool that does not exist. Skipped entirely when nothing is going to read
@@ -952,10 +960,11 @@ export class McpPool {
    * connection" button wrote the same wrapper to bind them — and one that bound them differently
    * showed up only in a remote server's logs. `probe` stays exported for a caller with no pool.
    *
-   * The patience is bound the same way: `probeTimeoutMs`, or the pool's own `connectTimeoutMs`
-   * when there is no separate one. A pool told to give up on a wedged server in five seconds
-   * should not sit on the SDK's sixty for the same server behind a button. So is the version,
-   * for the same reason the name is: the two halves of `clientInfo` travel together.
+   * The patience is bound the same way: the row's own `connectTimeoutMs` if it has one, then
+   * `probeTimeoutMs`, then the pool's `connectTimeoutMs`. A pool told to give up on a wedged
+   * server in five seconds should not sit on the SDK's sixty for the same server behind a button,
+   * and a row that says it needs two minutes to start should not be failed at five. So is the
+   * version, for the same reason the name is: the two halves of `clientInfo` travel together.
    *
    * @param config The server to test. Nothing is stored and no entry is touched, so this is safe
    *   against a row that does not exist yet.
@@ -966,7 +975,10 @@ export class McpPool {
       { name: this.clientName, version: this.clientVersion },
       {
         childEnv: this.childEnv,
-        timeoutMs: this.probeTimeoutMs ?? this.connectTimeoutMs,
+        // The row outranks both pool-wide numbers, `probeTimeoutMs` included: a server whose own
+        // row says it needs two minutes to start needs them behind the button too, and a probe
+        // that gives it five seconds reports a failure for a server that works.
+        timeoutMs: config.connectTimeoutMs ?? this.probeTimeoutMs ?? this.connectTimeoutMs,
       },
     );
   }

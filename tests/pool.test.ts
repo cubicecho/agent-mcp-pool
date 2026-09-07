@@ -1043,6 +1043,72 @@ test("probeTimeoutMs makes a probe more impatient than a boot", async () => {
   expect(Date.now() - started).toBeLessThan(10_000);
 });
 
+/**
+ * Connect cost belongs to the server, not to the pool: `uvx some-server@latest` on a cold cache
+ * downloads a package before it says anything, and a local `node` child is up in milliseconds.
+ * One pool-wide number has to be the maximum of those, which leaves the wedged fast server —
+ * the case the option exists for — hanging for as long as the slow one legitimately needs.
+ */
+test("a row's connectTimeoutMs overrides the pool's", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 30_000 });
+  await pool.sync([
+    config({
+      connectTimeoutMs: 1000,
+      env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" },
+    }),
+  ]);
+
+  // Thirty seconds if the row had been ignored, and the sync would still be running.
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "error" }]);
+  expect(await stillAlive(spawnedPids())).toEqual([]);
+});
+
+test("a row with no connectTimeoutMs still takes the pool's", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 1000 });
+  // `null` is the same absence as an unset field — what a row loaded from a database column says.
+  await pool.sync([
+    config({
+      connectTimeoutMs: null,
+      env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" },
+    }),
+  ]);
+
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "error" }]);
+});
+
+/**
+ * The point of putting it on the row rather than making the pool option mutable: a consumer whose
+ * configuration is hand-editable resolves it per row at every reconcile, and the edit has to land
+ * without bouncing a healthy child that is answering calls.
+ */
+test("an edited connect timeout applies to the next connect without restarting the child", async () => {
+  await pool.sync([config()]);
+  await pool.sync([config({ connectTimeoutMs: 5000 })]);
+
+  expect(spawned()).toBe(1);
+  expect(pool.state()).toMatchObject([{ status: "ready", config: { connectTimeoutMs: 5000 } }]);
+});
+
+/**
+ * A probe is the same dial, so a row that needs two minutes to start needs them behind the "Test
+ * connection" button too — otherwise the button reports a failure for a server that works.
+ */
+test("a probe takes the row's connect timeout over the pool's probe timeout", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, probeTimeoutMs: 30_000 });
+
+  const started = Date.now();
+  const result = await pool.probe(
+    config({
+      connectTimeoutMs: 1000,
+      env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" },
+    }),
+  );
+
+  expect(result.ok).toBe(false);
+  expect(Date.now() - started).toBeLessThan(10_000);
+  expect(await stillAlive(spawnedPids())).toEqual([]);
+});
+
 test("a ready server with no tools is kept out of the catalogue but not out of state", async () => {
   await pool.sync([
     config({ id: "empty", slug: "empty", env: { MCP_ECHO_NO_TOOLS: "1" } }),

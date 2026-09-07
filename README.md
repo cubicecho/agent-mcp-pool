@@ -253,6 +253,25 @@ not the one a healthy server needs.
 
 Unset is the SDK's 60s, which is a ceiling rather than a budget.
 
+`McpServerConfig.connectTimeoutMs` overrides it per server, the way `idleTimeoutMs` does, because
+connect cost is a property of the server rather than of the pool:
+
+```ts
+{ id: "git",  command: "node", args: ["./node_modules/.bin/git-mcp"] } // up in milliseconds
+{ id: "docs", command: "uvx", args: ["some-mcp-server@latest"], connectTimeoutMs: 120_000 }
+```
+
+`uvx` on a cold cache resolves and downloads a package before it says anything. One pool-wide
+number has to be the maximum of those, which leaves the fast server with no useful bound — the
+wedged `node` child this option exists to catch still hangs for the two minutes the slow one
+legitimately needs. `null` or absent is the pool's number, which is what every row that predates
+the field says; unlike `idleTimeoutMs` there is no special `0`, which is simply a server given no
+time at all.
+
+The row is re-read on every reconcile, so a consumer whose configuration is hand-editable does not
+need a restart to change it. An edited timeout does not bounce a running child — it is read at
+connect time, so it applies to the next one.
+
 ## Probing
 
 A config is easy to get subtly wrong, and finding out at 3am when the task runs is too late.
@@ -276,7 +295,9 @@ whichever name arrives, so a server's log tells a test connection apart from a r
 
 `probeTimeoutMs` overrides `connectTimeoutMs` for probes alone, defaulting to it. The two have
 different audiences: a reconcile of thirty servers at boot can afford to be patient, and a person
-who has just pressed "Test connection" cannot.
+who has just pressed "Test connection" cannot. A row's own `connectTimeoutMs` outranks both: a
+server that needs two minutes to start needs them behind the button too, or the button reports a
+failure for a server that works.
 
 ## Logging
 
