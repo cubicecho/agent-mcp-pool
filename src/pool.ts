@@ -299,6 +299,41 @@ export class McpPool {
   }
 
   /**
+   * Closes one server's connection, leaving the row registered and able to reconnect.
+   *
+   * The reap path without the clock: the server lands at `idle` with no `error` and no
+   * `failedAt`, so no backoff stands between it and the next use — the same situation a timer
+   * arrives at, reached by a person instead. `shutdown()` is every server and forgets them,
+   * `sync()` only closes what the configs dropped, and neither is what an operator killing one
+   * misbehaving child wants.
+   *
+   * A stopped server stays stopped: `reconcile` leaves an `idle` entry alone whether or not the
+   * pool is lazy, so a later `sync()` over an unchanged row will not dial it again. Bringing it
+   * back is a use — `call()` or `client()` — or `reconnect()`, which does not wait to be asked.
+   *
+   * @param id The server to close. An id the pool does not know is not an error: a caller
+   *   stopping a child before deleting its row should not have to check first.
+   * @returns Resolves once that child is closed, after whatever was already queued.
+   */
+  stop(id: string): Promise<void> {
+    return this.queue(async () => {
+      const entry = this.entries.get(id);
+      if (!entry) return;
+      await this.close(entry);
+      // A disabled server is already off, for a reason `idle` would lose. Everything else lands
+      // where a reap leaves it, with the failure it may have been stopped over cleared.
+      if (entry.status !== "disabled") entry.status = "idle";
+      entry.error = undefined;
+      entry.failedAt = undefined;
+      // Cleared with the connection that listed them, as `onClose` and `reap` do: a stopped
+      // server with tools still on it reads as one that could answer a call.
+      entry.tools = [];
+      this.reindex();
+      this.log.info?.(`[mcp] ${slugOf(entry.config)}: stopped`);
+    });
+  }
+
+  /**
    * Reconciles shortly after a write, rather than during it.
    *
    * A hook inside the mutation's transaction sees the table as it stood before the write it is

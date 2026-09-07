@@ -499,6 +499,71 @@ test("reconnect leaves a disabled server disabled rather than starting it", asyn
 });
 
 /**
+ * The primitive under "stop this server", "restart this server" and "close the child before
+ * deleting its row": one server's child closed, its row left registered. `shutdown()` is all of
+ * them and forgets them, and `sync()` only closes what the configs dropped.
+ */
+test("stop closes one server's child and leaves the row able to come back", async () => {
+  await pool.sync([config()]);
+  const [first] = spawnedPids();
+
+  await pool.stop("echo-1");
+
+  // Where a reap leaves a server, reached by a person instead of a clock.
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "idle", error: "", tools: [] }]);
+  expect(pool.tools()).toEqual([]);
+  expect(await stillAlive([first as number])).toEqual([]);
+
+  // A restart is a stop and then a use.
+  expect(await pool.call("echo__ping", {})).toBe("ping({})");
+  expect(spawned()).toBe(2);
+  expect(pool.state()).toMatchObject([{ status: "ready" }]);
+});
+
+/**
+ * The eager pool's half of it: `idle` already means "registered, nothing wrong, no child", and
+ * `reconcile` steps over it — so an explicitly stopped server is not dialled again by the next
+ * write to the server table.
+ */
+test("a stopped server stays stopped through a sync of an unchanged row", async () => {
+  const rows = [config()];
+  pool = makePool(async () => rows);
+  await pool.sync();
+  await pool.stop("echo-1");
+
+  await pool.sync();
+
+  expect(spawned()).toBe(1);
+  expect(pool.state()).toMatchObject([{ status: "idle" }]);
+});
+
+/**
+ * Stopping a server that has already failed is the operator half of the crash-loop story: an
+ * explicit stop is not a failure, so nothing is left for the next use to wait out.
+ */
+test("stop clears the backoff standing in front of a failed server", async () => {
+  // A backoff far longer than the test, so only clearing it can let the call through.
+  pool = makePool(undefined, 60_000);
+  await pool.sync([config()]);
+  process.kill(spawnedPids()[0] as number, "SIGKILL");
+  await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
+
+  await pool.stop("echo-1");
+  expect(pool.state()).toMatchObject([{ status: "idle", error: "" }]);
+
+  // Immediately: an explicit stop is not a failure, so there is nothing left to wait out.
+  expect(await pool.call("echo__ping", {})).toBe("ping({})");
+  expect(spawned()).toBe(2);
+});
+
+test("stopping a server the pool does not know is not an error", async () => {
+  await pool.sync([config()]);
+  await pool.stop("nobody");
+
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready" }]);
+});
+
+/**
  * The pool had no `onclose` at all: a child that died left the entry `ready` with its tools still
  * in the index, so `state()` showed a healthy server and the model was handed tools whose process
  * was gone. The failure surfaced as a transport error inside a tool call instead.
