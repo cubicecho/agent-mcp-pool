@@ -276,6 +276,13 @@ export class McpPool {
    * `sync` leaves an unchanged row alone, so it is no use when a server has wedged. Dropping the
    * entry first leaves the reconcile no choice but to connect it afresh.
    *
+   * Unconditional, `lazy` included. A lazy reconcile registers a new entry at `idle` and waits
+   * for a use, so without forcing the dial this method was a *stop* on a lazy pool: a caller
+   * restarting a wedged server got a stopped one and a `state()` reading `idle`, and found out
+   * only on the next call that spawned it. That the meaning of "reconnect" turned on a
+   * constructor flag set somewhere else is the half of that which was not defensible. `stop()`
+   * is the method for the other reading.
+   *
    * @param id The server to drop and redial. An id the pool does not know is not an error; the
    *   reconcile still runs.
    * @param configs Passed on to that reconcile, exactly as `sync` takes it.
@@ -287,7 +294,7 @@ export class McpPool {
         await this.close(existing);
         this.entries.delete(id);
       }
-      await this.reconcile(configs);
+      await this.reconcile(configs, id);
     });
   }
 
@@ -335,8 +342,10 @@ export class McpPool {
    * is new or changed, and leaves a healthy unchanged server alone.
    *
    * @param configs The wanted set, or `load`'s answer when omitted.
+   * @param dial One id to connect even under `lazy`, so `reconnect` really does redial the
+   *   server it was named for rather than registering it and leaving it for the next use.
    */
-  private async reconcile(configs?: McpServerConfig[]) {
+  private async reconcile(configs?: McpServerConfig[], dial?: string) {
     const wanted = configs ?? (this.load ? await this.load() : []);
     const keep = new Set(wanted.map((config) => config.id));
     for (const [id, entry] of this.entries) {
@@ -360,7 +369,7 @@ export class McpPool {
           if (!this.retryDue(existing)) return;
         }
         if (existing) await this.close(existing);
-        await this.connect(config);
+        await this.connect(config, config.id === dial);
       }),
     );
     this.order(wanted);

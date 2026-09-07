@@ -468,6 +468,37 @@ test("reconnecting a server that is not configured leaves the rest connected", a
 });
 
 /**
+ * `reconnect` dropped the entry and let the reconcile rebuild it, and a lazy reconcile registers
+ * an entry at `idle` and waits for a use — so on a lazy pool "reconnect this wedged server"
+ * *stopped* it, and the caller found out on the next call that spawned one. The two pools now
+ * mean the same thing by the method.
+ */
+test("reconnect dials a lazy server rather than leaving it registered and stopped", async () => {
+  pool = lazyPool();
+  await pool.sync([config()]);
+  await pool.call("echo__ping", {});
+  const [first] = spawnedPids();
+
+  await pool.reconnect("echo-1", [config()]);
+
+  expect(pool.state()).toMatchObject([{ status: "ready", error: "" }]);
+  expect(spawned()).toBe(2);
+  expect(await stillAlive([first as number])).toEqual([]);
+  expect(toolNames(pool)).toContain("echo__ping");
+});
+
+/** Forcing the dial is for enabled servers; a disabled row is off for a reason `reconnect` does
+ * not overrule. */
+test("reconnect leaves a disabled server disabled rather than starting it", async () => {
+  pool = lazyPool();
+  await pool.sync([config({ enabled: false })]);
+  await pool.reconnect("echo-1", [config({ enabled: false })]);
+
+  expect(pool.state()).toMatchObject([{ status: "disabled" }]);
+  expect(spawned()).toBe(0);
+});
+
+/**
  * The pool had no `onclose` at all: a child that died left the entry `ready` with its tools still
  * in the index, so `state()` showed a healthy server and the model was handed tools whose process
  * was gone. The failure surfaced as a transport error inside a tool call instead.
