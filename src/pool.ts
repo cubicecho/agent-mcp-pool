@@ -72,7 +72,7 @@ export class McpPool {
   private readonly clientName: string;
   private readonly log: NonNullable<McpPoolOptions["log"]>;
 
-  constructor({ load, clientName = "mcp-pool", log }: McpPoolOptions = {}) {
+  constructor({ load, clientName = "agent-mcp-pool", log }: McpPoolOptions = {}) {
     this.load = load;
     this.clientName = clientName;
     this.log = log ?? {

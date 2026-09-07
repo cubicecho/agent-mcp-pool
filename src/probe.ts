@@ -10,7 +10,10 @@ import type { McpConnection, McpProbe } from "./types.ts";
  * finding out at 3am when the task runs is too late. The client is disposable — the pool keeps
  * the long-lived ones.
  */
-export async function probe(config: McpConnection, clientName = "mcp-pool"): Promise<McpProbe> {
+export async function probe(
+  config: McpConnection,
+  clientName = "agent-mcp-pool",
+): Promise<McpProbe> {
   const client = new Client({ name: `${clientName}-probe`, version: "0.1.0" });
   try {
     await client.connect(createTransport(config));

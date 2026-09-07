@@ -1,4 +1,4 @@
-# @cubicecho/mcp-pool
+# @cubicecho/agent-mcp-pool
 
 A pool of long-lived Model Context Protocol clients, exposing every connected server's tools to
 an OpenAI-compatible agent loop as `<slug>__<tool name>`.
@@ -12,7 +12,7 @@ The two servers this came from both did `import { db }` and read an `mcp_servers
 pool now asks for its rows instead:
 
 ```ts
-import { McpPool } from "@cubicecho/mcp-pool";
+import { McpPool } from "@cubicecho/agent-mcp-pool";
 
 export const mcp = new McpPool({
   load: () => db.select().from(mcpServers),

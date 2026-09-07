@@ -1,5 +1,5 @@
 {
-  "name": "@cubicecho/mcp-pool",
+  "name": "@cubicecho/agent-mcp-pool",
   "version": "0.0.0-development",
   "description": "A pool of long-lived Model Context Protocol clients, exposing every connected server's tools to an OpenAI-compatible agent loop as `<slug>__<tool>`.",
   "keywords": [
@@ -21,11 +21,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cubicecho/mcp-pool.git"
+    "url": "git+https://github.com/cubicecho/agent-mcp-pool.git"
   },
-  "homepage": "https://github.com/cubicecho/mcp-pool#readme",
+  "homepage": "https://github.com/cubicecho/agent-mcp-pool#readme",
   "bugs": {
-    "url": "https://github.com/cubicecho/mcp-pool/issues"
+    "url": "https://github.com/cubicecho/agent-mcp-pool/issues"
   },
   "exports": {
     ".": {
