@@ -543,3 +543,99 @@ test("client() reports a server that stays down, rather than one that is not con
   // The stderr tail is the whole reason the pool keeps one: "boom" beats "connection closed".
   await expect(pool.client("echo-1")).rejects.toThrow(/is not connected: boom/);
 });
+
+/** A pool with the lifecycle options under test; silent for the same reason `makePool` is. */
+const lazyPool = (over: Partial<ConstructorParameters<typeof McpPool>[0]> = {}) =>
+  new McpPool({ clientName: "mcp-pool-test", log: {}, lazy: true, ...over });
+
+test("a lazy pool registers a server without starting it, and starts it on use", async () => {
+  pool = lazyPool();
+  await pool.sync([config()]);
+
+  // The reconcile still happened — the entry is there and complete — only the child is deferred.
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "idle", error: "", tools: [] }]);
+  expect(spawned()).toBe(0);
+  // The known limitation: nothing has listed a cold server's tools, so it offers none yet.
+  expect(pool.tools()).toEqual([]);
+  expect(pool.catalog()).toEqual([]);
+
+  expect(await pool.call("echo__ping", {})).toBe("ping({})");
+  expect(spawned()).toBe(1);
+  expect(pool.state()).toMatchObject([{ status: "ready" }]);
+  expect(toolNames(pool)).toContain("echo__ping");
+});
+
+test("a second sync leaves an idle server idle rather than dialling it", async () => {
+  pool = lazyPool();
+  await pool.sync([config()]);
+  await pool.sync([config()]);
+
+  // Reconnecting a server nothing has asked for is exactly what lazy is for not doing.
+  expect(spawned()).toBe(0);
+  expect(pool.state()).toMatchObject([{ status: "idle" }]);
+});
+
+test("two calls arriving together on a cold server start one child", async () => {
+  pool = lazyPool();
+  await pool.sync([config()]);
+
+  const both = await Promise.all([pool.call("echo__ping", {}), pool.call("echo__add", {})]);
+  expect(both[0]).toBe("ping({})");
+  // Without the queue, both callers find the server idle and both dial it; the second's entry
+  // replaces the first's and the first child is left running with nothing holding it.
+  expect(spawned()).toBe(1);
+});
+
+test("client() starts a cold server for a consumer that knows which one it wants", async () => {
+  pool = lazyPool();
+  await pool.sync([config()]);
+
+  const { tools } = await (await pool.client("echo-1")).listTools();
+  expect(tools).toHaveLength(3);
+  expect(spawned()).toBe(1);
+});
+
+test("an unused server is closed, and the next call brings it back", async () => {
+  // A backoff far longer than the test, to prove a reap is not treated as a crash.
+  pool = lazyPool({ lazy: false, idleTimeoutMs: 50, crashBackoffMs: 60_000 });
+  await pool.sync([config()]);
+  const [first] = spawnedPids();
+
+  await until(() => pool.state()[0]?.status === "idle", "the idle reap");
+  expect(await stillAlive([first as number])).toEqual([]);
+  // A success path: no error to explain, no failure time to wait out.
+  expect(pool.state()).toMatchObject([{ status: "idle", error: "", tools: [] }]);
+  expect(pool.tools()).toEqual([]);
+
+  // Immediately, despite the minute-long backoff, because none applies to a server that is fine.
+  expect(await pool.call("echo__ping", {})).toBe("ping({})");
+  expect(spawned()).toBe(2);
+});
+
+test("use restarts the idle clock instead of letting it run out under load", async () => {
+  pool = lazyPool({ lazy: false, idleTimeoutMs: 150 });
+  await pool.sync([config()]);
+
+  for (let i = 0; i < 4; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await pool.call("echo__ping", {});
+  }
+  // Nearly a second and a half of steady use: reaping here would close a server mid-conversation.
+  expect(pool.state()).toMatchObject([{ status: "ready" }]);
+  expect(spawned()).toBe(1);
+});
+
+test("a server can opt out of reaping, or set its own timeout", async () => {
+  pool = lazyPool({ lazy: false, idleTimeoutMs: 50 });
+  // 0 rather than absent: absent means "use the pool's", which is what the other server does.
+  await pool.sync([
+    config({ id: "kept", slug: "kept", idleTimeoutMs: 0 }),
+    config({ id: "reaped", slug: "reaped" }),
+  ]);
+
+  await until(
+    () => pool.state().some((entry) => entry.slug === "reaped" && entry.status === "idle"),
+    "the reap of the server that did not opt out",
+  );
+  expect(pool.state().find((entry) => entry.slug === "kept")).toMatchObject({ status: "ready" });
+});

@@ -76,6 +76,8 @@ interface Entry {
   failedAt?: number;
   /** The last of what this server's child wrote to stderr; usually why it would not start. */
   stderrTail?: () => string;
+  /** Armed on each use when an idle timeout applies; disarmed whenever the client goes away. */
+  idleTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface McpPoolOptions {
@@ -107,6 +109,29 @@ export interface McpPoolOptions {
    * long time to keep an agent from starting over a server that is not coming back.
    */
   connectTimeoutMs?: number;
+  /**
+   * Register servers without connecting them; connect on first use instead.
+   *
+   * Off by default, because the eager default is right for an agent loop: spawning a child per
+   * run costs more than the run. A gateway has the opposite pressure — dozens of installed
+   * servers, most idle most of the time — and holding every child resident for the one that is
+   * actually being used is the wrong trade.
+   *
+   * A registered but unconnected server sits at `idle`. `call()` and `client()` connect it;
+   * `tools()` and `catalog()` do not, and so report nothing for it until something has. That
+   * limitation is real and known: listing a cold server's tools without spawning it needs a
+   * cached last-known tool list, which is its own change.
+   */
+  lazy?: boolean;
+  /**
+   * Close a connected server after this long without a call, leaving it able to reconnect.
+   *
+   * Absent means never, which is today's behaviour. Reset on every use. A reap is a success
+   * path, not a crash: the server returns to `idle` rather than `error`, no backoff applies,
+   * and the next use reconnects immediately. `McpServerConfig.idleTimeoutMs` overrides it for
+   * one server.
+   */
+  idleTimeoutMs?: number;
 }
 
 /**
@@ -134,6 +159,8 @@ export class McpPool {
 
   /** Everything currently subscribed to server→client notifications, across every server. */
   private listeners = new Set<(id: string, notification: Notification) => void>();
+  private readonly lazy: boolean;
+  private readonly idleTimeoutMs?: number;
 
   private readonly load?: () => Promise<McpServerConfig[]>;
   private readonly clientName: string;
@@ -149,12 +176,16 @@ export class McpPool {
     crashBackoffMs = CRASH_BACKOFF_MS,
     childEnv,
     connectTimeoutMs,
+    lazy = false,
+    idleTimeoutMs,
   }: McpPoolOptions = {}) {
     this.load = load;
     this.clientName = clientName;
     this.crashBackoffMs = crashBackoffMs;
     this.childEnv = childEnv;
     this.connectTimeoutMs = connectTimeoutMs;
+    this.lazy = lazy;
+    this.idleTimeoutMs = idleTimeoutMs;
     this.log = log ?? {
       info: (message) => console.log(message),
       error: (message) => console.error(message),
@@ -256,6 +287,9 @@ export class McpPool {
           // Restarting a healthy server would cost a process spawn for nothing. A failed one is
           // exactly what a later sync should pick up — but not faster than the backoff.
           if (existing.status === "ready" || existing.status === "disabled") return;
+          // Nothing is wrong with an idle server; reconnecting it is exactly what lazy is for
+          // not doing. It waits for a use like any other.
+          if (existing.status === "idle") return;
           if (!this.retryDue(existing)) return;
         }
         if (existing) await this.close(existing);
@@ -297,7 +331,11 @@ export class McpPool {
    */
   private relabel(entry: Entry, config: McpServerConfig) {
     const renamed = entry.config.slug !== config.slug || entry.config.label !== config.label;
+    const reclocked = entry.config.idleTimeoutMs !== config.idleTimeoutMs;
     entry.config = config;
+    // An edited idle timeout is not a reason to restart the child, but the armed timer is still
+    // running the old one — so it is re-armed rather than left to fire on a stale duration.
+    if (reclocked) this.touch(entry);
     if (!renamed) return;
     entry.tools = entry.tools.map((tool) => McpPool.pooledTool(config, tool));
   }
@@ -315,6 +353,25 @@ export class McpPool {
    * `load` for rows — a pool driven by explicit `sync(configs)` has no `load` at all, and asking
    * an absent one would reconcile against an empty set and close every server it has.
    */
+  /**
+   * Connects whatever might be able to answer a name the index does not know.
+   *
+   * Failed servers that are due a retry, plus — under `lazy` — the idle ones. Idle servers are
+   * narrowed by testing each *known* slug against the name, which is not the same as splitting
+   * an unknown name into slug and tool: `qualify` shortens long names, and the split of a
+   * shortened name is a tool its server never had, but asking whether a name starts with a slug
+   * this pool configured is always a fair question. A name no slug claims wakes everything,
+   * because a slug long enough to be shortened away is the one case the prefix test misses.
+   */
+  private async wake(qualifiedName: string): Promise<void> {
+    const idle = [...this.entries.values()].filter((entry) => entry.status === "idle");
+    const claimed = idle.filter((entry) =>
+      qualifiedName.startsWith(`${entry.config.slug}${SEPARATOR}`),
+    );
+    for (const entry of claimed.length > 0 ? claimed : idle) await this.ensure(entry);
+    await this.retryFailed();
+  }
+
   private retryFailed(): Promise<void> {
     return this.queue(async () => {
       const due = [...this.entries.values()].filter((entry) => this.retryDue(entry));
@@ -338,10 +395,13 @@ export class McpPool {
     }
   }
 
-  private async connect(config: McpServerConfig) {
-    const entry: Entry = { config, status: config.enabled ? "connecting" : "disabled", tools: [] };
+  private async connect(config: McpServerConfig, force = false) {
+    const status = !config.enabled ? "disabled" : this.lazy && !force ? "idle" : "connecting";
+    const entry: Entry = { config, status, tools: [] };
     this.entries.set(config.id, entry);
-    if (!config.enabled) return;
+    // Registered but not dialled: a lazy pool still reconciles the entry set on `sync`, so
+    // `state()` is complete and a later use has something to connect. Only the child is deferred.
+    if (status !== "connecting") return;
 
     try {
       const client = new Client({ name: this.clientName, version: "0.1.0" });
@@ -373,6 +433,10 @@ export class McpPool {
       // Installed only once the server is up: a child that dies mid-handshake is reported by
       // `connect` rejecting, and `onClose` firing then would race the success path below.
       client.onclose = () => this.onClose(entry);
+      // Started here rather than on first use, so a server connected eagerly and then never
+      // asked for anything is reaped like any other — otherwise the one child an idle timeout is
+      // most obviously meant to collect is the one it never touches.
+      this.touch(entry);
       this.log.info?.(`[mcp] ${config.slug}: ${entry.tools.length} tool(s)`);
     } catch (error) {
       entry.status = "error";
@@ -394,6 +458,7 @@ export class McpPool {
    */
   private onClose(entry: Entry) {
     if (entry.closing) return;
+    this.disarm(entry);
     entry.client = undefined;
     entry.status = "error";
     entry.error = entry.stderrTail?.() || "the server closed the connection";
@@ -433,6 +498,7 @@ export class McpPool {
 
   private async close(entry: Entry) {
     entry.closing = true;
+    this.disarm(entry);
     try {
       await entry.client?.close();
     } catch {
@@ -526,6 +592,65 @@ export class McpPool {
   }
 
   /**
+   * The connected client for a server, connecting it if it is idle or merely down.
+   *
+   * The single door every use goes through, so lazy connect and the idle clock cannot disagree
+   * about what counts as a use.
+   */
+  private async ensure(entry: Entry): Promise<Entry> {
+    if (entry.status === "idle" || this.retryDue(entry)) {
+      await this.queue(async () => {
+        // Re-read inside the queue: another caller may have connected this server while this one
+        // waited, and dialling it twice is the orphaned child the queue exists to prevent.
+        const current = this.entries.get(entry.config.id);
+        if (!current || (current.status !== "idle" && !this.retryDue(current))) return;
+        await this.close(current);
+        await this.connect(current.config, true);
+        this.reindex();
+      });
+    }
+    const current = this.entries.get(entry.config.id) ?? entry;
+    this.touch(current);
+    return current;
+  }
+
+  /** Restarts this server's idle clock. Called on every use, which is what "idle" measures. */
+  private touch(entry: Entry) {
+    this.disarm(entry);
+    const timeout = entry.config.idleTimeoutMs ?? this.idleTimeoutMs;
+    if (!timeout || !entry.client) return;
+    entry.idleTimer = setTimeout(() => this.reap(entry), timeout);
+    // A pool waiting to reap a server is not a reason for the process to stay up.
+    entry.idleTimer.unref?.();
+  }
+
+  private disarm(entry: Entry) {
+    if (entry.idleTimer === undefined) return;
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = undefined;
+  }
+
+  /**
+   * Closes a server that has gone unused, leaving it able to come back.
+   *
+   * Deliberately not the crash path, though the index mutation is the same one: no `error`, no
+   * `failedAt`, so no backoff stands between this server and the next call that wants it. An
+   * operator reading `state()` sees a server that is fine and simply not running.
+   */
+  private reap(entry: Entry) {
+    void this.queue(async () => {
+      const current = this.entries.get(entry.config.id);
+      if (!current || current !== entry || current.status !== "ready") return;
+      await this.close(current);
+      current.closing = false;
+      current.status = "idle";
+      current.tools = [];
+      this.reindex();
+      this.log.info?.(`[mcp] ${current.config.slug}: idle, closed`);
+    });
+  }
+
+  /**
    * Names and descriptions only — the cheap half, for the on-demand catalogue.
    *
    * A ready server offering no tools is dropped rather than listed empty. It has nothing to say
@@ -575,15 +700,14 @@ export class McpPool {
     const entry = this.entries.get(id);
     if (!entry) throw new Error(`no MCP server is configured with id "${id}"`);
     if (!entry.config.enabled) throw new Error(`the MCP server "${entry.config.slug}" is disabled`);
-    if (!entry.client) await this.retryFailed();
 
-    // Re-read: `connect` replaces the entry object rather than mutating the old one, so the
-    // entry captured above is stale as soon as a retry has run.
-    const current = this.entries.get(id);
-    if (!current?.client) {
+    // The whole lazy path for a consumer that knows which server it wants: a cold entry is
+    // dialled here, and a warm one has its idle clock restarted.
+    const current = await this.ensure(entry);
+    if (!current.client) {
       throw new Error(
         `the MCP server "${entry.config.slug}" is not connected${
-          current?.error ? `: ${current.error}` : ""
+          current.error ? `: ${current.error}` : ""
         }`,
       );
     }
@@ -603,10 +727,11 @@ export class McpPool {
     // that pass 64 characters, and the split of a shortened name names a tool its server never had.
     let found = this.index.get(qualifiedName);
     if (!found) {
-      // A crashed server took its tools out of the index with it. Before telling the model the
-      // tool does not exist — which is how you teach it to stop asking for a tool that is merely
-      // down — bring back whatever is due a retry and look once more.
-      await this.retryFailed();
+      // A crashed server took its tools out of the index with it, and a lazy pool never put a
+      // cold server's tools there at all. Before telling the model the tool does not exist —
+      // which is how you teach it to stop asking for a tool that is merely down — bring back
+      // whatever is owed a connection and look once more.
+      await this.wake(qualifiedName);
       found = this.index.get(qualifiedName);
     }
     // A tool outside this run's scope is answered as one that does not exist, because to this
@@ -614,6 +739,9 @@ export class McpPool {
     if (!found || (allowed && !allowed.has(found.serverId))) {
       throw new Error(`no connected MCP server offers a tool called "${qualifiedName}"`);
     }
+
+    const entry = this.entries.get(found.serverId);
+    if (entry) this.touch(entry);
 
     const result = await found.client.callTool({
       name: found.tool.name,
