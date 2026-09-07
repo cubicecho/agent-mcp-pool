@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, expect, test } from "vitest";
+import { qualify, SEPARATOR } from "../src/naming.ts";
 import { McpPool } from "../src/pool.ts";
 import { MINIMAL_CHILD_ENV } from "../src/transport.ts";
 import type { McpServerConfig } from "../src/types.ts";
@@ -733,6 +734,43 @@ test("a cold server with no slug is woken by a name its id claims", async () => 
 
   expect(await pool.call("notes__ping", {})).toBe("ping({})");
   // The one that claims the name, and only that one.
+  expect(spawned()).toBe(1);
+});
+
+/**
+ * What a model inventing a tool name used to cost. `wake` had no way to rule a cold server out —
+ * a slug long enough to be truncated out of its own names defeats the prefix test — so a name
+ * nothing claimed woke *every* configured server, one after another, and then failed the call
+ * anyway. Four servers here; a gateway with thirty pays thirty child processes for one typo.
+ */
+test("a name no server could have built starts nothing", async () => {
+  pool = lazyPool();
+  await pool.sync([
+    config({ id: "alpha", slug: "alpha" }),
+    config({ id: "beta", slug: "beta" }),
+    config({ id: "gamma", slug: "gamma" }),
+  ]);
+
+  await expect(pool.call("totally__made_up", {})).rejects.toThrow(/no connected MCP server/);
+  expect(spawned()).toBe(0);
+  expect(pool.state()).toMatchObject([{ status: "idle" }, { status: "idle" }, { status: "idle" }]);
+});
+
+/**
+ * The case the old wake-everything fallback existed for, now answered precisely. A slug this long
+ * is cut into by `qualify`, so its tools' names do not start with `<slug>__` and no prefix test
+ * can claim them — but `couldQualify` compares what survived the truncation.
+ */
+test("a cold server whose slug is truncated out of its own names is still woken", async () => {
+  const slug = "s".repeat(60);
+  pool = lazyPool();
+  await pool.sync([config({ id: "long", slug }), config({ id: "other", slug: "other" })]);
+
+  const name = qualify(slug, "ping");
+  expect(name.startsWith(`${slug}${SEPARATOR}`)).toBe(false);
+
+  expect(await pool.call(name, {})).toBe("ping({})");
+  // The one that could have built it, and not the one that could not.
   expect(spawned()).toBe(1);
 });
 
