@@ -84,6 +84,14 @@ export interface McpPoolOptions {
    */
   connectTimeoutMs?: number;
   /**
+   * How long `probe()` waits, when a probe should not wait as long as a boot.
+   *
+   * Defaults to `connectTimeoutMs`, because a probe exists to dial the way the pool does. Set it
+   * when the two have different audiences: a reconcile of thirty servers can afford to be
+   * patient, and a person who pressed "Test connection" cannot.
+   */
+  probeTimeoutMs?: number;
+  /**
    * Register servers without connecting them; connect on first use instead.
    *
    * Off by default: for an agent loop, spawning a child per run costs more than the run. A
@@ -136,6 +144,7 @@ export class McpPool {
   private readonly crashBackoffMs: number;
   private readonly childEnv?: readonly string[];
   private readonly connectTimeoutMs?: number;
+  private readonly probeTimeoutMs?: number;
 
   constructor({
     load,
@@ -144,6 +153,7 @@ export class McpPool {
     crashBackoffMs = CRASH_BACKOFF_MS,
     childEnv,
     connectTimeoutMs,
+    probeTimeoutMs,
     lazy = false,
     idleTimeoutMs,
   }: McpPoolOptions = {}) {
@@ -152,6 +162,7 @@ export class McpPool {
     this.crashBackoffMs = crashBackoffMs;
     this.childEnv = childEnv;
     this.connectTimeoutMs = connectTimeoutMs;
+    this.probeTimeoutMs = probeTimeoutMs;
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
     this.log = log ?? {
@@ -661,9 +672,16 @@ export class McpPool {
    * The free `probe` takes the client name and environment policy as arguments, so every "Test
    * connection" button wrote the same wrapper to bind them — and one that bound them differently
    * showed up only in a remote server's logs. `probe` stays exported for a caller with no pool.
+   *
+   * The patience is bound the same way: `probeTimeoutMs`, or the pool's own `connectTimeoutMs`
+   * when there is no separate one. A pool told to give up on a wedged server in five seconds
+   * should not sit on the SDK's sixty for the same server behind a button.
    */
   probe(config: McpConnection): Promise<McpProbe> {
-    return probeConfig(config, this.clientName, { childEnv: this.childEnv });
+    return probeConfig(config, this.clientName, {
+      childEnv: this.childEnv,
+      timeoutMs: this.probeTimeoutMs ?? this.connectTimeoutMs,
+    });
   }
 
   /**

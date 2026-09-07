@@ -621,6 +621,49 @@ test("a probe reports a server that will not start, rather than throwing", async
   expect(result.tools).toEqual([]);
 });
 
+/**
+ * A probe is what a person is waiting on. It bound the pool's name and environment policy and
+ * then dialled with no timeout at all, so a pool configured to give up on a wedged server in a
+ * second sat on the SDK's sixty for the same server behind a "Test connection" button.
+ */
+test("a probe gives up on the pool's schedule, not the SDK's", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 1000 });
+
+  const started = Date.now();
+  const result = await pool.probe(
+    config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" } }),
+  );
+
+  expect(result.ok).toBe(false);
+  // The budget has to cover `tools/list` and not just the dial: this server answers `initialize`
+  // and then stops, which is the shape of most of what a probe is asked about.
+  expect(Date.now() - started).toBeLessThan(10_000);
+  // Giving up is not enough on its own — the disposable client still owns a live child.
+  expect(await stillAlive(spawnedPids())).toEqual([]);
+});
+
+/**
+ * The two have different audiences. A reconcile of thirty servers at boot can afford to be
+ * patient; a person who has just pressed a button cannot.
+ */
+test("probeTimeoutMs makes a probe more impatient than a boot", async () => {
+  pool = new McpPool({
+    clientName: "mcp-pool-test",
+    log: {},
+    connectTimeoutMs: 30_000,
+    probeTimeoutMs: 1000,
+  });
+
+  const started = Date.now();
+  const result = await pool.probe(
+    config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" } }),
+  );
+
+  expect(result.ok).toBe(false);
+  // Thirty seconds if the probe had taken the boot's budget, sixty if it had taken the SDK's.
+  expect(Date.now() - started).toBeLessThan(10_000);
+});
+
 test("a ready server with no tools is kept out of the catalogue but not out of state", async () => {
   await pool.sync([
     config({ id: "empty", slug: "empty", env: { MCP_ECHO_NO_TOOLS: "1" } }),
