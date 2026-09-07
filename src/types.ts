@@ -52,6 +52,17 @@ export type McpConnection = Pick<
  */
 export type McpStatus = "disabled" | "idle" | "connecting" | "ready" | "error";
 
+/**
+ * A row as `state()` reports it: everything except the credentials, unless they were asked for.
+ *
+ * `env` and `headers` are an API key and an `Authorization: Bearer` for a real server, and the
+ * shortest way to draw an edit form beside a connection status is to send `state()` to a browser.
+ * They are optional here rather than absent so `state({ secrets: true })` — the caller that is
+ * genuinely rendering that form server-side — can hand back the whole row under one type.
+ */
+export type McpServerPublicConfig = Omit<McpServerConfig, "env" | "headers"> &
+  Partial<Pick<McpServerConfig, "env" | "headers">>;
+
 /** One connected server as an operator sees it. */
 export interface McpServerState {
   id: string;
@@ -60,16 +71,31 @@ export interface McpServerState {
   /** The effective display name — the row's `label`, or its slug when the row set none. */
   label: string;
   /**
-   * The row this server is configured from, exactly as it was passed in.
+   * The row this server is configured from, minus its credentials — see `McpServerPublicConfig`.
    *
    * The pool is already holding it, and a UI drawing the edit form beside the connection state
    * would otherwise keep a second copy — one that goes stale the moment `syncSoon()` or a
-   * `load`-driven `sync()` reconciles without it.
+   * `load`-driven `sync()` reconciles without it. A copy rather than the row itself: the pool's
+   * record of what it dialled must not be editable from outside it.
    */
-  config: McpServerConfig;
+  config: McpServerPublicConfig;
   status: McpStatus;
   error: string;
   tools: { name: string; description: string }[];
+  /**
+   * The stdio child's pid. Absent over http, and while the server is not connected.
+   *
+   * What an operator reaches for to find a wedged child in `ps` or to `kill -9` it, and not
+   * recoverable from anywhere else once the pool owns the transport.
+   */
+  pid?: number;
+  /**
+   * When this connection became ready, ISO 8601. Absent while the server is not connected.
+   *
+   * How a server that is quietly crash-looping is spotted: `status` reads `ready` either side of
+   * a restart, and only the start time says the restart happened.
+   */
+  startedAt?: string;
 }
 
 /** What `probe` found: whether the config works, and what it offers if it does. */
@@ -90,4 +116,23 @@ export interface CatalogServer {
   id: string;
   label: string;
   tools: { name: string; description: string }[];
+}
+
+/**
+ * One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's
+ * `ChatCompletionTool`, and assignable to it.
+ *
+ * Declared here rather than imported for the same reason as `CatalogServer`: the shape is a
+ * literal and two fields, and TypeScript is structural. `openai` was a *required* peer for this
+ * one type position, so a consumer that never calls a model — a gateway proxying MCP — installed
+ * 24 MB to satisfy a type that is erased at compile time. A test typechecks the two together.
+ */
+export interface ToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    /** The tool's JSON Schema, as its server described it. */
+    parameters?: Record<string, unknown>;
+  };
 }

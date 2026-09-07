@@ -9,12 +9,15 @@ spawning one per run would cost more than the run.
 ## Install
 
 ```sh
-npm install @cubicecho/agent-mcp-pool @modelcontextprotocol/sdk openai
+npm install @cubicecho/agent-mcp-pool @modelcontextprotocol/sdk
 ```
 
-Both are peer dependencies — `@modelcontextprotocol/sdk` (`>=1.30`) because `client()` hands back
-the SDK's own `Client` and an `instanceof` against a second copy in the tree means nothing, and
-`openai` (`>=6`) because `tools()` returns its `ChatCompletionTool`. ESM only, Node >=22.
+`@modelcontextprotocol/sdk` (`>=1.30`) is the one peer dependency, because `client()` hands back
+the SDK's own `Client` and an `instanceof` against a second copy in the tree means nothing.
+`openai` is **not** one: `tools()` returns `ToolDefinition`, which is declared here and assignable
+to OpenAI's `ChatCompletionTool` because TypeScript is structural. It was a required peer for two
+type positions that are erased at compile time, so a consumer proxying MCP and never calling a
+model installed 24 MB to satisfy them. ESM only, Node >=22.
 
 ## The seam
 
@@ -44,8 +47,9 @@ for a reader that would otherwise be shown the pool as it stood before its own w
 row it was configured from:
 
 ```ts
-for (const { config, status, error, tools } of mcp.state()) {
-  // config is the row you passed in; status/error/tools are what the pool made of it
+for (const { config, status, error, tools, pid, startedAt } of mcp.state()) {
+  // config is a copy of the row you passed in, minus its credentials;
+  // status/error/tools/pid/startedAt are what the pool made of it
 }
 ```
 
@@ -58,6 +62,26 @@ this the operator's list reorders itself according to which child started quicke
 
 `id`, `slug` and `label` stay alongside `config` — those are the *effective* values the pool
 actually used.
+
+**`env` and `headers` are left out of it.** That UI is a browser, sending `state()` to it is the
+shortest way to draw that line, and for a real server those two fields are an API key and an
+`Authorization: Bearer` — so the default is the safe one, and the caller genuinely rendering the
+edit form *server-side* is the one that asks:
+
+```ts
+mcp.state({ secrets: true }); // config carries env and headers again
+```
+
+`config` is a **copy** rather than the row itself. A caller that holds its rows and edits one in
+place used to get a pool that never reconnected — `sameConnection` was being asked whether a row
+differed from itself — while `state()` reported the edit as though the child had been restarted
+for it.
+
+`pid` and `startedAt` describe the connection rather than the configuration, so both are absent
+unless one is up, and `pid` over http, which has no child. They are what make `ready` mean
+something concrete to an operator: a pid finds a wedged child in `ps`, and a start time is how a
+server that is quietly crash-looping is spotted, since `status` reads `ready` either side of a
+restart.
 
 ## Scope
 
@@ -105,6 +129,12 @@ carry. `client(id)` hands back the connected client:
 const { resources } = await (await pool.client(id)).listResources();
 ```
 
+`listAllTools(client, options?)` is the other half a raw client needs: `tools/list` is paginated,
+the page size is the **server's** choice rather than the caller's, and a tool left on page two is
+not merely unlisted — it is absent from the index, so `call()` refuses it as one that does not
+exist. The pool and `probe()` both drain the cursor; a consumer driving the client itself wants
+the same walk rather than one `listTools`.
+
 `resultText` is the flattening `call()` does, exported separately: MCP answers with a list of
 content blocks and a message array holds one string. A consumer driving the client itself and
 still putting the answer in front of a model wants the same rule rather than its own — everything
@@ -125,6 +155,23 @@ unexpected close moves the server to `error`, drops its tools from the index so 
 offered tools whose process is gone, and records what the child last wrote to **stderr** — which
 for a server that failed to start is usually the only useful explanation ("no module named
 mcp_server_git" rather than "MCP error -32000: Connection closed").
+
+Every refusal from `client()` and `call()` is an `McpPoolError` with a `code`, because the
+message alone cannot separate the two that matter most:
+
+```ts
+try {
+  await pool.client(id);
+} catch (error) {
+  if (error instanceof McpPoolError) respond(status[error.code], error.detail);
+}
+```
+
+`unknown-server`, `disabled`, `backoff` (a failure recent enough that nothing was dialled — with
+`retryAt` for when one will be) and `connect-failed` (dialled just now, and could not — with the
+child's stderr in `detail`). `call()` adds `unknown-tool` and `out-of-scope`, which deliberately
+**share their message**: a run must not learn that a server it was not scoped to exists. The
+messages are unchanged from the plain `Error`s these replaced.
 
 A failed server is then retried, which is the other half: `sync` leaves a *healthy* unchanged
 server alone but treats a failed one as work to do, and `call` brings back a server that is

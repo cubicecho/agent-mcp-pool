@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type OpenAI from "openai";
 import { afterAll, afterEach, expect, test } from "vitest";
+import { McpPoolError } from "../src/errors.ts";
 import { qualify, SEPARATOR } from "../src/naming.ts";
 import { McpPool } from "../src/pool.ts";
 import { MINIMAL_CHILD_ENV } from "../src/transport.ts";
@@ -78,6 +79,23 @@ const names = (definitions: OpenAI.ChatCompletionTool[]) =>
 /** The qualified names on offer. */
 const toolNames = (pool: McpPool, servers?: string[]) => names(pool.tools(undefined, servers));
 
+/** A row as `state()` reports it by default: everything except the credentials. */
+const withoutSecrets = ({ env, headers, ...rest }: McpServerConfig) => rest;
+
+/**
+ * The pool's refusal itself rather than its message, since the message is deliberately the same
+ * for two of them.
+ */
+async function refusal(work: Promise<unknown>): Promise<McpPoolError> {
+  try {
+    await work;
+  } catch (error) {
+    if (error instanceof McpPoolError) return error;
+    throw error;
+  }
+  throw new Error("expected the pool to refuse");
+}
+
 let pool = makePool();
 
 afterEach(async () => {
@@ -96,6 +114,18 @@ test("connects a configured server and offers its tools qualified by slug", asyn
   expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready", error: "" }]);
   expect(toolNames(pool)).toEqual(["echo__ping", "echo__echo", "echo__add"]);
   expect(await pool.call("echo__ping", {})).toBe("ping({})");
+});
+
+/**
+ * `openai` stopped being a peer dependency: `ToolDefinition` is declared structurally, so a
+ * consumer that never calls a model no longer installs 24 MB for a type that is erased anyway.
+ * The annotation is the assertion — this fails at `npm run typecheck` if the two shapes drift.
+ */
+test("the definitions the pool hands back are still OpenAI's chat tools", async () => {
+  await pool.sync([config()]);
+
+  const definitions: OpenAI.ChatCompletionTool[] = pool.tools();
+  expect(names(definitions)).toEqual(["echo__ping", "echo__echo", "echo__add"]);
 });
 
 test("an unchanged config is left alone rather than reconnected", async () => {
@@ -196,7 +226,7 @@ test("state() hands back the row a server was configured from", async () => {
   await pool.sync([row]);
 
   const [entry] = pool.state();
-  expect(entry?.config).toEqual(row);
+  expect(entry?.config).toEqual(withoutSecrets(row));
   // The identity fields stay alongside it: those are what the pool actually used.
   expect(entry).toMatchObject({ id: "echo-1", slug: "echo", label: "Echo", status: "ready" });
 });
@@ -210,14 +240,97 @@ test("a renamed server reports the new row, not the one it connected under", asy
   await pool.sync();
 
   // `relabel` swaps the row in place without restarting the child; `state()` has to follow it.
-  expect(pool.state()[0]?.config).toEqual(rows[0]);
+  expect(pool.state()[0]?.config).toEqual(withoutSecrets(rows[0] as McpServerConfig));
 });
 
 test("a server the pool never dialled still reports its row", async () => {
   const row = config({ enabled: false });
   await pool.sync([row]);
 
-  expect(pool.state()).toMatchObject([{ status: "disabled", config: row }]);
+  expect(pool.state()).toMatchObject([{ status: "disabled", config: withoutSecrets(row) }]);
+});
+
+/**
+ * `state()` is documented as what a UI draws the edit form and the connection state from, and a
+ * UI is a browser. For a real server `env` and `headers` are an API key and an
+ * `Authorization: Bearer`, so the consumer that followed the README shipped its credentials to
+ * the client — on a shape where every other field was safe to hand onward.
+ */
+test("state() leaves the credentials out of the row, unless they are asked for", async () => {
+  const row = config({
+    env: { MCP_ECHO_SPAWN_LOG: spawnLog, OPENAI_API_KEY: "sk-SUPER-SECRET" },
+    headers: { Authorization: "Bearer TOKEN-SECRET" },
+  });
+  await pool.sync([row]);
+
+  const [safe] = pool.state();
+  expect(safe?.config).not.toHaveProperty("env");
+  expect(safe?.config).not.toHaveProperty("headers");
+  // Whatever a consumer serialises of it, rather than the two fields alone.
+  expect(JSON.stringify(safe)).not.toContain("SECRET");
+
+  // The edit form rendered server-side is the one caller that legitimately needs them back.
+  const [full] = pool.state({ secrets: true });
+  expect(full?.config.env).toEqual(row.env);
+  expect(full?.config.headers).toEqual(row.headers);
+});
+
+/**
+ * The entry held the caller's own object, so `sameConnection` was asked whether a row differed
+ * from itself and always answered no. A caller that parses its rows once and hands out the same
+ * objects — a config file rather than a fresh `db.select()` — got a pool that never reconnected,
+ * and a `state()` reporting an edit the running child knew nothing about.
+ */
+test("a row edited in place is a changed row, not one the pool is already running", async () => {
+  const row = config();
+  pool = makePool(async () => [row]);
+  await pool.sync();
+
+  row.args = [FIXTURE, "--edited"];
+  await pool.sync();
+
+  expect(spawned()).toBe(2);
+  expect(pool.state()[0]?.config.args).toEqual([FIXTURE, "--edited"]);
+});
+
+test("the row state() reports is a copy, so editing it cannot reach the pool", async () => {
+  const row = config();
+  await pool.sync([row]);
+
+  const [seen] = pool.state();
+  if (seen) seen.config.label = "edited";
+  seen?.config.args?.push("--edited");
+
+  expect(pool.state()[0]?.config).toEqual(withoutSecrets(row));
+  // Still the same connection as far as the pool is concerned, so nothing restarts.
+  await pool.sync([row]);
+  expect(spawned()).toBe(1);
+});
+
+/**
+ * `ready` is not much to go on. A pid is what an operator reaches for to find a wedged child in
+ * `ps` or to kill it, and a start time is how a server that is quietly crash-looping is spotted —
+ * `status` reads `ready` either side of a restart. Neither is recoverable once the pool owns the
+ * transport.
+ */
+test("state() describes the running child: its pid, and when it started", async () => {
+  const before = Date.now();
+  await pool.sync([config()]);
+
+  const [entry] = pool.state();
+  expect(entry?.pid).toBe(spawnedPids()[0]);
+  expect(Date.parse(entry?.startedAt ?? "")).toBeGreaterThanOrEqual(before);
+});
+
+test("a pid does not outlive the child it named", async () => {
+  pool = makePool(undefined, 60_000);
+  await pool.sync([config()]);
+  process.kill(spawnedPids()[0] as number, "SIGKILL");
+  await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
+
+  // Pids are reused, so one kept past its process eventually names somebody else's.
+  expect(pool.state()[0]?.pid).toBeUndefined();
+  expect(pool.state()[0]?.startedAt).toBeUndefined();
 });
 
 test("overlapping syncs settle on the last config and orphan nothing", async () => {
@@ -678,6 +791,36 @@ test("a probe reports a server that will not start, rather than throwing", async
  * then dialled with no timeout at all, so a pool configured to give up on a wedged server in a
  * second sat on the SDK's sixty for the same server behind a "Test connection" button.
  */
+/**
+ * `tools/list` is paginated and the page size is the server's choice, so a server is free to
+ * answer with one tool at a time. Everything past the first page used to be dropped silently, and
+ * a dropped tool is worse than a short catalogue: it is missing from the index, so `call()`
+ * refuses it as a tool that does not exist.
+ */
+test("a server that pages its tool list is read to the end of it", async () => {
+  await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_PAGE_SIZE: "1" } })]);
+
+  expect(toolNames(pool)).toEqual(["echo__ping", "echo__echo", "echo__add"]);
+  // The half that matters: a tool off the last page is callable, not merely listed.
+  expect(await pool.call("echo__add", { a: 1, b: 2 })).toBe('add({"a":1,"b":2})');
+});
+
+test("a probe reads every page too, rather than under-reporting a paged server", async () => {
+  const result = await pool.probe(config({ env: { MCP_ECHO_PAGE_SIZE: "2" } }));
+
+  expect(result.ok).toBe(true);
+  expect(result.tools.map((tool) => tool.name)).toEqual(["ping", "echo", "add"]);
+});
+
+test("a server that repeats its cursor is failed rather than paged forever", async () => {
+  await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_STUCK_CURSOR: "1" } })]);
+
+  // A truncated list is a wrong answer that looks right; a server that cannot paginate is broken.
+  expect(pool.state()).toMatchObject([{ status: "error" }]);
+  expect(pool.state()[0]?.error).toContain("cursor");
+  expect(await stillAlive(spawnedPids())).toEqual([]);
+});
+
 test("a probe gives up on the pool's schedule, not the SDK's", async () => {
   pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 1000 });
 
@@ -832,6 +975,55 @@ test("client() reports a server that stays down, rather than one that is not con
 
   // The stderr tail is the whole reason the pool keeps one: "boom" beats "connection closed".
   await expect(pool.client("echo-1")).rejects.toThrow(/is not connected: boom/);
+});
+
+test("client() says which of its refusals this is, rather than only what went wrong", async () => {
+  await pool.sync([config({ enabled: false })]);
+
+  expect((await refusal(pool.client("nope"))).code).toBe("unknown-server");
+  expect((await refusal(pool.client("echo-1"))).code).toBe("disabled");
+});
+
+/**
+ * The pair worth telling apart, and the two the message cannot: both read "is not connected", and
+ * a caller in front of an HTTP API answers 502 to a dial that just failed and 503 — retry
+ * shortly — to one it did not make because a failure 900ms ago is still inside its backoff.
+ */
+test("client() tells a backoff apart from a connect that failed on this call", async () => {
+  const broken = config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_FAIL: "boom" } });
+  pool = makePool(undefined, 60_000);
+  await pool.sync([broken]);
+
+  const held = await refusal(pool.client("echo-1"));
+  expect(held.code).toBe("backoff");
+  expect(held.retryAt).toBeGreaterThan(Date.now());
+  expect(held.detail).toContain("boom");
+  // The backoff is the point: nothing was dialled for this call.
+  expect(spawned()).toBe(1);
+
+  // No backoff to hold it off, so this one does dial, and does fail.
+  await pool.shutdown();
+  pool = makePool(undefined, 0);
+  await pool.sync([broken]);
+  const failed = await refusal(pool.client("echo-1"));
+  expect(failed.code).toBe("connect-failed");
+  expect(failed.retryAt).toBeUndefined();
+  expect(failed.detail).toContain("boom");
+});
+
+test("a refused call says whether the tool is missing or merely out of this run's scope", async () => {
+  await pool.sync([config()]);
+
+  const missing = await refusal(pool.call("echo__nope", {}));
+  const unscoped = await refusal(pool.call("echo__ping", {}, []));
+
+  expect(missing.code).toBe("unknown-tool");
+  expect(unscoped.code).toBe("out-of-scope");
+  expect(unscoped.serverId).toBe("echo-1");
+  // The model is told the same thing either way: a run must not learn that a server it was not
+  // scoped to exists.
+  expect(missing.message).toMatch(/no connected MCP server offers a tool called/);
+  expect(unscoped.message).toMatch(/no connected MCP server offers a tool called/);
 });
 
 /** A pool with the lifecycle options under test; silent for the same reason `makePool` is. */

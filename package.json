@@ -54,8 +54,7 @@
     "format": "biome check --write ."
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": ">=1.30",
-    "openai": ">=6"
+    "@modelcontextprotocol/sdk": ">=1.30"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.11",

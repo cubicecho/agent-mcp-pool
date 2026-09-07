@@ -10,7 +10,9 @@
 // Re-exported so a consumer can type an `onNotification` listener without depending on the SDK's
 // module layout, which this package pins through its peer dependency anyway.
 export type { Notification } from "@modelcontextprotocol/sdk/types.js";
-export { McpPool, type McpPoolOptions, type PoolLog } from "./pool.ts";
+export { McpPoolError, type McpPoolErrorCode, type McpPoolErrorOptions } from "./errors.ts";
+export { listAllTools } from "./listing.ts";
+export { McpPool, type McpPoolOptions, type PoolLog, type StateOptions } from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
 export { resultText } from "./results.ts";
 export {
@@ -24,6 +26,8 @@ export type {
   McpConnection,
   McpProbe,
   McpServerConfig,
+  McpServerPublicConfig,
   McpServerState,
   McpStatus,
+  ToolDefinition,
 } from "./types.ts";

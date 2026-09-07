@@ -34,7 +34,7 @@ npm run llms:check       # fails if the committed llms.txt is stale
 | Choice | Why |
 | --- | --- |
 | **`@modelcontextprotocol/sdk` as a peer** | `client()` hands the consumer a real `Client`, so the SDK has to be *their* copy. Two copies in one process means two versions of the protocol and a type that does not match itself. |
-| **`openai` as a peer** | `tools()` returns `OpenAI.ChatCompletionTool`. Bundled, the definitions would not typecheck against the consumer's own OpenAI client. |
+| **No `openai` dependency at all** | `tools()` returns a locally declared `ToolDefinition`, assignable to `OpenAI.ChatCompletionTool` because TypeScript is structural. As a required peer it cost a consumer that never calls a model 24MB for two erased type positions; `openai` stays a devDependency, and a test annotation holds the two shapes together. |
 | **Vitest over `node:test`** | The suites spawn real child processes and assert on what is left running afterwards; the `--coverage` integration is what found the untested http transport. |
 | **`.ts` import specifiers** | With `rewriteRelativeImportExtensions`, source imports resolve as written and are rewritten on build — no `.js` that means `.ts`. |
 | **A generated `llms.txt`** | A hand-written copy of an API surface drifts from the surface. CI fails on a diff rather than trusting anyone to remember. |
@@ -62,6 +62,16 @@ no `failedAt`, so no backoff stands between it and the next call. Only a real fa
 **Reconciles are queued, never concurrent.** Two interleaving syncs both spawn a child for the
 same edited server and the second orphans the first — a live process with nothing holding a
 handle to close it.
+
+**`tools/list` is drained, never read one page deep.** Page size is the server's choice, and a
+tool left on page two is not merely unlisted — it is absent from `index`, so `call()` refuses it
+as one that does not exist. `listAllTools` is the one walk; a `resources/list` or `prompts/list`
+added later paginates the same way.
+
+**The pool holds its own copy of every row, and `state()` hands back another.** An entry aliasing
+the caller's object makes `sameConnection` compare a row against itself, so an in-place edit never
+reconnects. `state()` also drops `env` and `headers` unless asked: the documented reader of that
+row is a UI, and a UI is a browser.
 
 **`llms.txt` is generated and committed.** Edit the doc comment it came from, then `npm run
 build`. CI fails on a diff.

@@ -1,8 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Notification } from "@modelcontextprotocol/sdk/types.js";
-import type OpenAI from "openai";
-import { sameConnection, scope } from "./config.ts";
-import { errorMessage } from "./errors.ts";
+import { copyConfig, sameConnection, scope } from "./config.ts";
+import { errorMessage, McpPoolError } from "./errors.ts";
+import { listAllTools } from "./listing.ts";
 import { couldQualify, labelOf, type PooledTool, pooledTool, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { resultText } from "./results.ts";
@@ -12,8 +12,10 @@ import type {
   McpConnection,
   McpProbe,
   McpServerConfig,
+  McpServerPublicConfig,
   McpServerState,
   McpStatus,
+  ToolDefinition,
 } from "./types.ts";
 
 /**
@@ -42,6 +44,10 @@ interface Entry {
   stderrTail?: () => string;
   /** Armed on each use when an idle timeout applies; disarmed whenever the client goes away. */
   idleTimer?: ReturnType<typeof setTimeout>;
+  /** The stdio child's pid, while there is one. Cleared with the client it describes. */
+  pid?: number;
+  /** When this connection became ready, as a `Date.now()` stamp. Cleared with the client. */
+  startedAt?: number;
 }
 
 /**
@@ -110,6 +116,19 @@ export interface McpPoolOptions {
    * immediately. `McpServerConfig.idleTimeoutMs` overrides it for one server.
    */
   idleTimeoutMs?: number;
+}
+
+/** What `state()` takes: whether the rows it reports come back with their credentials. */
+export interface StateOptions {
+  /**
+   * Include each row's `env` and `headers`.
+   *
+   * Off by default, because the documented reason to want the row at all — a UI drawing the edit
+   * form beside the connection state — sends what it is given to a browser, and for a real server
+   * those two fields are an API key and an `Authorization: Bearer`. An edit form rendered
+   * *server-side* is the case that legitimately needs them back: that one asks.
+   */
+  secrets?: boolean;
 }
 
 /**
@@ -343,7 +362,7 @@ export class McpPool {
   private relabel(entry: Entry, config: McpServerConfig) {
     const renamed = slugOf(entry.config) !== slugOf(config) || entry.config.label !== config.label;
     const reclocked = entry.config.idleTimeoutMs !== config.idleTimeoutMs;
-    entry.config = config;
+    entry.config = copyConfig(config);
     // An edited idle timeout is no reason to restart the child, but the armed timer is still
     // running the old one, so re-arm rather than let it fire on a stale duration.
     if (reclocked) this.touch(entry);
@@ -411,10 +430,14 @@ export class McpPool {
   /**
    * Registers a server as an entry and, unless the pool is lazy, dials it.
    *
-   * @param config The row to connect. A disabled one is registered at `disabled` and left there.
+   * @param row The row to connect, copied on the way in. A disabled one is registered at
+   *   `disabled` and left there.
    * @param force Dial even under `lazy` — what a use does when it needs the child now.
    */
-  private async connect(config: McpServerConfig, force = false) {
+  private async connect(row: McpServerConfig, force = false) {
+    // The pool's own copy from here on: an entry holding the caller's object is one the caller
+    // can edit under it, and then `sameConnection` compares a row against itself.
+    const config = copyConfig(row);
     const status = !config.enabled ? "disabled" : this.lazy && !force ? "idle" : "connecting";
     const entry: Entry = { config, status, tools: [] };
     this.entries.set(config.id, entry);
@@ -440,10 +463,16 @@ export class McpPool {
       const timeout =
         this.connectTimeoutMs === undefined ? undefined : { timeout: this.connectTimeoutMs };
       await client.connect(transport, timeout);
-      const { tools } = await client.listTools(undefined, timeout);
+      // Every page: a tool that landed on page two is missing from the index, and `call()` then
+      // refuses it as a tool that does not exist.
+      const tools = await listAllTools(client, timeout);
 
       entry.client = client;
       entry.status = "ready";
+      // Only reachable from inside this method — the transport is the pool's from here on, and an
+      // operator with a wedged child has nothing else to find it in `ps` by.
+      entry.pid = "pid" in transport ? (transport.pid ?? undefined) : undefined;
+      entry.startedAt = Date.now();
       entry.tools = tools.map((tool) =>
         pooledTool(config, {
           name: tool.name,
@@ -481,7 +510,7 @@ export class McpPool {
   private onClose(entry: Entry) {
     if (entry.closing) return;
     this.disarm(entry);
-    entry.client = undefined;
+    this.forget(entry);
     entry.status = "error";
     entry.error = entry.stderrTail?.() || "the server closed the connection";
     entry.failedAt = Date.now();
@@ -505,7 +534,19 @@ export class McpPool {
     } catch {
       // a server that died on its own is already closed
     }
+    this.forget(entry);
+  }
+
+  /**
+   * Drops everything that only describes a live connection.
+   *
+   * The pid and the start time have to go with the client that made them, or `state()` names a
+   * process that is gone — and a pid is reused, so a stale one names somebody else's.
+   */
+  private forget(entry: Entry) {
     entry.client = undefined;
+    entry.pid = undefined;
+    entry.startedAt = undefined;
   }
 
   /**
@@ -520,9 +561,9 @@ export class McpPool {
    * @param servers The run's scope. Absent is every server, empty is none — the two must not
    *   collapse, since "no servers linked" is a real state.
    */
-  tools(names?: string[], servers?: Iterable<string>): OpenAI.ChatCompletionTool[] {
+  tools(names?: string[], servers?: Iterable<string>): ToolDefinition[] {
     const allowed = scope(servers);
-    const definitions: OpenAI.ChatCompletionTool[] = [];
+    const definitions: ToolDefinition[] = [];
     // A model asking for the same tool twice would otherwise be sent two definitions under one
     // function name, which OpenAI rejects — a bad request rather than a bad answer, and one that
     // reads as the caller's bug. Caller order is kept; the first mention wins.
@@ -711,22 +752,39 @@ export class McpPool {
    * A disabled server is still refused — it is off, not merely unscoped.
    *
    * @param id The config id, not the slug.
-   * @returns The connected client. Throws when no server has that id, when it is disabled, or
-   *   when it could not be connected — the last carrying the child's stderr where there is any.
+   * @returns The connected client.
+   * @throws {McpPoolError} `unknown-server`, `disabled`, `backoff` when a recent failure is still
+   *   inside it, or `connect-failed` — the last carrying the child's stderr as `detail`.
    */
   async client(id: string): Promise<Client> {
     const entry = this.entries.get(id);
-    if (!entry) throw new Error(`no MCP server is configured with id "${id}"`);
+    if (!entry) {
+      throw new McpPoolError("unknown-server", `no MCP server is configured with id "${id}"`, {
+        serverId: id,
+      });
+    }
     const slug = slugOf(entry.config);
-    if (!entry.config.enabled) throw new Error(`the MCP server "${slug}" is disabled`);
+    if (!entry.config.enabled) {
+      throw new McpPoolError("disabled", `the MCP server "${slug}" is disabled`, { serverId: id });
+    }
 
+    // Read before the dial, because afterwards the two are indistinguishable: a connect that
+    // failed just now leaves exactly the state a backoff this call refused to break was already
+    // in, and a caller in front of an HTTP API answers 502 to one and 503 to the other.
+    const dialling = entry.status === "idle" || this.retryDue(entry);
     // The whole lazy path for a consumer that knows which server it wants: a cold entry is
     // dialled here, and a warm one has its idle clock restarted.
     const current = await this.ensure(entry);
     if (!current.client) {
-      throw new Error(
-        `the MCP server "${slug}" is not connected${current.error ? `: ${current.error}` : ""}`,
-      );
+      const message = `the MCP server "${slug}" is not connected${
+        current.error ? `: ${current.error}` : ""
+      }`;
+      const backoff = !dialling && current.status === "error";
+      throw new McpPoolError(backoff ? "backoff" : "connect-failed", message, {
+        serverId: id,
+        detail: current.error,
+        retryAt: backoff ? (current.failedAt ?? 0) + this.crashBackoffMs : undefined,
+      });
     }
     return current.client;
   }
@@ -743,6 +801,8 @@ export class McpPool {
    * @param servers The run's scope. A tool outside it is refused as one that does not exist.
    * @returns The result as text, or `"(no output)"` when the server returned none. A tool that
    *   answers with `isError` throws instead.
+   * @throws {McpPoolError} `unknown-tool`, or `out-of-scope` for a tool this run may not reach.
+   *   Both carry the same message, so the model cannot tell them apart.
    */
   async call(qualifiedName: string, input: unknown, servers?: Iterable<string>): Promise<string> {
     const allowed = scope(servers);
@@ -759,7 +819,13 @@ export class McpPool {
     // A tool outside this run's scope is answered as one that does not exist, because to this run
     // it does not: "that server is not yours" would teach the model to ask again.
     if (!found || (allowed && !allowed.has(found.serverId))) {
-      throw new Error(`no connected MCP server offers a tool called "${qualifiedName}"`);
+      // One message for both, so a run cannot learn that a server it was not scoped to exists.
+      // The code separates them for a caller that wants the refusals in its own log.
+      throw new McpPoolError(
+        found ? "out-of-scope" : "unknown-tool",
+        `no connected MCP server offers a tool called "${qualifiedName}"`,
+        { toolName: qualifiedName, serverId: found?.serverId },
+      );
     }
 
     const entry = this.entries.get(found.serverId);
@@ -801,20 +867,43 @@ export class McpPool {
    *
    * The row is handed back rather than projected away: a consumer drawing an edit form beside a
    * connection status would otherwise keep its own copy, and that copy is the one that goes stale.
+   * Its credentials are not: `env` and `headers` are left out unless `secrets` asks for them,
+   * because the shortest way to draw that line is to send this straight to a browser.
    *
+   * @param options `secrets: true` puts each row's `env` and `headers` back — see `StateOptions`.
    * @returns One row per configured server, in configuration order — not in the order they
-   *   happened to connect.
+   *   happened to connect. Each `config` is a copy, so editing one cannot reach the pool.
    */
-  state(): McpServerState[] {
+  state({ secrets = false }: StateOptions = {}): McpServerState[] {
     return [...this.entries.values()].map((entry) => ({
       id: entry.config.id,
       slug: slugOf(entry.config),
       label: labelOf(entry.config),
-      config: entry.config,
+      config: this.reportedConfig(entry.config, secrets),
       status: entry.status,
       error: entry.error ?? "",
       tools: entry.tools.map(({ name, description }) => ({ name, description })),
+      pid: entry.pid,
+      startedAt:
+        entry.startedAt === undefined ? undefined : new Date(entry.startedAt).toISOString(),
     }));
+  }
+
+  /**
+   * A row as it goes out of `state()`: a copy, and without the credentials unless asked for.
+   *
+   * A copy because the pool's record of what it dialled is not the caller's to edit, and without
+   * `env`/`headers` because the documented use for the row — a UI drawing the edit form beside
+   * the connection state — is a browser, and those two fields are an API key and a bearer token.
+   *
+   * @param config The entry's own row.
+   * @param secrets Whether the caller asked for the credentials back.
+   */
+  private reportedConfig(config: McpServerConfig, secrets: boolean): McpServerPublicConfig {
+    const copy = copyConfig(config);
+    if (secrets) return copy;
+    const { env, headers, ...rest } = copy;
+    return rest;
   }
 
   /**

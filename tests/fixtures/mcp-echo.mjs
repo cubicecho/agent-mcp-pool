@@ -68,11 +68,32 @@ const server = new Server(
 // A server that connects cleanly and offers nothing. Rarer than a broken one and easier to miss,
 // because every status the pool reports about it says it is fine.
 const offered = process.env.MCP_ECHO_NO_TOOLS ? [] : tools;
+// How many tools one `tools/list` answers with. Page size is the server's choice rather than the
+// client's, so a server is free to send them a few at a time — and a client reading one page
+// then reports fewer tools than the server has.
+const pageSize = Number(process.env.MCP_ECHO_PAGE_SIZE ?? 0);
+
 // Answers `initialize` and then never answers `tools/list`. A server that fails to start is the
 // easy case; this is the one that starts, so the client has a live child on the end of it, and
 // then leaves the handshake half-finished.
 if (process.env.MCP_ECHO_HANG_TOOLS) {
   server.setRequestHandler(ListToolsRequestSchema, () => new Promise(() => {}));
+} else if (process.env.MCP_ECHO_STUCK_CURSOR) {
+  // Hands back the cursor it was given, for ever. A client that follows cursors without noticing
+  // pages forever, which is worse than either a short list or an error.
+  server.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: offered.slice(0, 1),
+    nextCursor: "stuck",
+  }));
+} else if (pageSize > 0) {
+  server.setRequestHandler(ListToolsRequestSchema, (request) => {
+    const start = Number(request.params?.cursor ?? 0);
+    const next = start + pageSize;
+    return {
+      tools: offered.slice(start, next),
+      ...(next < offered.length ? { nextCursor: String(next) } : {}),
+    };
+  });
 } else {
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: offered }));
 }
