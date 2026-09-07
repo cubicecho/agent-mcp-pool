@@ -48,6 +48,13 @@ against an argument, and it counts as part of the connection: editing it restart
 `syncSoon()` debounces a reconcile past a transaction commit, and `flush()` pays one off early
 for a reader that would otherwise be shown the pool as it stood before its own write.
 
+`load` is optional: a consumer that owns its own configuration passes the rows every time instead.
+On such a pool, a `sync()` or `reconnect(id)` with no configs has nothing to reconcile against and
+is refused with a `no-configs` `McpPoolError` rather than treated as an empty set — reconciling
+against nothing closes and forgets every server, and doing that because an argument was left off
+is the most destructive thing this API could do by accident. `sync([])` still closes everything,
+from a caller who said so.
+
 ## State
 
 `state()` reports every configured server **in the order it was configured**, and hands back the
@@ -236,7 +243,8 @@ try {
 `retryAt` for when one will be) and `connect-failed` (dialled just now, and could not — with the
 child's stderr in `detail`). `call()` adds `unknown-tool` and `out-of-scope`, which deliberately
 **share their message**: a run must not learn that a server it was not scoped to exists. The
-messages are unchanged from the plain `Error`s these replaced.
+messages are unchanged from the plain `Error`s these replaced. `sync()` and `reconnect()` have one
+of their own, `no-configs` — see [the seam](#the-seam).
 
 A failed server is then retried, which is the other half: `sync` leaves a *healthy* unchanged
 server alone but treats a failed one as work to do, and `call` brings back a server that is

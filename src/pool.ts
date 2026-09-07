@@ -279,12 +279,39 @@ export class McpPool {
   /**
    * Reconciles the pool against `configs`, or against `options.load` when given nothing.
    *
-   * @param configs The servers to reconcile against. Omitted, `load` is asked — and with no
-   *   `load` either that is an empty set, which closes every server the pool has.
-   * @returns Resolves when the reconcile this call queued has finished.
+   * @param configs The servers to reconcile against. Omitted, `load` is asked — and on a pool
+   *   built without one, that is a `no-configs` refusal rather than an empty set. Reconciling
+   *   against nothing closes every server, and doing it because an argument was left off is the
+   *   most destructive thing this API could do by accident. `sync([])` still means exactly that,
+   *   from a caller who said so.
+   * @returns Resolves when the reconcile this call queued has finished. Rejects with an
+   *   `McpPoolError` of code `no-configs` when there is nothing to reconcile against.
    */
   sync(configs?: McpServerConfig[]): Promise<void> {
     return this.queue(() => this.reconcile(configs));
+  }
+
+  /**
+   * Refuses a reconcile that has nothing to reconcile against, before it closes anything.
+   *
+   * An omitted `configs` used to fall through to `[]` on a pool with no `load` — the supported
+   * shape for a consumer that owns its own rows and always passes them. That is the same code
+   * path as a caller who really did drop every row, so every server was closed and forgotten with
+   * no log line and no throw, and the next `client(id)` answered `unknown-server` for a row nobody
+   * had removed. A `state()` of `[]` looks exactly like a pool that was never synced, which is
+   * what made it quiet enough to reach a consumer's test suite as a bug in the consumer.
+   *
+   * `sync([])` still means "close everything": that is a caller saying so. Only the case where
+   * nobody said it is refused.
+   *
+   * @param configs What the caller passed, `undefined` included — the case this is about.
+   */
+  private requireConfigs(configs?: McpServerConfig[]) {
+    if (configs !== undefined || this.load) return;
+    throw new McpPoolError(
+      "no-configs",
+      "This pool has no load(), so sync() and reconnect() need the configs to reconcile against. Pass [] to close every server.",
+    );
   }
 
   /**
@@ -302,10 +329,15 @@ export class McpPool {
    *
    * @param id The server to drop and redial. An id the pool does not know is not an error; the
    *   reconcile still runs.
-   * @param configs Passed on to that reconcile, exactly as `sync` takes it.
+   * @param configs Passed on to that reconcile, exactly as `sync` takes it — including the
+   *   `no-configs` refusal when it is omitted on a pool with no `load`. This is the easier of the
+   *   two to leave off, since `reconnect(id)` reads as complete on its own.
    */
   reconnect(id: string, configs?: McpServerConfig[]): Promise<void> {
     return this.queue(async () => {
+      // Before the close, not inside the reconcile: refusing after the entry is already gone
+      // would leave the caller with the one server they named torn down as well as the error.
+      this.requireConfigs(configs);
       const existing = this.entries.get(id);
       if (existing) {
         await this.close(existing);
@@ -355,6 +387,10 @@ export class McpPool {
    *
    * A hook inside the mutation's transaction sees the table as it stood before the write it is
    * reacting to. Waiting also folds a batch of edits into one reconnect.
+   *
+   * For a pool with a `load` to go back to: without one there is no source to re-read, and the
+   * debounced sync ends in the same `no-configs` refusal `sync()` gives, logged rather than
+   * thrown since nobody is holding its promise.
    */
   syncSoon() {
     this.owed = true;
@@ -398,6 +434,7 @@ export class McpPool {
    *   server it was named for rather than registering it and leaving it for the next use.
    */
   private async reconcile(configs?: McpServerConfig[], dial?: string) {
+    this.requireConfigs(configs);
     const wanted = configs ?? (this.load ? await this.load() : []);
     const keep = new Set(wanted.map((config) => config.id));
     for (const [id, entry] of this.entries) {

@@ -470,6 +470,49 @@ test("reconnecting a server that is not configured leaves the rest connected", a
 });
 
 /**
+ * `configs` is optional on both methods and used to fall back to `load`, so on a pool built
+ * without one — the supported shape for a consumer that owns its own rows — an omitted argument
+ * reconciled against `[]` and closed and forgot every server. Silently: it is the same code path
+ * as a caller who really did drop every row, so there was no log line, no throw, and a `state()`
+ * of `[]` that looks exactly like a pool nobody has synced yet.
+ */
+test("sync with no configs on a pool with no load is refused rather than closing everything", async () => {
+  await pool.sync([config()]);
+
+  const error = await refusal(pool.sync());
+
+  expect(error.code).toBe("no-configs");
+  // The point of the refusal: the servers the caller never removed are still there.
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready" }]);
+  expect(await pool.call("echo__ping", {})).toBe("ping({})");
+});
+
+/**
+ * The easier of the two to hit, because `reconnect(id)` reads as complete on its own — `configs`
+ * looks like optional context rather than the whole wanted set.
+ */
+test("reconnect with no configs on a pool with no load leaves the server it named alone", async () => {
+  await pool.sync([config()]);
+
+  const error = await refusal(pool.reconnect("echo-1"));
+
+  expect(error.code).toBe("no-configs");
+  // Refused before the teardown, or the caller would get the error *and* a stopped server.
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "ready" }]);
+  expect(spawned()).toBe(1);
+});
+
+test("sync with an empty array still closes every server, since a caller said so", async () => {
+  await pool.sync([config()]);
+  const pids = spawnedPids();
+
+  await pool.sync([]);
+
+  expect(pool.state()).toEqual([]);
+  expect(await stillAlive(pids)).toEqual([]);
+});
+
+/**
  * `reconnect` dropped the entry and let the reconcile rebuild it, and a lazy reconcile registers
  * an entry at `idle` and waits for a use — so on a lazy pool "reconnect this wedged server"
  * *stopped* it, and the caller found out on the next call that spawned one. The two pools now
