@@ -79,6 +79,9 @@ const names = (definitions: OpenAI.ChatCompletionTool[]) =>
 /** The qualified names on offer. */
 const toolNames = (pool: McpPool, servers?: string[]) => names(pool.tools(undefined, servers));
 
+/** A row as `state()` reports it by default: everything except the credentials. */
+const withoutSecrets = ({ env, headers, ...rest }: McpServerConfig) => rest;
+
 /**
  * The pool's refusal itself rather than its message, since the message is deliberately the same
  * for two of them.
@@ -223,7 +226,7 @@ test("state() hands back the row a server was configured from", async () => {
   await pool.sync([row]);
 
   const [entry] = pool.state();
-  expect(entry?.config).toEqual(row);
+  expect(entry?.config).toEqual(withoutSecrets(row));
   // The identity fields stay alongside it: those are what the pool actually used.
   expect(entry).toMatchObject({ id: "echo-1", slug: "echo", label: "Echo", status: "ready" });
 });
@@ -237,14 +240,39 @@ test("a renamed server reports the new row, not the one it connected under", asy
   await pool.sync();
 
   // `relabel` swaps the row in place without restarting the child; `state()` has to follow it.
-  expect(pool.state()[0]?.config).toEqual(rows[0]);
+  expect(pool.state()[0]?.config).toEqual(withoutSecrets(rows[0] as McpServerConfig));
 });
 
 test("a server the pool never dialled still reports its row", async () => {
   const row = config({ enabled: false });
   await pool.sync([row]);
 
-  expect(pool.state()).toMatchObject([{ status: "disabled", config: row }]);
+  expect(pool.state()).toMatchObject([{ status: "disabled", config: withoutSecrets(row) }]);
+});
+
+/**
+ * `state()` is documented as what a UI draws the edit form and the connection state from, and a
+ * UI is a browser. For a real server `env` and `headers` are an API key and an
+ * `Authorization: Bearer`, so the consumer that followed the README shipped its credentials to
+ * the client — on a shape where every other field was safe to hand onward.
+ */
+test("state() leaves the credentials out of the row, unless they are asked for", async () => {
+  const row = config({
+    env: { MCP_ECHO_SPAWN_LOG: spawnLog, OPENAI_API_KEY: "sk-SUPER-SECRET" },
+    headers: { Authorization: "Bearer TOKEN-SECRET" },
+  });
+  await pool.sync([row]);
+
+  const [safe] = pool.state();
+  expect(safe?.config).not.toHaveProperty("env");
+  expect(safe?.config).not.toHaveProperty("headers");
+  // Whatever a consumer serialises of it, rather than the two fields alone.
+  expect(JSON.stringify(safe)).not.toContain("SECRET");
+
+  // The edit form rendered server-side is the one caller that legitimately needs them back.
+  const [full] = pool.state({ secrets: true });
+  expect(full?.config.env).toEqual(row.env);
+  expect(full?.config.headers).toEqual(row.headers);
 });
 
 /**
@@ -273,7 +301,7 @@ test("the row state() reports is a copy, so editing it cannot reach the pool", a
   if (seen) seen.config.label = "edited";
   seen?.config.args?.push("--edited");
 
-  expect(pool.state()[0]?.config).toEqual(row);
+  expect(pool.state()[0]?.config).toEqual(withoutSecrets(row));
   // Still the same connection as far as the pool is concerned, so nothing restarts.
   await pool.sync([row]);
   expect(spawned()).toBe(1);

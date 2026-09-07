@@ -12,6 +12,7 @@ import type {
   McpConnection,
   McpProbe,
   McpServerConfig,
+  McpServerPublicConfig,
   McpServerState,
   McpStatus,
   ToolDefinition,
@@ -115,6 +116,19 @@ export interface McpPoolOptions {
    * immediately. `McpServerConfig.idleTimeoutMs` overrides it for one server.
    */
   idleTimeoutMs?: number;
+}
+
+/** What `state()` takes: whether the rows it reports come back with their credentials. */
+export interface StateOptions {
+  /**
+   * Include each row's `env` and `headers`.
+   *
+   * Off by default, because the documented reason to want the row at all — a UI drawing the edit
+   * form beside the connection state — sends what it is given to a browser, and for a real server
+   * those two fields are an API key and an `Authorization: Bearer`. An edit form rendered
+   * *server-side* is the case that legitimately needs them back: that one asks.
+   */
+  secrets?: boolean;
 }
 
 /**
@@ -853,16 +867,19 @@ export class McpPool {
    *
    * The row is handed back rather than projected away: a consumer drawing an edit form beside a
    * connection status would otherwise keep its own copy, and that copy is the one that goes stale.
+   * Its credentials are not: `env` and `headers` are left out unless `secrets` asks for them,
+   * because the shortest way to draw that line is to send this straight to a browser.
    *
+   * @param options `secrets: true` puts each row's `env` and `headers` back — see `StateOptions`.
    * @returns One row per configured server, in configuration order — not in the order they
    *   happened to connect. Each `config` is a copy, so editing one cannot reach the pool.
    */
-  state(): McpServerState[] {
+  state({ secrets = false }: StateOptions = {}): McpServerState[] {
     return [...this.entries.values()].map((entry) => ({
       id: entry.config.id,
       slug: slugOf(entry.config),
       label: labelOf(entry.config),
-      config: copyConfig(entry.config),
+      config: this.reportedConfig(entry.config, secrets),
       status: entry.status,
       error: entry.error ?? "",
       tools: entry.tools.map(({ name, description }) => ({ name, description })),
@@ -870,6 +887,23 @@ export class McpPool {
       startedAt:
         entry.startedAt === undefined ? undefined : new Date(entry.startedAt).toISOString(),
     }));
+  }
+
+  /**
+   * A row as it goes out of `state()`: a copy, and without the credentials unless asked for.
+   *
+   * A copy because the pool's record of what it dialled is not the caller's to edit, and without
+   * `env`/`headers` because the documented use for the row — a UI drawing the edit form beside
+   * the connection state — is a browser, and those two fields are an API key and a bearer token.
+   *
+   * @param config The entry's own row.
+   * @param secrets Whether the caller asked for the credentials back.
+   */
+  private reportedConfig(config: McpServerConfig, secrets: boolean): McpServerPublicConfig {
+    const copy = copyConfig(config);
+    if (secrets) return copy;
+    const { env, headers, ...rest } = copy;
+    return rest;
   }
 
   /**

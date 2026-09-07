@@ -70,7 +70,8 @@ added later paginates the same way.
 
 **The pool holds its own copy of every row, and `state()` hands back another.** An entry aliasing
 the caller's object makes `sameConnection` compare a row against itself, so an in-place edit never
-reconnects.
+reconnects. `state()` also drops `env` and `headers` unless asked: the documented reader of that
+row is a UI, and a UI is a browser.
 
 **`llms.txt` is generated and committed.** Edit the doc comment it came from, then `npm run
 build`. CI fails on a diff.

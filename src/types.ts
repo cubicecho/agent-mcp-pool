@@ -52,6 +52,17 @@ export type McpConnection = Pick<
  */
 export type McpStatus = "disabled" | "idle" | "connecting" | "ready" | "error";
 
+/**
+ * A row as `state()` reports it: everything except the credentials, unless they were asked for.
+ *
+ * `env` and `headers` are an API key and an `Authorization: Bearer` for a real server, and the
+ * shortest way to draw an edit form beside a connection status is to send `state()` to a browser.
+ * They are optional here rather than absent so `state({ secrets: true })` — the caller that is
+ * genuinely rendering that form server-side — can hand back the whole row under one type.
+ */
+export type McpServerPublicConfig = Omit<McpServerConfig, "env" | "headers"> &
+  Partial<Pick<McpServerConfig, "env" | "headers">>;
+
 /** One connected server as an operator sees it. */
 export interface McpServerState {
   id: string;
@@ -60,14 +71,14 @@ export interface McpServerState {
   /** The effective display name — the row's `label`, or its slug when the row set none. */
   label: string;
   /**
-   * The row this server is configured from, exactly as it was passed in.
+   * The row this server is configured from, minus its credentials — see `McpServerPublicConfig`.
    *
    * The pool is already holding it, and a UI drawing the edit form beside the connection state
    * would otherwise keep a second copy — one that goes stale the moment `syncSoon()` or a
    * `load`-driven `sync()` reconciles without it. A copy rather than the row itself: the pool's
    * record of what it dialled must not be editable from outside it.
    */
-  config: McpServerConfig;
+  config: McpServerPublicConfig;
   status: McpStatus;
   error: string;
   tools: { name: string; description: string }[];

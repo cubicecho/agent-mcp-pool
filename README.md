@@ -48,7 +48,7 @@ row it was configured from:
 
 ```ts
 for (const { config, status, error, tools, pid, startedAt } of mcp.state()) {
-  // config is a copy of the row you passed in;
+  // config is a copy of the row you passed in, minus its credentials;
   // status/error/tools/pid/startedAt are what the pool made of it
 }
 ```
@@ -62,6 +62,15 @@ this the operator's list reorders itself according to which child started quicke
 
 `id`, `slug` and `label` stay alongside `config` — those are the *effective* values the pool
 actually used.
+
+**`env` and `headers` are left out of it.** That UI is a browser, sending `state()` to it is the
+shortest way to draw that line, and for a real server those two fields are an API key and an
+`Authorization: Bearer` — so the default is the safe one, and the caller genuinely rendering the
+edit form *server-side* is the one that asks:
+
+```ts
+mcp.state({ secrets: true }); // config carries env and headers again
+```
 
 `config` is a **copy** rather than the row itself. A caller that holds its rows and edits one in
 place used to get a pool that never reconnected — `sameConnection` was being asked whether a row
