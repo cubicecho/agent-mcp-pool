@@ -34,6 +34,22 @@ export interface McpServerConfig {
    * server too expensive to restart wants.
    */
   idleTimeoutMs?: number | null;
+  /**
+   * How long *this* server gets to answer `initialize` and `tools/list`, overriding the pool's.
+   *
+   * Connect cost is a property of the server rather than of the pool: a local `node` child is up
+   * in milliseconds, and `uvx some-server@latest` on a cold cache resolves and downloads a package
+   * before it says anything. One pool-wide number has to be the maximum of those, which leaves the
+   * fast ones with no useful bound — the wedged child this exists to catch still hangs for as long
+   * as the slow one legitimately needs.
+   *
+   * `null` means "use the pool's", and so does absent — which is what every row that predates this
+   * field says. Re-read on every reconcile, so a consumer whose configuration is editable at
+   * runtime does not need a restart to change it; it applies at the next connect, since an edited
+   * timeout is no reason to bounce a running child. No special zero, unlike `idleTimeoutMs`: `0`
+   * is a server given no time at all.
+   */
+  connectTimeoutMs?: number | null;
   // streamable http
   url: string;
   headers: Record<string, string> | null;
@@ -51,10 +67,16 @@ export interface ClientIdentity {
   version?: string;
 }
 
-/** What it takes to reach a server — the connection half of a row, without its identity. */
+/**
+ * What it takes to reach a server — the connection half of a row, without its identity.
+ *
+ * `connectTimeoutMs` is in here because it is part of reaching the server rather than of naming
+ * it: a row that needs two minutes to start needs them behind a "Test connection" button too, or
+ * the probe reports a failure for a server that works.
+ */
 export type McpConnection = Pick<
   McpServerConfig,
-  "transport" | "command" | "args" | "env" | "cwd" | "url" | "headers"
+  "transport" | "command" | "args" | "env" | "cwd" | "url" | "headers" | "connectTimeoutMs"
 >;
 
 /**
