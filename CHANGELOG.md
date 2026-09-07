@@ -1,3 +1,14 @@
+# [2.0.0](https://github.com/cubicecho/agent-mcp-pool/compare/v1.0.0...v2.0.0) (2026-09-07)
+
+
+* feat!: take tools()'s names and scope as one named object ([4ef8103](https://github.com/cubicecho/agent-mcp-pool/commit/4ef8103808082686143472afbb295a4cd721a8f6)), closes [#53](https://github.com/cubicecho/agent-mcp-pool/issues/53)
+
+
+### BREAKING CHANGES
+
+* `tools()` takes one options object. `tools(names, servers)`
+becomes `tools({ names, servers })`; `tools()` with no arguments is unchanged.
+
 # [1.0.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.10.0...v1.0.0) (2026-09-07)
 
 
