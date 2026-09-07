@@ -38,8 +38,29 @@ jobs:
       - name: Build
         run: npm run build
 
-      # `files` is ["dist"] and dist is gitignored, so the tarball is entirely
-      # what this step just emitted. A tsc that succeeds while emitting nothing
-      # would otherwise ship a package with nothing to import.
+      # dist is gitignored, so the tarball is entirely what this step just
+      # emitted. A tsc that succeeds while emitting nothing would otherwise ship
+      # a package with nothing to import.
       - name: The build emitted something to import
         run: test -s dist/index.js && test -s dist/index.d.ts
+
+      # npm registers `prepare` as an install script and re-runs it inside the
+      # installed tree, so the script itself has to be in the tarball — a
+      # `prepare` naming a file `files` never shipped fails the whole install
+      # with "Cannot find module".
+      - name: The tarball carries the install script it declares
+        run: |
+          npm pack --silent >/dev/null
+          tar -tzf ./*.tgz > packed.txt
+          for f in package/dist/index.js package/scripts/prepare.mjs; do
+            grep -qxF "$f" packed.txt \
+              || { echo "::error::$f is not in the tarball"; exit 1; }
+          done
+
+      # And that re-run has to be a no-op there rather than a failed build.
+      - name: Installing the tarball runs its prepare script without dying
+        run: |
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y >/dev/null
+          npm install --foreground-scripts "$GITHUB_WORKSPACE"/*.tgz
+          node -e "require.resolve('@cubicecho/agent-mcp-pool')"

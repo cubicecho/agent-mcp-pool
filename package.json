@@ -34,14 +34,15 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepare": "npm run build",
+    "prepare": "node scripts/prepare.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
