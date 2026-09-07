@@ -575,6 +575,58 @@ test("a name asked for twice is offered once", async () => {
   ]);
 });
 
+/** A log that keeps what it was told, for the tests that are about what the pool says. */
+const capturing = () => {
+  const lines: string[] = [];
+  return { lines, log: { info: (line: string) => lines.push(line), error: () => {} } };
+};
+
+/**
+ * Dropping the name is right — the model is simply not sent a tool, and its next call says so.
+ * Saying nothing is not: a consumer holding names from before a rename watches its agent lose
+ * tools one at a time with nothing in this log to explain it.
+ */
+test("a name no server offers is skipped, and said so", async () => {
+  const { lines, log } = capturing();
+  pool = new McpPool({ clientName: "mcp-pool-test", log });
+  await pool.sync([config()]);
+
+  expect(names(pool.tools(["echo__ping", "gone__tool"]))).toEqual(["echo__ping"]);
+  expect(lines.filter((line) => line.includes("no tool named"))).toEqual([
+    "[mcp] no tool named gone__tool is offered",
+  ]);
+});
+
+/**
+ * The one miss that is not a miss. `tools()` deliberately does not connect a cold server, so a
+ * lazy pool answers nothing for every name it has until something else starts one — and a line
+ * per name would bury the real ones on the first turn of every run.
+ */
+test("a cold server's tools are not reported as names nothing offers", async () => {
+  const { lines, log } = capturing();
+  pool = new McpPool({ clientName: "mcp-pool-test", log, lazy: true });
+  await pool.sync([config()]);
+
+  expect(pool.tools(["echo__ping"])).toEqual([]);
+  expect(lines.filter((line) => line.includes("no tool named"))).toEqual([]);
+  // And a name that server could not have built is still reported, cold pool or not.
+  expect(pool.tools(["gone__tool"])).toEqual([]);
+  expect(lines.filter((line) => line.includes("no tool named"))).toHaveLength(1);
+});
+
+/**
+ * A scope is the caller's own decision, applied a moment ago. Reporting what it excluded as a
+ * name nothing offers would turn every scoped run into a log of its own configuration.
+ */
+test("a name held back by the run's scope is not reported as missing", async () => {
+  const { lines, log } = capturing();
+  pool = new McpPool({ clientName: "mcp-pool-test", log });
+  await pool.sync([config()]);
+
+  expect(pool.tools(["echo__ping"], ["someone-else"])).toEqual([]);
+  expect(lines.filter((line) => line.includes("no tool named"))).toEqual([]);
+});
+
 /**
  * The rename path reads the slug too, and reads it twice — once to notice the change and once to
  * rebuild the names. A default applied in only one of them leaves the model offered names the
