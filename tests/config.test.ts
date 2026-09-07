@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { sameConnection, scope } from "../src/config.ts";
+import { copyConfig, sameConnection, scope } from "../src/config.ts";
 import type { McpServerConfig } from "../src/types.ts";
 
 const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
@@ -75,6 +75,38 @@ test("args and env are compared by value, not by identity", () => {
  * caller wants for an agent with no servers linked to it. Collapsing the two would hand such an
  * agent every server the pool has.
  */
+/**
+ * The entry used to hold the caller's own object, which made the pool's record of what it dialled
+ * editable from outside it — and `sameConnection` a comparison between a row and itself.
+ */
+test("a copied row is the caller's row, and no longer the same object", () => {
+  const row = config({ headers: { Authorization: "Bearer t" } });
+  const copy = copyConfig(row);
+
+  expect(copy).toEqual(row);
+  expect(sameConnection(copy, row)).toBe(true);
+
+  row.args?.push("--edited");
+  if (row.env) row.env.TOKEN = "edited";
+  if (row.headers) row.headers.Authorization = "Bearer edited";
+
+  // An edit on either side is invisible to the other, which is what lets the pool notice one.
+  expect(sameConnection(copy, row)).toBe(false);
+  expect(copy.args).toEqual(["server.mjs"]);
+  expect(copy.env).toEqual({ TOKEN: "t" });
+  expect(copy.headers).toEqual({ Authorization: "Bearer t" });
+});
+
+test("an absent container stays absent in the copy, rather than becoming an empty one", () => {
+  // `sameConnection` reads null and empty as the same absence, and `state()` reports the copy —
+  // inventing an empty array here would show an operator a field their row does not have.
+  const copy = copyConfig(config({ args: null, env: null }));
+
+  expect(copy.args).toBeNull();
+  expect(copy.env).toBeNull();
+  expect(copy.headers).toBeNull();
+});
+
 test("no scope and an empty scope are different answers", () => {
   expect(scope(undefined)).toBeUndefined();
   expect(scope()).toBeUndefined();

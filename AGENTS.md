@@ -68,6 +68,10 @@ tool left on page two is not merely unlisted — it is absent from `index`, so `
 as one that does not exist. `listAllTools` is the one walk; a `resources/list` or `prompts/list`
 added later paginates the same way.
 
+**The pool holds its own copy of every row, and `state()` hands back another.** An entry aliasing
+the caller's object makes `sameConnection` compare a row against itself, so an in-place edit never
+reconnects.
+
 **`llms.txt` is generated and committed.** Edit the doc comment it came from, then `npm run
 build`. CI fails on a diff.
 

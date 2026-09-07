@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Notification } from "@modelcontextprotocol/sdk/types.js";
-import { sameConnection, scope } from "./config.ts";
+import { copyConfig, sameConnection, scope } from "./config.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
 import { listAllTools } from "./listing.ts";
 import { couldQualify, labelOf, type PooledTool, pooledTool, slugOf } from "./naming.ts";
@@ -348,7 +348,7 @@ export class McpPool {
   private relabel(entry: Entry, config: McpServerConfig) {
     const renamed = slugOf(entry.config) !== slugOf(config) || entry.config.label !== config.label;
     const reclocked = entry.config.idleTimeoutMs !== config.idleTimeoutMs;
-    entry.config = config;
+    entry.config = copyConfig(config);
     // An edited idle timeout is no reason to restart the child, but the armed timer is still
     // running the old one, so re-arm rather than let it fire on a stale duration.
     if (reclocked) this.touch(entry);
@@ -416,10 +416,14 @@ export class McpPool {
   /**
    * Registers a server as an entry and, unless the pool is lazy, dials it.
    *
-   * @param config The row to connect. A disabled one is registered at `disabled` and left there.
+   * @param row The row to connect, copied on the way in. A disabled one is registered at
+   *   `disabled` and left there.
    * @param force Dial even under `lazy` — what a use does when it needs the child now.
    */
-  private async connect(config: McpServerConfig, force = false) {
+  private async connect(row: McpServerConfig, force = false) {
+    // The pool's own copy from here on: an entry holding the caller's object is one the caller
+    // can edit under it, and then `sameConnection` compares a row against itself.
+    const config = copyConfig(row);
     const status = !config.enabled ? "disabled" : this.lazy && !force ? "idle" : "connecting";
     const entry: Entry = { config, status, tools: [] };
     this.entries.set(config.id, entry);
@@ -851,14 +855,14 @@ export class McpPool {
    * connection status would otherwise keep its own copy, and that copy is the one that goes stale.
    *
    * @returns One row per configured server, in configuration order — not in the order they
-   *   happened to connect.
+   *   happened to connect. Each `config` is a copy, so editing one cannot reach the pool.
    */
   state(): McpServerState[] {
     return [...this.entries.values()].map((entry) => ({
       id: entry.config.id,
       slug: slugOf(entry.config),
       label: labelOf(entry.config),
-      config: entry.config,
+      config: copyConfig(entry.config),
       status: entry.status,
       error: entry.error ?? "",
       tools: entry.tools.map(({ name, description }) => ({ name, description })),

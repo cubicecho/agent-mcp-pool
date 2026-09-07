@@ -248,6 +248,38 @@ test("a server the pool never dialled still reports its row", async () => {
 });
 
 /**
+ * The entry held the caller's own object, so `sameConnection` was asked whether a row differed
+ * from itself and always answered no. A caller that parses its rows once and hands out the same
+ * objects — a config file rather than a fresh `db.select()` — got a pool that never reconnected,
+ * and a `state()` reporting an edit the running child knew nothing about.
+ */
+test("a row edited in place is a changed row, not one the pool is already running", async () => {
+  const row = config();
+  pool = makePool(async () => [row]);
+  await pool.sync();
+
+  row.args = [FIXTURE, "--edited"];
+  await pool.sync();
+
+  expect(spawned()).toBe(2);
+  expect(pool.state()[0]?.config.args).toEqual([FIXTURE, "--edited"]);
+});
+
+test("the row state() reports is a copy, so editing it cannot reach the pool", async () => {
+  const row = config();
+  await pool.sync([row]);
+
+  const [seen] = pool.state();
+  if (seen) seen.config.label = "edited";
+  seen?.config.args?.push("--edited");
+
+  expect(pool.state()[0]?.config).toEqual(row);
+  // Still the same connection as far as the pool is concerned, so nothing restarts.
+  await pool.sync([row]);
+  expect(spawned()).toBe(1);
+});
+
+/**
  * `ready` is not much to go on. A pid is what an operator reaches for to find a wedged child in
  * `ps` or to kill it, and a start time is how a server that is quietly crash-looping is spotted —
  * `status` reads `ready` either side of a restart. Neither is recoverable once the pool owns the

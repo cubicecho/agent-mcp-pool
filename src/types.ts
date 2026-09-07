@@ -64,7 +64,8 @@ export interface McpServerState {
    *
    * The pool is already holding it, and a UI drawing the edit form beside the connection state
    * would otherwise keep a second copy — one that goes stale the moment `syncSoon()` or a
-   * `load`-driven `sync()` reconciles without it.
+   * `load`-driven `sync()` reconciles without it. A copy rather than the row itself: the pool's
+   * record of what it dialled must not be editable from outside it.
    */
   config: McpServerConfig;
   status: McpStatus;

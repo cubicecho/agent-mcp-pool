@@ -48,7 +48,7 @@ row it was configured from:
 
 ```ts
 for (const { config, status, error, tools, pid, startedAt } of mcp.state()) {
-  // config is the row you passed in;
+  // config is a copy of the row you passed in;
   // status/error/tools/pid/startedAt are what the pool made of it
 }
 ```
@@ -62,6 +62,11 @@ this the operator's list reorders itself according to which child started quicke
 
 `id`, `slug` and `label` stay alongside `config` — those are the *effective* values the pool
 actually used.
+
+`config` is a **copy** rather than the row itself. A caller that holds its rows and edits one in
+place used to get a pool that never reconnected — `sameConnection` was being asked whether a row
+differed from itself — while `state()` reported the edit as though the child had been restarted
+for it.
 
 `pid` and `startedAt` describe the connection rather than the configuration, so both are absent
 unless one is up, and `pid` over http, which has no child. They are what make `ready` mean

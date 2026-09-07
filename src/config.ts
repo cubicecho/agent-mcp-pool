@@ -32,6 +32,29 @@ export function sameConnection(a: McpServerConfig, b: McpServerConfig) {
 }
 
 /**
+ * The pool's own copy of a row, so the caller's object and the pool's record are separate things.
+ *
+ * `state()` used to hand back the caller's row and the entry used to hold it, which made both
+ * writable from outside the pool: a caller that edits a row in place — a config-file loader that
+ * parses once and hands out the same objects — got a `sameConnection` comparing a row against
+ * itself, so the pool never reconnected, while `state()` reported the edit as though it had. The
+ * child on the other end of the pipe was still the one started with the old arguments.
+ *
+ * Shallow but for the three fields `sameConnection` reads by value; nothing else on a row is a
+ * container.
+ */
+export function copyConfig(config: McpServerConfig): McpServerConfig {
+  return {
+    ...config,
+    // Kept as they came, so an absent `args` stays absent rather than becoming an empty array —
+    // `sameConnection` treats the two the same, and `state()` should not invent a field.
+    args: config.args ? [...config.args] : config.args,
+    env: config.env ? { ...config.env } : config.env,
+    headers: config.headers ? { ...config.headers } : config.headers,
+  };
+}
+
+/**
  * A run's scope, as a set.
  *
  * `undefined` is every connected server; an empty scope is none of them, which is what an agent
