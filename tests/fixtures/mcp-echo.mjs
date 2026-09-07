@@ -51,4 +51,11 @@ server.setRequestHandler(CallToolRequestSchema, (request) => ({
   ],
 }));
 
+// How the client introduced itself. Only the server ever sees which name arrived, and the pool
+// and a probe deliberately use different ones, so it writes the name down for the tests.
+if (process.env.MCP_ECHO_CLIENT_DUMP) {
+  const dump = process.env.MCP_ECHO_CLIENT_DUMP;
+  server.oninitialized = () => writeFileSync(dump, JSON.stringify(server.getClientVersion() ?? {}));
+}
+
 await server.connect(new StdioServerTransport());

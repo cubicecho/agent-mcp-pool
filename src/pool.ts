@@ -2,8 +2,16 @@ import { isDeepStrictEqual } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type OpenAI from "openai";
 import { errorMessage } from "./errors.ts";
+import { probe as probeConfig } from "./probe.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
-import type { CatalogServer, McpServerConfig, McpServerState, McpStatus } from "./types.ts";
+import type {
+  CatalogServer,
+  McpConnection,
+  McpProbe,
+  McpServerConfig,
+  McpServerState,
+  McpStatus,
+} from "./types.ts";
 
 const SEPARATOR = "__";
 
@@ -499,6 +507,21 @@ export class McpPool {
 
     if (result.isError) throw new Error(text || "tool call failed");
     return text || "(no output)";
+  }
+
+  /**
+   * Tests a config that may not be saved yet, introducing itself the way this pool does.
+   *
+   * The free `probe` takes the client name and the environment policy as arguments, so every
+   * consumer with a "Test connection" button wrote the same wrapper to bind them — and one that
+   * bound them differently got a probe introducing itself as one thing and a pool as another,
+   * which shows up only in a remote server's logs. The pool has already been told both.
+   *
+   * `probe` stays exported for the case it was written for: a caller with a config and no pool
+   * to hold it.
+   */
+  probe(config: McpConnection): Promise<McpProbe> {
+    return probeConfig(config, this.clientName, { childEnv: this.childEnv });
   }
 
   state(): McpServerState[] {
