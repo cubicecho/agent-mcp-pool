@@ -32,8 +32,13 @@ jobs:
 
       # The suites boot a real stdio MCP server out of tests/fixtures, so this
       # covers the transports as well as the pool.
+      #
+      # Coverage rather than a bare run, so the summary is in the log for a
+      # reviewer to read. Deliberately no threshold: a number that fails a build
+      # gets met by whatever test raises it fastest, which is not the same as
+      # being tested. What it is for is noticing a module that stops being.
       - name: Test
-        run: npm test
+        run: npm run coverage
 
       - name: Build
         run: npm run build
