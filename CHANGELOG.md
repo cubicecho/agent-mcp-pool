@@ -1,3 +1,10 @@
+# [0.8.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.7.2...v0.8.0) (2026-09-07)
+
+
+### Features
+
+* give a probe a timeout, defaulting to the pool's ([46a449a](https://github.com/cubicecho/agent-mcp-pool/commit/46a449ab1db81720ec5af8a91914f6e87456ff2d)), closes [#34](https://github.com/cubicecho/agent-mcp-pool/issues/34)
+
 ## [0.7.2](https://github.com/cubicecho/agent-mcp-pool/compare/v0.7.1...v0.7.2) (2026-09-07)
 
 
