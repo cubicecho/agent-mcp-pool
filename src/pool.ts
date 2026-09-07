@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Notification } from "@modelcontextprotocol/sdk/types.js";
+import { requestBudget } from "./budget.ts";
 import { copyConfig, sameConnection, scope } from "./config.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
 import { listAllTools } from "./listing.ts";
@@ -93,11 +94,13 @@ export interface McpPoolOptions {
    */
   childEnv?: readonly string[];
   /**
-   * How long to wait for a server to answer `initialize` and `tools/list`.
+   * How long a server gets to connect: `initialize` and every page of `tools/list` together.
    *
    * The SDK already applies its own 60s default, so this is not about an unbounded hang — it is
-   * about how long a boot is willing to stall. `sync` connects servers in parallel, but one
-   * wedged server still holds the whole reconcile open for the full timeout.
+   * about how long a boot is willing to stall. One budget for the whole connect rather than one
+   * per request, since page size is the server's choice and a per-request number would multiply
+   * by a page count nobody knows in advance. `sync` connects servers in parallel, but one wedged
+   * server still holds the whole reconcile open for the full timeout.
    *
    * The pool-wide default. `McpServerConfig.connectTimeoutMs` overrides it for one server, which
    * is where a `uvx` package that downloads itself on first run belongs.
@@ -602,12 +605,15 @@ export class McpPool {
       // number without the fast one losing its bound. Read here rather than held on the entry, so
       // an edit reaches the next connect without a restart.
       const timeoutMs = config.connectTimeoutMs ?? this.connectTimeoutMs;
-      const timeout = timeoutMs == null ? undefined : { timeout: timeoutMs };
-      await client.connect(transport, timeout);
+      // One budget across the whole connect rather than one per request. The number a consumer
+      // picks is what its boot can afford to stall for, and `initialize` plus a `tools/list` per
+      // page spends it several times over otherwise — see `requestBudget`.
+      const remaining = requestBudget(timeoutMs);
+      await client.connect(transport, remaining());
       // Every page: a tool that landed on page two is missing from the index, and `call()` then
       // refuses it as a tool that does not exist. Skipped entirely when nothing is going to read
       // the index — see `indexTools`, where the walk is a round trip per page for nobody.
-      const tools = this.indexTools ? await listAllTools(client, timeout) : [];
+      const tools = this.indexTools ? await listAllTools(client, remaining()) : [];
 
       entry.client = client;
       entry.status = "ready";
