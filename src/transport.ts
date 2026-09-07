@@ -24,6 +24,7 @@ export const MINIMAL_CHILD_ENV: readonly string[] = [
 /** Whichever transport a config asks for. */
 export type PoolTransport = ReturnType<typeof createTransport>;
 
+/** What a transport takes beyond the config itself. */
 export interface TransportOptions {
   /**
    * Which of this process's own environment variables a stdio child inherits.
@@ -35,6 +36,13 @@ export interface TransportOptions {
   childEnv?: readonly string[];
 }
 
+/**
+ * The transport a config asks for, stdio or streamable HTTP, ready to connect.
+ *
+ * Exported because the pool is not the only thing that dials: `probe` uses it against a config
+ * that is not saved yet, and a consumer proxying MCP may want the same construction the pool
+ * would have done rather than a second, subtly different one.
+ */
 export function createTransport(config: McpConnection, options: TransportOptions = {}) {
   if (config.transport === "stdio") {
     if (!config.command) throw new Error("a stdio server needs a command");

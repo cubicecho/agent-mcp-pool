@@ -55,6 +55,7 @@ export interface PoolLog {
   error?: (message: string) => void;
 }
 
+/** How a pool is built: where its rows come from, how patient it is, and what it may spawn. */
 export interface McpPoolOptions {
   /**
    * Where the configured servers come from when `sync()` is called with nothing.

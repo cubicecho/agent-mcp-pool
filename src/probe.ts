@@ -4,6 +4,7 @@ import type { TransportOptions } from "./transport.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type { McpConnection, McpProbe } from "./types.ts";
 
+/** What a probe is allowed to take from the caller: the child's environment, and its patience. */
 export interface ProbeOptions extends TransportOptions {
   /**
    * How long to wait for the server to answer `initialize` and `tools/list`.
