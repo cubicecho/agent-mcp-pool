@@ -1,3 +1,10 @@
+# [0.3.0](https://github.com/cubicecho/agent-mcp-pool/compare/v0.2.1...v0.3.0) (2026-09-07)
+
+
+### Features
+
+* stdio cwd, and a relay for server notifications ([bf8a5b3](https://github.com/cubicecho/agent-mcp-pool/commit/bf8a5b3252f1341af996aafa23e752dec9156cb9))
+
 ## [0.2.1](https://github.com/cubicecho/agent-mcp-pool/compare/v0.2.0...v0.2.1) (2026-09-07)
 
 
