@@ -425,3 +425,21 @@ test("a probe reports a server that will not start, rather than throwing", async
   expect(result.error).toContain("no module named mcp_server_git");
   expect(result.tools).toEqual([]);
 });
+
+test("a ready server with no tools is kept out of the catalogue but not out of state", async () => {
+  await pool.sync([
+    config({ id: "empty", slug: "empty", env: { MCP_ECHO_NO_TOOLS: "1" } }),
+    config({ id: "echo-1", slug: "echo" }),
+  ]);
+
+  // Listed empty, it is not inert: a catalogue holding one such entry is not an empty catalogue,
+  // so a prompt builder that short-circuits on emptiness introduces a list of nothing instead.
+  expect(pool.catalog().map((server) => server.id)).toEqual(["echo-1"]);
+  expect(pool.catalog(["empty"])).toEqual([]);
+
+  // The operator still wants to see it, and it is genuinely ready rather than broken.
+  expect(pool.state()).toMatchObject([
+    { slug: "empty", status: "ready", error: "", tools: [] },
+    { slug: "echo", status: "ready" },
+  ]);
+});

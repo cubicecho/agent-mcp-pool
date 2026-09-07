@@ -475,12 +475,20 @@ export class McpPool {
     return definitions;
   }
 
-  /** Names and descriptions only — the cheap half, for the on-demand catalogue. */
+  /**
+   * Names and descriptions only — the cheap half, for the on-demand catalogue.
+   *
+   * A ready server offering no tools is dropped rather than listed empty. It has nothing to say
+   * to any consumer, `tools()` already returns nothing for it, and a catalogue holding only such
+   * entries is not empty — so a prompt builder that short-circuits on an empty catalogue instead
+   * spends its whole preamble introducing a list of nothing, and offers the model names that do
+   * not exist. `state()` still reports the server: the operator wants that row.
+   */
   catalog(servers?: Iterable<string>): CatalogServer[] {
     const allowed = McpPool.scope(servers);
     const out: CatalogServer[] = [];
     for (const entry of this.entries.values()) {
-      if (entry.status !== "ready") continue;
+      if (entry.status !== "ready" || entry.tools.length === 0) continue;
       if (allowed && !allowed.has(entry.config.id)) continue;
       out.push({
         id: entry.config.id,
