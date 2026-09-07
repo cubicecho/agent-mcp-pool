@@ -553,6 +553,44 @@ export class McpPool {
   }
 
   /**
+   * The connected MCP client for one server, by config id.
+   *
+   * Everything this pool does is connection management — reconcile, the queue that stops two
+   * syncs orphaning a child, crash detection with the stderr tail, backoff, retry-on-use — and
+   * only the last mile is shaped for an agent loop. `tools()` returns OpenAI definitions and
+   * `call()` returns a string because a string is what goes back into a message array; a
+   * consumer proxying the protocol needs neither, and needs `listResources`, `readResource`,
+   * `getPrompt`, `setLoggingLevel` and the rest that a string was never going to carry. This
+   * hands back the client so the connection half can be used on its own.
+   *
+   * A server that is merely down is retried first, the same as `call()` does, rather than
+   * reported as if it were not configured.
+   *
+   * **This bypasses the scope check `call()` makes, by construction.** That guard defends
+   * against a *model* calling a name it remembers from an earlier run; a caller reaching for
+   * the client is proxying a protocol rather than driving a model, and has no scope. A disabled
+   * server is still refused — it is off, not merely unscoped.
+   */
+  async client(id: string): Promise<Client> {
+    const entry = this.entries.get(id);
+    if (!entry) throw new Error(`no MCP server is configured with id "${id}"`);
+    if (!entry.config.enabled) throw new Error(`the MCP server "${entry.config.slug}" is disabled`);
+    if (!entry.client) await this.retryFailed();
+
+    // Re-read: `connect` replaces the entry object rather than mutating the old one, so the
+    // entry captured above is stale as soon as a retry has run.
+    const current = this.entries.get(id);
+    if (!current?.client) {
+      throw new Error(
+        `the MCP server "${entry.config.slug}" is not connected${
+          current?.error ? `: ${current.error}` : ""
+        }`,
+      );
+    }
+    return current.client;
+  }
+
+  /**
    * Runs one tool call and returns text for a tool message.
    *
    * `servers` is checked again here rather than trusted from the definitions the caller was

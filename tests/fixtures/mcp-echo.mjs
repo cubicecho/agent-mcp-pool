@@ -1,7 +1,12 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 
 // One line per process started. The pool is supposed to keep one child per configured server,
 // and nothing it exposes can tell one child from two — so the children say so themselves.
@@ -20,6 +25,15 @@ if (process.env.MCP_ECHO_CWD_DUMP) writeFileSync(process.env.MCP_ECHO_CWD_DUMP, 
 
 // Fails the way a misconfigured server does: one line of explanation on stderr, then a non-zero
 // exit. Nothing the client sees says more than "the connection closed", which is the point.
+// Fails the first time it is started and works afterwards, which is what a server recovering
+// from a transient problem looks like. The marker file is the memory: a retry is a fresh process
+// with no other way to know it is the second one.
+if (process.env.MCP_ECHO_FAIL_ONCE && !existsSync(process.env.MCP_ECHO_FAIL_ONCE)) {
+  writeFileSync(process.env.MCP_ECHO_FAIL_ONCE, "");
+  process.stderr.write("failing once on purpose\n");
+  process.exit(1);
+}
+
 if (process.env.MCP_ECHO_FAIL) {
   process.stderr.write(`${process.env.MCP_ECHO_FAIL}\n`);
   process.exit(1);
@@ -45,18 +59,35 @@ const tools = [
   },
 ];
 
-const server = new Server({ name: "echo", version: "0.0.1" }, { capabilities: { tools: {} } });
+const server = new Server(
+  { name: "echo", version: "0.0.1" },
+  // Resources as well as tools, because the pool's own surface reaches only the tools half and
+  // a test for the raw client has to ask for something that surface cannot express.
+  { capabilities: { tools: {}, resources: {} } },
+);
 // A server that connects cleanly and offers nothing. Rarer than a broken one and easier to miss,
 // because every status the pool reports about it says it is fine.
 const offered = process.env.MCP_ECHO_NO_TOOLS ? [] : tools;
 server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: offered }));
-server.setRequestHandler(CallToolRequestSchema, (request) => ({
-  content: [
-    {
-      type: "text",
-      text: `${request.params.name}(${JSON.stringify(request.params.arguments ?? {})})`,
-    },
-  ],
+server.setRequestHandler(CallToolRequestSchema, (request) => {
+  // A non-text content block on demand: what a tool returning a chart or a screenshot sends, and
+  // what a result flattened to a string cannot carry.
+  if (request.params.arguments?.image)
+    return { content: [{ type: "image", data: "aGk=", mimeType: "image/png" }] };
+  return {
+    content: [
+      {
+        type: "text",
+        text: `${request.params.name}(${JSON.stringify(request.params.arguments ?? {})})`,
+      },
+    ],
+  };
+});
+server.setRequestHandler(ListResourcesRequestSchema, () => ({
+  resources: [{ uri: "echo://greeting", name: "greeting", mimeType: "text/plain" }],
+}));
+server.setRequestHandler(ReadResourceRequestSchema, (request) => ({
+  contents: [{ uri: request.params.uri, mimeType: "text/plain", text: "hello from a resource" }],
 }));
 
 // The SDK has one `oninitialized`, and two things here want it, so they queue rather than

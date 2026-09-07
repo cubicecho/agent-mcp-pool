@@ -488,3 +488,58 @@ test("notifications from a server reach a subscriber, tagged with which server s
   await new Promise((resolve) => setTimeout(resolve, 100));
   expect(heard.length).toBe(before);
 });
+
+test("client() reaches protocol the agent surface cannot express", async () => {
+  await pool.sync([config()]);
+  const client = await pool.client("echo-1");
+
+  // Resources, prompts, subscriptions and logging have no route through `tools`/`call` at all.
+  const { resources } = await client.listResources();
+  expect(resources.map((resource) => resource.uri)).toEqual(["echo://greeting"]);
+  const read = await client.readResource({ uri: "echo://greeting" });
+  expect(read.contents[0]).toMatchObject({ text: "hello from a resource" });
+});
+
+test("client() keeps a tool result that call() has to flatten away", async () => {
+  await pool.sync([config()]);
+
+  // The agent loop's own surface is unchanged and still right for it: a string is what goes back
+  // into a message array. It is the only thing a string can be, though.
+  expect(await pool.call("echo__echo", { image: true })).toBe("[image content]");
+
+  const result = await (await pool.client("echo-1")).callTool({
+    name: "echo",
+    arguments: { image: true },
+  });
+  expect(result.content).toEqual([{ type: "image", data: "aGk=", mimeType: "image/png" }]);
+});
+
+test("client() refuses a server that is disabled or not configured at all", async () => {
+  await pool.sync([config({ enabled: false })]);
+
+  // Off is not the same as unscoped: `call` answers an out-of-scope tool as one that does not
+  // exist so a model stops asking, but a proxy asking for a server by id wants the reason.
+  await expect(pool.client("echo-1")).rejects.toThrow(/disabled/);
+  await expect(pool.client("nope")).rejects.toThrow(/no MCP server is configured/);
+});
+
+test("client() brings back a server that is merely down, the way call() does", async () => {
+  const once = path.join(dir, "failed-once");
+  pool = makePool(undefined, 0);
+  await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_FAIL_ONCE: once } })]);
+  expect(pool.state()).toMatchObject([{ status: "error" }]);
+
+  // Handing back a down server as if it were unconfigured would push a proxy into rebuilding the
+  // pool over a child that only needed starting again.
+  const { tools } = await (await pool.client("echo-1")).listTools();
+  expect(tools).toHaveLength(3);
+  expect(spawned()).toBe(2);
+  fs.rmSync(once, { force: true });
+});
+
+test("client() reports a server that stays down, rather than one that is not configured", async () => {
+  await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_FAIL: "boom" } })]);
+
+  // The stderr tail is the whole reason the pool keeps one: "boom" beats "connection closed".
+  await expect(pool.client("echo-1")).rejects.toThrow(/is not connected: boom/);
+});
