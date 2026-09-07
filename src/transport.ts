@@ -8,9 +8,8 @@ const STDERR_TAIL_LIMIT = 4000;
 /**
  * A short allowlist of variables a stdio child usually cannot start without.
  *
- * Offered as a starting point for `McpPoolOptions.childEnv`, not imposed: the default is still
- * to inherit everything, because narrowing it breaks any server that quietly relies on a
- * variable this list does not name. Pass it once you know what your servers need.
+ * A starting point for `McpPoolOptions.childEnv`, not the default — narrowing breaks any server
+ * that quietly relies on a variable this list omits. Pass it once you know what yours need.
  */
 export const MINIMAL_CHILD_ENV: readonly string[] = [
   "PATH",
@@ -29,10 +28,9 @@ export interface TransportOptions {
   /**
    * Which of this process's own environment variables a stdio child inherits.
    *
-   * Absent means all of them, which is the historical behaviour and is why this option exists:
-   * an MCP server is third-party code, and a full inherit hands it every database URL, API key
-   * and session secret this process was started with. `MINIMAL_CHILD_ENV` is a reasonable
-   * starting point. Per-server `env` is applied on top either way.
+   * Absent means all of them, which is why this option exists: an MCP server is third-party code,
+   * and a full inherit hands it every API key this process was started with. Per-server `env` is
+   * applied on top either way.
    */
   childEnv?: readonly string[];
 }
@@ -46,10 +44,9 @@ export function createTransport(config: McpConnection, options: TransportOptions
       env: { ...inheritedEnv(options.childEnv), ...(config.env ?? {}) },
       // Undefined rather than null when unset: the SDK reads an explicit null as a cwd.
       cwd: config.cwd ?? undefined,
-      // Piped rather than inherited: when a stdio server fails to start, what it wrote on the
-      // way out is usually the only useful explanation, and `inherit` sends it to this process's
-      // console where no status page can quote it back. Something must then read it — see
-      // `readStderrTail` — or the child blocks once the pipe fills.
+      // Piped, not inherited: what a failing server wrote on the way out is usually the only
+      // explanation, and `inherit` sends it to this process's console where no status page can
+      // quote it. Something must then read it (see `readStderrTail`) or the pipe fills.
       stderr: "pipe",
     });
   }
@@ -74,17 +71,14 @@ function inheritedEnv(allowed?: readonly string[]): Record<string, string> {
 /**
  * Starts collecting a stdio child's stderr, and returns a reader for the last of it.
  *
- * Safe to call before connecting: the SDK hands back its `PassThrough` as soon as the transport
- * exists, precisely so a caller can be listening before the process is spawned — which matters,
- * because a server that dies during startup does all its talking then. Attaching also keeps the
- * pipe drained, so a chatty server cannot block on a stderr nobody is reading.
- *
- * A no-op reader for an http transport, which has no child and no stderr.
+ * Safe to call before connecting — the SDK hands back its `PassThrough` as soon as the transport
+ * exists, which matters because a server that dies during startup does all its talking then.
+ * Attaching also keeps the pipe drained. A no-op for an http transport.
  */
 export function readStderrTail(transport: PoolTransport): () => string {
   let tail = "";
   // Narrowed rather than optional-chained: an http transport has no `stderr` property at all,
-  // and a wholly optional parameter type would accept anything at the call site.
+  // and an optional parameter type would accept anything at the call site.
   const stderr = "stderr" in transport ? transport.stderr : null;
   stderr?.on("data", (chunk: unknown) => {
     tail = (tail + String(chunk)).slice(-STDERR_TAIL_LIMIT);

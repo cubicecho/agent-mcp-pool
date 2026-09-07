@@ -7,15 +7,15 @@ import type { McpConnection, McpProbe } from "./types.ts";
 /**
  * Connects to a config that may not be saved yet, lists its tools, and hangs up.
  *
- * This is what a "Test connection" button calls: a config is easy to get subtly wrong, and
- * finding out at 3am when the task runs is too late. The client is disposable — the pool keeps
- * the long-lived ones.
+ * What a "Test connection" button calls: a config is easy to get subtly wrong, and finding out
+ * at 3am when the task runs is too late. The client is disposable — the pool keeps the
+ * long-lived ones.
  */
 export async function probe(
   config: McpConnection,
   clientName = "agent-mcp-pool",
-  // Takes the same environment policy as the pool: a probe that hands the child a different
-  // environment than the pool will is a button that answers a question nobody asked.
+  // The same environment policy as the pool: a probe that hands the child a different
+  // environment answers a question nobody asked.
   options: TransportOptions = {},
 ): Promise<McpProbe> {
   const client = new Client({ name: `${clientName}-probe`, version: "0.1.0" });
