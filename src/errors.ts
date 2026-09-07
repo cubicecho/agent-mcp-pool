@@ -18,6 +18,9 @@ export const errorMessage = (error: unknown): string =>
  *
  * `unknown-tool` and `out-of-scope` carry the same message on purpose: a run must not learn that
  * a server it was not scoped to exists. The code is for the caller's log, not for the model.
+ *
+ * `no-configs` is the odd one out: not a refusal about a server, but about the call itself — a
+ * reconcile with nothing to reconcile against, on a pool that has no `load` to ask.
  */
 export type McpPoolErrorCode =
   | "unknown-server"
@@ -25,7 +28,8 @@ export type McpPoolErrorCode =
   | "backoff"
   | "connect-failed"
   | "unknown-tool"
-  | "out-of-scope";
+  | "out-of-scope"
+  | "no-configs";
 
 /** What an `McpPoolError` carries beyond its message. */
 export interface McpPoolErrorOptions {
