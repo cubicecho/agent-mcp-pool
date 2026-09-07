@@ -12,7 +12,13 @@
 export type { Notification } from "@modelcontextprotocol/sdk/types.js";
 export { McpPoolError, type McpPoolErrorCode, type McpPoolErrorOptions } from "./errors.ts";
 export { listAllTools } from "./listing.ts";
-export { McpPool, type McpPoolOptions, type PoolLog, type StateOptions } from "./pool.ts";
+export {
+  McpPool,
+  type McpPoolOptions,
+  type PoolLog,
+  type StateOptions,
+  type ToolsOptions,
+} from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
 export { resultText } from "./results.ts";
 export {

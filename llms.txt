@@ -29,6 +29,7 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 - `McpPoolOptions` (type) — How a pool is built: where its rows come from, how patient it is, and what it may spawn.
 - `PoolLog` (type) — Where the pool's own progress goes.
 - `StateOptions` (type) — What `state()` takes: whether the rows it reports come back with their credentials.
+- `ToolsOptions` (type) — What `tools()` takes: which tools to send, and which servers this run may reach.
 
 ### probe
 
