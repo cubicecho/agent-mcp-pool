@@ -116,6 +116,20 @@ export interface McpPoolOptions {
    * immediately. `McpServerConfig.idleTimeoutMs` overrides it for one server.
    */
   idleTimeoutMs?: number;
+  /**
+   * List a server's tools when it connects, so the pool can offer them to a model. On by default.
+   *
+   * Off is for the other shape of consumer: a gateway proxying `tools/list` straight through from
+   * the client that asked, which never reads `tools()`, `catalog()` or `call()`. For that one the
+   * drain is pure cost — an extra round trip per page on the first request that spawns a server,
+   * a second copy of every tool held for nobody, and one more thing that can fail on a server it
+   * could otherwise still have proxied `resources/read` to.
+   *
+   * Off means the index is empty for ever, so `tools()`, `catalog()` and `state().tools` are
+   * empty and `call()` refuses every name. `client()` is unaffected, and so is `probe()` — a
+   * probe exists to report what a config offers.
+   */
+  indexTools?: boolean;
 }
 
 /**
@@ -179,6 +193,7 @@ export class McpPool {
   private listeners = new Set<(id: string, notification: Notification) => void>();
   private readonly lazy: boolean;
   private readonly idleTimeoutMs?: number;
+  private readonly indexTools: boolean;
 
   private readonly load?: () => Promise<McpServerConfig[]>;
   private readonly clientName: string;
@@ -202,6 +217,7 @@ export class McpPool {
     probeTimeoutMs,
     lazy = false,
     idleTimeoutMs,
+    indexTools = true,
   }: McpPoolOptions = {}) {
     this.load = load;
     this.clientName = clientName;
@@ -211,6 +227,7 @@ export class McpPool {
     this.probeTimeoutMs = probeTimeoutMs;
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
+    this.indexTools = indexTools;
     this.log = log ?? {
       info: (message) => console.log(message),
       error: (message) => console.error(message),
@@ -486,8 +503,9 @@ export class McpPool {
         this.connectTimeoutMs === undefined ? undefined : { timeout: this.connectTimeoutMs };
       await client.connect(transport, timeout);
       // Every page: a tool that landed on page two is missing from the index, and `call()` then
-      // refuses it as a tool that does not exist.
-      const tools = await listAllTools(client, timeout);
+      // refuses it as a tool that does not exist. Skipped entirely when nothing is going to read
+      // the index — see `indexTools`, where the walk is a round trip per page for nobody.
+      const tools = this.indexTools ? await listAllTools(client, timeout) : [];
 
       entry.client = client;
       entry.status = "ready";
@@ -508,7 +526,11 @@ export class McpPool {
       // Started here rather than on first use, so a server connected eagerly and never asked for
       // anything is reaped like any other.
       this.touch(entry);
-      this.log.info?.(`[mcp] ${slugOf(config)}: ${entry.tools.length} tool(s)`);
+      this.log.info?.(
+        this.indexTools
+          ? `[mcp] ${slugOf(config)}: ${entry.tools.length} tool(s)`
+          : `[mcp] ${slugOf(config)}: connected`,
+      );
     } catch (error) {
       // The handshake got far enough to start a child and not far enough to hand it over. Nothing
       // else holds this client, so `close()` and `shutdown()` would never reach the process.
@@ -621,6 +643,9 @@ export class McpPool {
    * @returns True while some idle or connecting server could still own it.
    */
   private expected(qualifiedName: string) {
+    // Nothing is ever going to turn up: with no indexing, connecting a server puts no tool in the
+    // index, so every name misses for good.
+    if (!this.indexTools) return false;
     for (const entry of this.entries.values()) {
       if (entry.status !== "idle" && entry.status !== "connecting") continue;
       if (couldQualify(slugOf(entry.config), qualifiedName)) return true;
@@ -829,7 +854,9 @@ export class McpPool {
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
     // past 64 characters, and the split of a shortened name is a tool its server never had.
     let found = this.index.get(qualifiedName);
-    if (!found) {
+    // Waking a server can only help if connecting one would index something, so a pool that does
+    // not index refuses here rather than spawning children that cannot answer either.
+    if (!found && this.indexTools) {
       // A crashed server took its tools out of the index, and a lazy pool never put a cold
       // server's there at all. Telling the model a tool does not exist teaches it to stop asking,
       // so bring back whatever is owed a connection and look once more.

@@ -131,6 +131,26 @@ server's tools without spawning it needs a cached last-known tool list, which is
 out a penalty for something that did not go wrong. Both options absent is exactly today's
 behaviour.
 
+### Not indexing at all
+
+The drain that fills the index is the pool doing its job for an agent loop, and pure cost for a
+gateway that proxies `tools/list` through from the client that asked. `indexTools: false` skips it:
+
+```ts
+new McpPool({ load, lazy: true, indexTools: false });
+```
+
+What that buys is a round trip per page off the first request that spawns a server — a lazy
+gateway pays the spawn on a user-facing request, and against a server that pages ten at a time the
+walk is several more before the request it actually made is even sent. It also stops holding a
+second copy of every tool for nobody, and stops a server that answers `initialize` and then wedges
+on `tools/list` from failing to connect at all: that one is still good for a `resources/read`.
+
+The index is then empty for ever, so `tools()`, `catalog()` and `state().tools` are empty and
+`call()` refuses every name — without waking anything, since connecting a server could not index
+it either. `client()` is the surface that remains, and `probe()` is unaffected: a probe exists to
+report what a config offers.
+
 ## Past the agent surface
 
 `tools()` returns OpenAI definitions and `call()` returns a string, because a string is what goes

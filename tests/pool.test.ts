@@ -1193,3 +1193,59 @@ test("a server can opt out of reaping, or set its own timeout", async () => {
   );
   expect(pool.state().find((entry) => entry.slug === "kept")).toMatchObject({ status: "ready" });
 });
+
+/**
+ * The gateway's pool: it proxies `tools/list` straight through from the client that asked, so the
+ * pool's own drain is a round trip per page for a list nobody reads.
+ */
+test("a pool that does not index tools connects without listing them", async () => {
+  pool = lazyPool({ lazy: false, indexTools: true });
+  await pool.sync([config()]);
+  // What the default costs, for the contrast: one `tools/list` walk per connect, held per entry.
+  expect(pool.state()).toMatchObject([{ status: "ready" }]);
+  expect(pool.state()[0]?.tools).toHaveLength(3);
+  await pool.shutdown();
+
+  pool = lazyPool({ lazy: false, indexTools: false });
+  await pool.sync([config()]);
+
+  // Connected and usable — only the listing is gone.
+  expect(pool.state()).toMatchObject([{ status: "ready", error: "", tools: [] }]);
+  expect(pool.tools()).toEqual([]);
+  expect(pool.catalog()).toEqual([]);
+
+  // The half a proxying consumer actually uses, unaffected: the client lists its own tools when
+  // the foreign client asks, with its own cursor.
+  const { tools } = await (await pool.client("echo-1")).listTools();
+  expect(tools.map((tool) => tool.name)).toContain("ping");
+});
+
+/**
+ * The listing is work of its own, and it can fail on its own. A server that completes `initialize`
+ * and then wedges on `tools/list` is one a gateway could still have proxied `resources/read` to,
+ * and under the default it never reaches `ready` at all.
+ */
+test("a server that wedges on tools/list is still connected when nothing lists them", async () => {
+  pool = lazyPool({ lazy: false, indexTools: false });
+  await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" } })]);
+
+  expect(pool.state()).toMatchObject([{ status: "ready", error: "" }]);
+  const { resources } = await (await pool.client("echo-1")).listResources();
+  expect(resources).toMatchObject([{ uri: "echo://greeting" }]);
+});
+
+/**
+ * Under `lazy`, a name the index cannot answer wakes every server that could own it. With nothing
+ * being indexed the index can never answer, so waking is a child process spawned to fail the same
+ * call — the whole cost `lazy` exists to avoid, paid on every request.
+ */
+test("a call against an unindexed pool is refused without starting anything", async () => {
+  pool = lazyPool({ indexTools: false });
+  await pool.sync([config()]);
+
+  const error = await pool.call("echo__ping", {}).catch((thrown: unknown) => thrown);
+  expect(error).toBeInstanceOf(McpPoolError);
+  expect((error as McpPoolError).code).toBe("unknown-tool");
+  expect(spawned()).toBe(0);
+  expect(pool.state()).toMatchObject([{ status: "idle" }]);
+});
