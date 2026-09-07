@@ -1,3 +1,10 @@
+## [2.4.1](https://github.com/cubicecho/agent-mcp-pool/compare/v2.4.0...v2.4.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* refuse a reconcile with no configs and no load() ([3288fed](https://github.com/cubicecho/agent-mcp-pool/commit/3288fedb80032db3b97028eae0392df6c9513dbd)), closes [#63](https://github.com/cubicecho/agent-mcp-pool/issues/63)
+
 # [2.4.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.3.0...v2.4.0) (2026-09-07)
 
 
