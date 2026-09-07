@@ -1,3 +1,10 @@
+# [2.4.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.3.0...v2.4.0) (2026-09-07)
+
+
+### Features
+
+* resolve connectTimeoutMs per server row ([b831cc3](https://github.com/cubicecho/agent-mcp-pool/commit/b831cc3f2eed1fe252d1c9c3b1c8228d3e00238d)), closes [#62](https://github.com/cubicecho/agent-mcp-pool/issues/62)
+
 # [2.3.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.2.0...v2.3.0) (2026-09-07)
 
 
