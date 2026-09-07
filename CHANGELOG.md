@@ -1,3 +1,10 @@
+# [2.1.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.0.0...v2.1.0) (2026-09-07)
+
+
+### Features
+
+* let a pool skip the tool listing on connect ([dc9d8ec](https://github.com/cubicecho/agent-mcp-pool/commit/dc9d8ec9fb0601317148882a4c740ebe330fc242)), closes [#56](https://github.com/cubicecho/agent-mcp-pool/issues/56)
+
 # [2.0.0](https://github.com/cubicecho/agent-mcp-pool/compare/v1.0.0...v2.0.0) (2026-09-07)
 
 
