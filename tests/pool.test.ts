@@ -9,7 +9,7 @@ import { qualify, SEPARATOR } from "../src/naming.ts";
 import { McpPool } from "../src/pool.ts";
 import { probe } from "../src/probe.ts";
 import { MINIMAL_CHILD_ENV } from "../src/transport.ts";
-import type { McpServerConfig } from "../src/types.ts";
+import type { McpServerConfig, McpServerPublicConfig, StdioServerConfig } from "../src/types.ts";
 import { POOL_VERSION } from "../src/version.ts";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-pool-"));
@@ -55,7 +55,7 @@ async function until(done: () => boolean, what: string) {
   if (!done()) throw new Error(`timed out waiting for ${what}`);
 }
 
-const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
+const config = (over: Partial<StdioServerConfig> = {}): StdioServerConfig => ({
   id: "echo-1",
   slug: "echo",
   label: "Echo",
@@ -64,8 +64,6 @@ const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
   command: process.execPath,
   args: [FIXTURE],
   env: { MCP_ECHO_SPAWN_LOG: spawnLog },
-  url: "",
-  headers: null,
   ...over,
 });
 
@@ -81,8 +79,28 @@ const names = (definitions: OpenAI.ChatCompletionTool[]) =>
 /** The qualified names on offer. */
 const toolNames = (pool: McpPool, servers?: string[]) => names(pool.tools({ servers }));
 
-/** A row as `state()` reports it by default: everything except the credentials. */
-const withoutSecrets = ({ env, headers, ...rest }: McpServerConfig) => rest;
+/** A row as `state()` reports it by default: everything except the credentials — which is one
+ * field per transport arm, since a row only carries its own. */
+const withoutSecrets = (row: McpServerConfig) => {
+  if (row.transport === "stdio") {
+    const { env, ...rest } = row;
+    return rest;
+  }
+  const { headers, ...rest } = row;
+  return rest;
+};
+
+/**
+ * A reported row narrowed to the stdio arm, which every row these tests configure is.
+ *
+ * `McpServerPublicConfig` is a union now, so `config.args` is not a field on it until the
+ * transport has been checked — the point of the union, and the cost of it at a call site that
+ * already knows.
+ */
+function stdio(config?: McpServerPublicConfig) {
+  if (config?.transport !== "stdio") throw new Error("expected a stdio row");
+  return config;
+}
 
 /**
  * The pool's refusal itself rather than its message, since the message is deliberately the same
@@ -259,22 +277,32 @@ test("a server the pool never dialled still reports its row", async () => {
  * the client — on a shape where every other field was safe to hand onward.
  */
 test("state() leaves the credentials out of the row, unless they are asked for", async () => {
-  const row = config({
+  // One row per arm, because a row carries one credential field and the other arm's is the one a
+  // single-transport test would never have caught being reported.
+  const child = config({
     env: { MCP_ECHO_SPAWN_LOG: spawnLog, OPENAI_API_KEY: "sk-SUPER-SECRET" },
-    headers: { Authorization: "Bearer TOKEN-SECRET" },
   });
-  await pool.sync([row]);
+  const remote: McpServerConfig = {
+    id: "remote-1",
+    slug: "remote",
+    label: "Remote",
+    enabled: false,
+    transport: "http",
+    url: "https://example.test/mcp",
+    headers: { Authorization: "Bearer TOKEN-SECRET" },
+  };
+  await pool.sync([child, remote]);
 
-  const [safe] = pool.state();
-  expect(safe?.config).not.toHaveProperty("env");
-  expect(safe?.config).not.toHaveProperty("headers");
+  const safe = pool.state();
+  expect(safe[0]?.config).not.toHaveProperty("env");
+  expect(safe[1]?.config).not.toHaveProperty("headers");
   // Whatever a consumer serialises of it, rather than the two fields alone.
   expect(JSON.stringify(safe)).not.toContain("SECRET");
 
   // The edit form rendered server-side is the one caller that legitimately needs them back.
-  const [full] = pool.state({ secrets: true });
-  expect(full?.config.env).toEqual(row.env);
-  expect(full?.config.headers).toEqual(row.headers);
+  const full = pool.state({ secrets: true });
+  expect(stdio(full[0]?.config).env).toEqual(child.env);
+  expect(full[1]?.config).toHaveProperty("headers", remote.headers);
 });
 
 /**
@@ -292,7 +320,7 @@ test("a row edited in place is a changed row, not one the pool is already runnin
   await pool.sync();
 
   expect(spawned()).toBe(2);
-  expect(pool.state()[0]?.config.args).toEqual([FIXTURE, "--edited"]);
+  expect(stdio(pool.state()[0]?.config).args).toEqual([FIXTURE, "--edited"]);
 });
 
 test("the row state() reports is a copy, so editing it cannot reach the pool", async () => {
@@ -301,7 +329,7 @@ test("the row state() reports is a copy, so editing it cannot reach the pool", a
 
   const [seen] = pool.state();
   if (seen) seen.config.label = "edited";
-  seen?.config.args?.push("--edited");
+  stdio(seen?.config).args?.push("--edited");
 
   expect(pool.state()[0]?.config).toEqual(withoutSecrets(row));
   // Still the same connection as far as the pool is concerned, so nothing restarts.
@@ -1808,4 +1836,41 @@ test("a server that pages forever is failed rather than walked forever", async (
   expect(pool.state()).toMatchObject([{ status: "error" }]);
   expect(pool.state()[0]?.error).toMatch(/more than \d+ pages/);
   expect(await stillAlive(spawnedPids())).toEqual([]);
+});
+
+/**
+ * Both rows are literals on purpose: a literal is what excess-property checking applies to, so
+ * this is a typecheck assertion as much as a runtime one. Flat, the http row had to carry
+ * `command: ""`, `args: null`, `env: null` — three fields nothing reads and a command that reads
+ * as configured rather than absent — and a stdio row could compile with no command at all.
+ */
+test("each arm of a row carries only its own transport's fields", async () => {
+  await pool.sync([
+    {
+      id: "echo-1",
+      slug: "echo",
+      label: "Echo",
+      enabled: true,
+      transport: "stdio",
+      command: process.execPath,
+      args: [FIXTURE],
+      env: { MCP_ECHO_SPAWN_LOG: spawnLog },
+    },
+    {
+      id: "remote",
+      slug: "remote",
+      label: "Remote",
+      enabled: true,
+      transport: "http",
+      // A port nothing listens on: this arm is here to be reconciled and dialled, not to answer.
+      url: "http://127.0.0.1:1/mcp",
+      connectTimeoutMs: 2000,
+    },
+  ]);
+
+  expect(pool.state()).toMatchObject([
+    { id: "echo-1", status: "ready", config: { transport: "stdio" } },
+    { id: "remote", status: "error", config: { transport: "http" } },
+  ]);
+  expect(await pool.call("echo__ping", {})).toBe("ping({})");
 });

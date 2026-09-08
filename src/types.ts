@@ -1,13 +1,10 @@
 import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
 
 /**
- * A configured MCP server, as this package needs it.
- *
- * Consumers store these rows differently — a Drizzle table, a zod-validated object — but the
- * fields are the same, so the type is declared here and satisfied structurally. Nothing here
- * imports a schema.
+ * Everything a configured server carries whichever way it is reached — its identity and its
+ * clocks. Not exported on its own: a row is always one of the two arms below.
  */
-export interface McpServerConfig {
+interface McpServerBase {
   id: string;
   /**
    * Namespace for this server's tools: the model sees `<slug>__<tool name>`. Defaults to `id`,
@@ -17,18 +14,6 @@ export interface McpServerConfig {
   slug?: string;
   label: string;
   enabled: boolean;
-  transport: "stdio" | "http";
-  // stdio
-  command: string;
-  args: string[] | null;
-  env: Record<string, string> | null;
-  /**
-   * Working directory for a stdio child. Absent means this process's own.
-   *
-   * Optional so consumers that predate it still satisfy the type. Several servers resolve a
-   * relative path — a filesystem root, a sqlite file — against their cwd rather than an argument.
-   */
-  cwd?: string | null;
   /**
    * Close this server after this long without a call, overriding the pool's own timeout.
    *
@@ -53,10 +38,50 @@ export interface McpServerConfig {
    * is a server given no time at all.
    */
   connectTimeoutMs?: number | null;
-  // streamable http
-  url: string;
-  headers: Record<string, string> | null;
 }
+
+/**
+ * A server reached by spawning a child process and speaking MCP over its stdio.
+ *
+ * Everything but `command` is optional: a server with no arguments, no extra environment and no
+ * particular working directory is the common row, and it should not have to write three nulls to
+ * say so.
+ */
+export interface StdioServerConfig extends McpServerBase {
+  transport: "stdio";
+  command: string;
+  args?: string[] | null;
+  env?: Record<string, string> | null;
+  /**
+   * Working directory for the child. Absent means this process's own.
+   *
+   * Several servers resolve a relative path — a filesystem root, a sqlite file — against their cwd
+   * rather than an argument.
+   */
+  cwd?: string | null;
+}
+
+/** A server reached over streamable HTTP, at a url this process does not own the lifetime of. */
+export interface HttpServerConfig extends McpServerBase {
+  transport: "http";
+  url: string;
+  headers?: Record<string, string> | null;
+}
+
+/**
+ * A configured MCP server, as this package needs it.
+ *
+ * Consumers store these rows differently — a Drizzle table, a zod-validated object — but the
+ * fields are the same, so the type is declared here and satisfied structurally. Nothing here
+ * imports a schema.
+ *
+ * A union on `transport` rather than one flat row carrying both arms' fields. Flat, an http row
+ * still had to write `command: ""`, `args: null`, `env: null` to typecheck — three fields nothing
+ * would ever read, and a `command` that reads as configured rather than as absent. It also let a
+ * stdio row compile with no `command` at all, which `createTransport` could only refuse at
+ * runtime, one connect too late.
+ */
+export type McpServerConfig = StdioServerConfig | HttpServerConfig;
 
 /**
  * How this process introduces itself in a handshake: the `clientInfo` of MCP's `initialize`.
@@ -71,16 +96,25 @@ export interface ClientIdentity {
 }
 
 /**
+ * The connection half of one arm of a row — everything about reaching the server, none of what
+ * names it.
+ *
+ * `T extends unknown` makes this distribute over the union rather than collapse it: a plain
+ * `Pick` across both arms answers with one object type that has every field of both, which is the
+ * shape this package moved away from.
+ */
+type ConnectionOf<T> = T extends unknown
+  ? Pick<T, Extract<keyof T, "transport" | "command" | "args" | "env" | "cwd" | "url" | "headers">>
+  : never;
+
+/**
  * What it takes to reach a server — the connection half of a row, without its identity.
  *
  * `connectTimeoutMs` is in here because it is part of reaching the server rather than of naming
  * it: a row that needs two minutes to start needs them behind a "Test connection" button too, or
  * the probe reports a failure for a server that works.
  */
-export type McpConnection = Pick<
-  McpServerConfig,
-  "transport" | "command" | "args" | "env" | "cwd" | "url" | "headers" | "connectTimeoutMs"
->;
+export type McpConnection = ConnectionOf<McpServerConfig> & Pick<McpServerBase, "connectTimeoutMs">;
 
 /**
  * `idle` is registered-but-not-connected, and where an idle-reaped server goes — a success state:
@@ -97,8 +131,19 @@ export type McpStatus = "disabled" | "idle" | "connecting" | "ready" | "error";
  * They are optional here rather than absent so `state({ secrets: true })` — the caller that is
  * genuinely rendering that form server-side — can hand back the whole row under one type.
  */
-export type McpServerPublicConfig = Omit<McpServerConfig, "env" | "headers"> &
-  Partial<Pick<McpServerConfig, "env" | "headers">>;
+export type McpServerPublicConfig = PublicRow<McpServerConfig>;
+
+/**
+ * One arm of a row with its credentials made optional.
+ *
+ * Distributed like `ConnectionOf`, and for the same reason — but `Omit` is the operator that
+ * makes it necessary rather than merely tidy: `Omit` over a union collapses to the keys the arms
+ * share, which would drop `command` and `url` both. The `Extract` is because neither arm has both
+ * credential fields, and `Pick` refuses a key its argument does not have.
+ */
+type PublicRow<T> = T extends unknown
+  ? Omit<T, "env" | "headers"> & Partial<Pick<T, Extract<keyof T, "env" | "headers">>>
+  : never;
 
 /** One connected server as an operator sees it. */
 export interface McpServerState {

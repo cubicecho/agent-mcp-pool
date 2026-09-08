@@ -40,6 +40,22 @@ quotes back in a support channel. The version defaults to this package's own, re
 manifest; set it beside the name, since a name that is yours next to a version that is the
 pool's tells the server something untrue.
 
+A row is one of two shapes, discriminated on `transport`, and carries only its own arm's fields:
+
+```ts
+{ id: "git",  label: "Git",  enabled: true, transport: "stdio", command: "uvx", args: ["mcp-server-git"] }
+{ id: "docs", label: "Docs", enabled: true, transport: "http",  url: "https://mcp.example.com/mcp" }
+```
+
+`StdioServerConfig` and `HttpServerConfig` are both exported; `McpServerConfig` is their union.
+Flat, an http row still had to write `command: ""`, `args: null`, `env: null` — three fields
+nothing would ever read, and a `command` that reads as configured rather than absent — while a
+stdio row with no `command` at all compiled, and `createTransport` could only refuse it at runtime,
+one connect too late. **Migrating:** a row written as an object *literal* that supplies the other
+arm's fields now fails excess-property checking; one that arrives from a typed variable — a Drizzle
+select, a parsed config — is unaffected. The fix is deleting the fields that row's transport never
+used.
+
 A stdio server may also name a `cwd`; absent, it inherits this process's. Several servers resolve
 relative paths — a filesystem root, a sqlite file — against their working directory rather than
 against an argument, and it counts as part of the connection: editing it restarts the child.

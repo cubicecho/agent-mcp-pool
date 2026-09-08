@@ -31,11 +31,13 @@ export {
 export type {
   CatalogServer,
   ClientIdentity,
+  HttpServerConfig,
   McpConnection,
   McpProbe,
   McpServerConfig,
   McpServerPublicConfig,
   McpServerState,
   McpStatus,
+  StdioServerConfig,
   ToolDefinition,
 } from "./types.ts";

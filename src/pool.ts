@@ -1090,7 +1090,13 @@ export class McpPool {
   private reportedConfig(config: McpServerConfig, secrets: boolean): McpServerPublicConfig {
     const copy = copyConfig(config);
     if (secrets) return copy;
-    const { env, headers, ...rest } = copy;
+    // One credential field per arm, stripped by arm: a row carries only its own transport's
+    // fields now, so there is no single destructure that names both.
+    if (copy.transport === "stdio") {
+      const { env, ...rest } = copy;
+      return rest;
+    }
+    const { headers, ...rest } = copy;
     return rest;
   }
 

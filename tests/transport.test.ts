@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, expect, test } from "vitest";
 import { createTransport, readStderrTail } from "../src/transport.ts";
-import type { McpConnection } from "../src/types.ts";
+import type { HttpServerConfig, McpConnection } from "../src/types.ts";
 
 /**
  * The other transport. Everything else in this suite boots a stdio child out of `tests/fixtures`,
@@ -12,12 +12,8 @@ import type { McpConnection } from "../src/types.ts";
  * carries its headers before the server has said anything back, so a listener that records what
  * arrived and answers 500 proves what needs proving.
  */
-const config = (over: Partial<McpConnection> = {}): McpConnection => ({
+const config = (over: Partial<HttpServerConfig> = {}): McpConnection => ({
   transport: "http",
-  command: "",
-  args: null,
-  env: null,
-  cwd: null,
   url: "http://127.0.0.1:1/mcp",
   headers: null,
   ...over,
@@ -45,9 +41,10 @@ const ping: JSONRPCMessage = { jsonrpc: "2.0", id: 1, method: "ping" };
 
 /** The stdio half of the same guard, which had a test only by accident of the pool having one. */
 test("a stdio server with no command is refused, rather than spawned as nothing", () => {
-  expect(() => createTransport(config({ transport: "stdio", command: "" }))).toThrow(
-    /a stdio server needs a command/,
-  );
+  // Cast because the type now says a stdio row has a command — which is the improvement, and
+  // leaves this guard reachable only from JavaScript, or from a database column that allows null.
+  const row = { transport: "stdio", command: "" } as unknown as McpConnection;
+  expect(() => createTransport(row)).toThrow(/a stdio server needs a command/);
 });
 
 test("an http server with no url is refused, rather than dialled at nothing", () => {

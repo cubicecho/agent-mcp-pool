@@ -52,10 +52,12 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 
 - `CatalogServer` (type) — One server's tools, without their JSON schemas — the cheap half of a tool definition.
 - `ClientIdentity` (type) — How this process introduces itself in a handshake: the `clientInfo` of MCP's `initialize`.
+- `HttpServerConfig` (type) — A server reached over streamable HTTP, at a url this process does not own the lifetime of.
 - `McpConnection` (type) — What it takes to reach a server — the connection half of a row, without its identity.
 - `McpProbe` (type) — What `probe` found: whether the config works, and what it offers if it does.
 - `McpServerConfig` (type) — A configured MCP server, as this package needs it.
 - `McpServerPublicConfig` (type) — A row as `state()` reports it: everything except the credentials, unless they were asked for.
 - `McpServerState` (type) — One connected server as an operator sees it.
 - `McpStatus` (type) — `idle` is registered-but-not-connected, and where an idle-reaped server goes — a success state: nothing is wrong, there is simply no child right now.
+- `StdioServerConfig` (type) — A server reached by spawning a child process and speaking MCP over its stdio.
 - `ToolDefinition` (type) — One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's `ChatCompletionTool`, and assignable to it.
