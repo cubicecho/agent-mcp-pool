@@ -113,6 +113,38 @@ server.setRequestHandler(CallToolRequestSchema, (request) => {
   // what a result flattened to a string cannot carry.
   if (request.params.arguments?.image)
     return { content: [{ type: "image", data: "aGk=", mimeType: "image/png" }] };
+  // A file the server read, answered as an embedded resource rather than as a text block. The
+  // text is in `resource.text`, so a flattening written on `block.type` alone loses the answer.
+  if (request.params.arguments?.resource)
+    return {
+      content: [
+        {
+          type: "resource",
+          resource: {
+            uri: "echo://greeting",
+            mimeType: "text/plain",
+            text: "hello from an embedded resource",
+          },
+        },
+      ],
+    };
+  // A link rather than the thing itself: what a server hands back when the payload is too big to
+  // inline. The uri is the only field that lets a model follow it.
+  if (request.params.arguments?.link)
+    return {
+      content: [
+        {
+          type: "resource_link",
+          uri: "echo://greeting",
+          name: "greeting",
+          description: "a greeting to read",
+        },
+      ],
+    };
+  // Structured output and no content at all — permitted, and what a server with an `outputSchema`
+  // tends to answer with.
+  if (request.params.arguments?.structured)
+    return { content: [], structuredContent: { greeting: "hello", tools: 3 } };
   return {
     content: [
       {

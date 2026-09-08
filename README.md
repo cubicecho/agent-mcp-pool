@@ -210,10 +210,23 @@ each page of it, for the reason above; everything else in `options` is passed to
 
 `resultText` is the flattening `call()` does, exported separately: MCP answers with a list of
 content blocks and a message array holds one string. A consumer driving the client itself and
-still putting the answer in front of a model wants the same rule rather than its own — everything
-that is not text is *named* (`[image content]`) rather than dropped, so a model that asked for a
-screenshot is told it got one instead of being handed an empty string and left to conclude the
-call failed.
+still putting the answer in front of a model wants the same rule rather than its own. A block that
+came with text arrives as that text, wherever that block keeps it, and what has none is *named*
+rather than dropped — so a model that asked for a screenshot is told it got one instead of being
+handed an empty string and left to conclude the call failed:
+
+| Block | Flattened to |
+| --- | --- |
+| `text` | its `text` |
+| `resource`, text arm | the resource's own `text` — a file the server read is an answer, not a placeholder |
+| `resource`, blob arm | `[resource <uri> content]`, keeping the uri a follow-up call needs |
+| `resource_link` | `[resource_link <uri> — <name>: <description>]`, since the uri is what makes a link followable |
+| `image`, `audio`, anything else | `[<type> content]` |
+
+A result with no content at all but a `structuredContent` — what a server with an `outputSchema`
+tends to answer with — is flattened to that structure as JSON, rather than reaching the model as
+`call()`'s `"(no output)"`. Text blocks win where there are any: they are what the server wrote
+for a reader.
 
 Everything else the pool does applies unchanged — reconcile, the queue, crash detection with the
 stderr tail, backoff, retry-on-use. A server that is merely down is retried first, the same as
