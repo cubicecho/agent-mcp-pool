@@ -952,8 +952,10 @@ export class McpPool {
    * @param qualifiedName `<slug>__<tool>`, resolved whole rather than split on `__`.
    * @param input The tool's arguments. Null or undefined is sent as `{}`.
    * @param servers The run's scope. A tool outside it is refused as one that does not exist.
-   * @returns The result as text, or `"(no output)"` when the server returned none. A tool that
-   *   answers with `isError` throws instead.
+   * @returns The result as text — see `resultText` for what each kind of content block flattens
+   *   to, including a server that answers with `structuredContent` and no blocks at all — or
+   *   `"(no output)"` when the server returned nothing whatsoever. A tool that answers with
+   *   `isError` throws instead.
    * @throws {McpPoolError} `unknown-tool`, or `out-of-scope` for a tool this run may not reach.
    *   Both carry the same message, so the model cannot tell them apart.
    */

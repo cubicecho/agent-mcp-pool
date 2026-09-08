@@ -77,6 +77,11 @@ the drain spend one clock — `requestBudget` is the countdown they share. Handi
 to each request instead makes the real ceiling `timeout × (1 + pages)`, and the page count is not
 knowable when a consumer picks the number.
 
+**A block that came with text arrives as that text.** `resultText` names what has none (`[image
+content]`) rather than dropping it, but the rule is written per block type, not on `block.text`:
+an embedded text `resource` and a `resource_link`'s uri are answers the server did send, and a
+placeholder is where the model loses them for good.
+
 **The pool holds its own copy of every row, and `state()` hands back another.** An entry aliasing
 the caller's object makes `sameConnection` compare a row against itself, so an in-place edit never
 reconnects. `state()` also drops `env` and `headers` unless asked: the documented reader of that

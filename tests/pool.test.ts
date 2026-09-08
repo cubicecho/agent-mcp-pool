@@ -1344,6 +1344,24 @@ test("client() keeps a tool result that call() has to flatten away", async () =>
   expect(result.content).toEqual([{ type: "image", data: "aGk=", mimeType: "image/png" }]);
 });
 
+/**
+ * The blocks that carry text carry it somewhere other than `block.text`, and a flattening written
+ * on the type alone reported an answer the server did send as one it did not.
+ */
+test("call() keeps the text and uris a server answers with", async () => {
+  await pool.sync([config()]);
+
+  expect(await pool.call("echo__echo", { resource: true })).toBe("hello from an embedded resource");
+  expect(await pool.call("echo__echo", { link: true })).toBe(
+    "[resource_link echo://greeting — greeting: a greeting to read]",
+  );
+  // "(no output)" is what this used to be: a server with an `outputSchema` answers with structure
+  // and no content, and the answer is in `structuredContent`.
+  expect(await pool.call("echo__echo", { structured: true })).toBe(
+    '{"greeting":"hello","tools":3}',
+  );
+});
+
 test("client() refuses a server that is disabled or not configured at all", async () => {
   await pool.sync([config({ enabled: false })]);
 

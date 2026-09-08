@@ -25,6 +25,72 @@ test("a non-text block is named rather than dropped", () => {
   expect(resultText({ content: [{ type: "audio", data: "aGk=" }] })).toBe("[audio content]");
 });
 
+/**
+ * Naming a block is right for a screenshot and wrong for a file: an embedded text resource is an
+ * answer the server did send, and `[resource content]` threw it away somewhere the model could
+ * not ask for it again.
+ */
+test("an embedded text resource arrives as its text", () => {
+  expect(
+    resultText({
+      content: [
+        {
+          type: "resource",
+          resource: { uri: "file:///notes.md", mimeType: "text/markdown", text: "# notes" },
+        },
+      ],
+    }),
+  ).toBe("# notes");
+});
+
+test("an embedded blob keeps its uri in the placeholder", () => {
+  // Nothing to unwrap, but the uri is what a follow-up call needs.
+  expect(
+    resultText({
+      content: [{ type: "resource", resource: { uri: "file:///chart.png", blob: "aGk=" } }],
+    }),
+  ).toBe("[resource file:///chart.png content]");
+});
+
+test("a resource link keeps the uri that makes it followable", () => {
+  expect(resultText({ content: [{ type: "resource_link", uri: "file:///notes.md" }] })).toBe(
+    "[resource_link file:///notes.md]",
+  );
+  expect(
+    resultText({
+      content: [
+        {
+          type: "resource_link",
+          uri: "file:///notes.md",
+          name: "notes",
+          description: "the meeting notes",
+        },
+      ],
+    }),
+  ).toBe("[resource_link file:///notes.md — notes: the meeting notes]");
+  // A link with nothing to follow is still accounted for rather than reported as an empty result.
+  expect(resultText({ content: [{ type: "resource_link", name: "notes" }] })).toBe(
+    "[resource_link content]",
+  );
+});
+
+/**
+ * A server with an `outputSchema` is allowed to answer with structure and no content at all, and
+ * `call()` turns an empty string into "(no output)" — an answer the server did send, reported as
+ * one it did not.
+ */
+test("structured output is read when the blocks come to nothing", () => {
+  expect(resultText({ content: [], structuredContent: { rows: 2, ok: true } })).toBe(
+    '{"rows":2,"ok":true}',
+  );
+  expect(resultText({ structuredContent: { rows: 2 } })).toBe('{"rows":2}');
+  // Text wins where there is any: the blocks are what the server wrote for a reader.
+  expect(
+    resultText({ content: [{ type: "text", text: "two rows" }], structuredContent: { rows: 2 } }),
+  ).toBe("two rows");
+  expect(resultText({ content: [], structuredContent: null })).toBe("");
+});
+
 test("a block with no type at all is still accounted for", () => {
   expect(resultText({ content: [{}] })).toBe("[unknown content]");
 });
