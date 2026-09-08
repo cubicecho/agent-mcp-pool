@@ -414,6 +414,9 @@ export class McpPool {
     this.owed = true;
     clearTimeout(this.pending);
     this.pending = setTimeout(() => void this.settle(), 50);
+    // A reconcile the pool has not got to yet is not a reason for the process to stay up, any
+    // more than a pending reap is. `flush()` is how a caller that does want to wait for it says so.
+    this.pending.unref?.();
   }
 
   private async settle() {
@@ -785,6 +788,12 @@ export class McpPool {
    * `resources/updated` or `logging/message` goes nowhere — and a consumer relaying the protocol
    * onward has no other way to see them. The id comes first because a listener hears from every
    * server at once and the notification does not say which one sent it.
+   *
+   * A subscription to the pool rather than to a connection, so it outlives both: a server that
+   * reconnects keeps delivering to it, and `shutdown()` — which documents that the pool stays
+   * usable — leaves it in place, so a consumer that subscribed once at boot is still subscribed
+   * after a shutdown and a fresh `sync()`. Unsubscribing is this function's job and nothing
+   * else's.
    *
    * @param listener Called with the sending server's id and the notification. Throwing is
    *   contained — the other listeners still run.
