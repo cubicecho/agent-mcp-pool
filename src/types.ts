@@ -38,6 +38,15 @@ interface McpServerBase {
    * is a server given no time at all.
    */
   connectTimeoutMs?: number | null;
+  /**
+   * How long one `call()` against *this* server gets, overriding the pool's.
+   *
+   * The same argument as `connectTimeoutMs` and a different distribution: a filesystem read and a
+   * deep-research server that thinks for ninety seconds cannot share a number either, and the one
+   * that has to accommodate both leaves the fast server unbounded. `null` and absent both mean
+   * "use the pool's"; read at call time, so an edit applies to the next call without a reconnect.
+   */
+  callTimeoutMs?: number | null;
 }
 
 /**

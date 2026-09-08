@@ -1886,3 +1886,27 @@ test("a tool that fails is a refusal with a code, not a bare error", async () =>
   expect(failed.toolName).toBe("echo__echo");
   expect(failed.serverId).toBe("echo-1");
 });
+
+test("a call is bounded by the pool's timeout rather than the SDK's own minute", async () => {
+  pool = lazyPool({ lazy: false, callTimeoutMs: 100 });
+  await pool.sync([config()]);
+
+  await expect(pool.call("echo__echo", { sleepMs: 2000 })).rejects.toThrow(/timed out/i);
+  // The connection survives the call that was cut off: a slow tool is not a broken server.
+  expect(pool.state()).toMatchObject([{ status: "ready" }]);
+  expect(await pool.call("echo__ping", {})).toBe("ping({})");
+});
+
+test("a row's callTimeoutMs overrides the pool's, in both directions", async () => {
+  pool = lazyPool({ lazy: false, callTimeoutMs: 20_000 });
+  await pool.sync([config({ callTimeoutMs: 100 })]);
+
+  await expect(pool.call("echo__echo", { sleepMs: 2000 })).rejects.toThrow(/timed out/i);
+
+  // And the other way: the row is the patient one, under a pool that would have given up.
+  await pool.shutdown();
+  pool = lazyPool({ lazy: false, callTimeoutMs: 100 });
+  await pool.sync([config({ callTimeoutMs: 20_000 })]);
+
+  expect(await pool.call("echo__echo", { sleepMs: 300 })).toBe('echo({"sleepMs":300})');
+});

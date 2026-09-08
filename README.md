@@ -360,6 +360,22 @@ The row is re-read on every reconcile, so a consumer whose configuration is hand
 need a restart to change it. An edited timeout does not bounce a running child — it is read at
 connect time, so it applies to the next one.
 
+`callTimeoutMs` is the same idea for one `call()`, and for an agent loop it is the number most
+worth setting: unset, a tool call takes the SDK's 60s, which is most of a turn. It reads the same
+three levels — `McpServerConfig.callTimeoutMs`, then the pool's, then the SDK's — for the same
+reason the connect one does: a filesystem read and a deep-research server that thinks for ninety
+seconds cannot share a number, and the number that accommodates both leaves the fast server
+effectively unbounded. Read at call time, so an edit applies to the next call without a reconnect.
+
+```ts
+new McpPool({ load, callTimeoutMs: 30_000 });     // the pool's
+{ id: "research", url: "...", callTimeoutMs: 180_000 } // this server's
+```
+
+Deliberately *not* the SDK's `resetTimeoutOnProgress`: a long call that reports progress is still
+cut off at this number, because a bound a server can hold open indefinitely by talking is not a
+bound. A consumer that wants the other reading has `client()`.
+
 ## Probing
 
 A config is easy to get subtly wrong, and finding out at 3am when the task runs is too late.

@@ -116,6 +116,18 @@ export interface McpPoolOptions {
    */
   probeTimeoutMs?: number;
   /**
+   * How long one `call()` gets before it is abandoned.
+   *
+   * Absent leaves the SDK's own 60s, which is what this existed to improve on everywhere else and
+   * was unreachable here: `connectTimeoutMs` is worked out to three levels of precedence and then
+   * a tool call took whatever the SDK felt like. For an agent loop it is the number that matters
+   * most — a wedged tool holds up the turn, and the turn is what a person is waiting on.
+   *
+   * The pool-wide default. `McpServerConfig.callTimeoutMs` overrides it for one server, which is
+   * where a search that legitimately takes a minute belongs.
+   */
+  callTimeoutMs?: number;
+  /**
    * Register servers without connecting them; connect on first use instead.
    *
    * Off by default: for an agent loop, spawning a child per run costs more than the run. A
@@ -220,6 +232,7 @@ export class McpPool {
   private readonly childEnv?: readonly string[];
   private readonly connectTimeoutMs?: number;
   private readonly probeTimeoutMs?: number;
+  private readonly callTimeoutMs?: number;
 
   /**
    * @param options See `McpPoolOptions`. All optional: a pool with no `load` is one driven by
@@ -234,6 +247,7 @@ export class McpPool {
     childEnv,
     connectTimeoutMs,
     probeTimeoutMs,
+    callTimeoutMs,
     lazy = false,
     idleTimeoutMs,
     indexTools = true,
@@ -245,6 +259,7 @@ export class McpPool {
     this.childEnv = childEnv;
     this.connectTimeoutMs = connectTimeoutMs;
     this.probeTimeoutMs = probeTimeoutMs;
+    this.callTimeoutMs = callTimeoutMs;
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
     this.indexTools = indexTools;
@@ -1003,10 +1018,22 @@ export class McpPool {
     const entry = this.entries.get(found.serverId);
     if (entry) this.touch(entry);
 
-    const result = await found.client.callTool({
-      name: found.tool.name,
-      arguments: (input ?? {}) as Record<string, unknown>,
-    });
+    // The row first, the pool's default behind it, the SDK's own 60s behind that — the same order
+    // `connectTimeoutMs` is read in, and read here rather than held on the entry for the same
+    // reason: an edited number applies to the next call without bouncing the child. One request,
+    // so a plain timeout rather than a `requestBudget`; budgets are for sequences.
+    const timeoutMs = entry?.config.callTimeoutMs ?? this.callTimeoutMs;
+    const result = await found.client.callTool(
+      {
+        name: found.tool.name,
+        arguments: (input ?? {}) as Record<string, unknown>,
+      },
+      undefined,
+      // Deliberately without `resetTimeoutOnProgress`: a long call that reports progress is still
+      // cut off at this number. The alternative is a bound a server can hold open indefinitely by
+      // talking, which is not a bound. A consumer that wants the other reading has `client()`.
+      timeoutMs == null ? undefined : { timeout: timeoutMs },
+    );
 
     const text = resultText(result);
     // The server ran the tool and the tool failed — not one of the pool's refusals, which is why

@@ -127,6 +127,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // than as a protocol error — so nothing below the pool distinguishes it from an answer.
   if (request.params.arguments?.fail)
     return { content: [{ type: "text", text: "the tool failed on purpose" }], isError: true };
+  // A tool that is slow rather than broken: the case a call timeout is for, and the one a connect
+  // timeout says nothing about because the handshake already finished.
+  if (request.params.arguments?.sleepMs)
+    await new Promise((resolve) => setTimeout(resolve, Number(request.params.arguments.sleepMs)));
   // A non-text content block on demand: what a tool returning a chart or a screenshot sends, and
   // what a result flattened to a string cannot carry.
   if (request.params.arguments?.image)
