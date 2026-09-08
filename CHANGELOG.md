@@ -1,3 +1,10 @@
+# [2.5.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.4.4...v2.5.0) (2026-09-08)
+
+
+### Features
+
+* report a server's instructions and capabilities from state() ([6f7b5f9](https://github.com/cubicecho/agent-mcp-pool/commit/6f7b5f9471727b469405f069c63d94c734f48a18)), closes [#70](https://github.com/cubicecho/agent-mcp-pool/issues/70)
+
 ## [2.4.4](https://github.com/cubicecho/agent-mcp-pool/compare/v2.4.3...v2.4.4) (2026-09-08)
 
 

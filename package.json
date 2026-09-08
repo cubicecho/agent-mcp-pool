@@ -1,6 +1,6 @@
 {
   "name": "@cubicecho/agent-mcp-pool",
-  "version": "2.4.4",
+  "version": "2.5.0",
   "description": "A pool of long-lived Model Context Protocol clients, exposing every connected server's tools to an OpenAI-compatible agent loop as `<slug>__<tool>`.",
   "keywords": [
     "mcp",
