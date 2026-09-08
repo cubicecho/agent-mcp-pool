@@ -11,6 +11,16 @@ import { requestBudget } from "./budget.ts";
 type ListedTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
 
 /**
+ * More pages than a real tool list has, and the only bound on the walk when nothing set a timeout.
+ *
+ * The repeated-cursor check catches a server that pages in a circle. One minting a fresh cursor
+ * every time walks past it — for ever, accumulating tools, with no error and no request that ever
+ * outlives its own budget because each page answers promptly. A pool with no `connectTimeoutMs`
+ * has nothing else to stop it.
+ */
+const MAX_PAGES = 1000;
+
+/**
  * Every tool a server offers, following `tools/list`'s cursor to the end.
  *
  * `tools/list` is paginated and the page size is the server's choice, so reading one page is not
@@ -23,9 +33,10 @@ type ListedTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
  *   page of it: the page count is the server's choice, so a per-page number is a ceiling the
  *   caller cannot compute in advance.
  * @returns The pages concatenated, in the order the server sent them.
- * @throws If the walk outlasts `timeout`, or if the server repeats a cursor, which would otherwise
- *   page forever. Either way a truncated list is a wrong answer that looks right; a server that
- *   cannot paginate inside its budget should be visible as broken.
+ * @throws If the walk outlasts `timeout`, if the server repeats a cursor, or if it sends more
+ *   pages than `MAX_PAGES` — the last two both being ways to page forever, one in a circle and one
+ *   in a line. A truncated list is a wrong answer that looks right; a server that cannot paginate
+ *   inside its budget should be visible as broken.
  */
 export async function listAllTools(
   client: Client,
@@ -45,6 +56,9 @@ export async function listAllTools(
       throw new Error(`the server repeated the tools/list cursor "${cursor}"`);
     }
     seen.add(cursor);
+    if (seen.size > MAX_PAGES) {
+      throw new Error(`the server sent more than ${MAX_PAGES} pages of tools/list`);
+    }
   } while (cursor);
   return tools;
 }

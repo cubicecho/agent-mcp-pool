@@ -1795,3 +1795,17 @@ test("a call landing after the idle timer fired is answered, not closed under", 
     vi.useRealTimers();
   }
 });
+
+/**
+ * The cursor set catches a server that repeats itself. One minting a fresh cursor every page
+ * never repeats, and with no connect timeout set there was nothing else to stop the walk.
+ */
+test("a server that pages forever is failed rather than walked forever", async () => {
+  await pool.sync([
+    config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_ENDLESS_CURSOR: "1" } }),
+  ]);
+
+  expect(pool.state()).toMatchObject([{ status: "error" }]);
+  expect(pool.state()[0]?.error).toMatch(/more than \d+ pages/);
+  expect(await stillAlive(spawnedPids())).toEqual([]);
+});

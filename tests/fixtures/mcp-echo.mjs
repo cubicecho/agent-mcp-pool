@@ -91,6 +91,14 @@ const pageDelay = () =>
 // then leaves the handshake half-finished.
 if (process.env.MCP_ECHO_HANG_TOOLS) {
   server.setRequestHandler(ListToolsRequestSchema, () => new Promise(() => {}));
+} else if (process.env.MCP_ECHO_ENDLESS_CURSOR) {
+  // A fresh cursor every page, for ever. Worse than the stuck one: each cursor is new, so a
+  // client remembering the ones it has seen never repeats and walks until something else stops it.
+  let page = 0;
+  server.setRequestHandler(ListToolsRequestSchema, () => {
+    page += 1;
+    return { tools: offered.slice(0, 1), nextCursor: `page-${page}` };
+  });
 } else if (process.env.MCP_ECHO_STUCK_CURSOR) {
   // Hands back the cursor it was given, for ever. A client that follows cursors without noticing
   // pages forever, which is worse than either a short list or an error.
