@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type OpenAI from "openai";
-import { afterAll, afterEach, expect, test } from "vitest";
+import { afterAll, afterEach, expect, test, vi } from "vitest";
 import { McpPoolError } from "../src/errors.ts";
 import { qualify, SEPARATOR } from "../src/naming.ts";
 import { McpPool } from "../src/pool.ts";
@@ -1758,4 +1758,40 @@ test("a name no server could have built does not redial a crashed one either", a
   // Its own tool still brings it back: the targeting is about which names wake it, not whether.
   expect(await pool.call("beta__ping", {})).toBe("ping({})");
   expect(spawned()).toBe(before + 1);
+});
+
+/**
+ * The reap's queued work used to check only that the entry was still the current one and still
+ * `ready` — both of which a call arriving after the timer fired leaves true. `clearTimeout` on a
+ * fired timer cancels nothing, so the use could not call the reap off, and the client was closed
+ * out from under a call in flight.
+ *
+ * Fake timers because the window is a microtask wide: firing the clock queues the reap, and the
+ * `call` below runs its `touch` synchronously before the queue is reached.
+ */
+test("a call landing after the idle timer fired is answered, not closed under", async () => {
+  vi.useFakeTimers();
+  try {
+    pool = lazyPool({ lazy: false, idleTimeoutMs: 1000 });
+    await pool.sync([config()]);
+    expect(pool.state()).toMatchObject([{ status: "ready" }]);
+
+    // Fires the clock, which queues the reap; the call below runs its `touch` synchronously,
+    // before the queue is reached. A tool the server takes a moment over, so the reap is still
+    // deciding while the call is in flight — an instant one is answered out of the pipe even as
+    // the client closes, which hides the bug rather than showing it gone.
+    vi.advanceTimersByTime(1000);
+    const answer = pool.call("echo__echo", { sleepMs: 200 });
+    vi.useRealTimers();
+
+    expect(await answer).toBe('echo({"sleepMs":200})');
+    // The reap closes on the child's exit, which is after the call resolves — so the assertions
+    // that matter wait for it rather than racing it.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(pool.state()).toMatchObject([{ status: "ready", error: "" }]);
+    expect(await pool.call("echo__ping", {})).toBe("ping({})");
+    expect(spawned()).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });

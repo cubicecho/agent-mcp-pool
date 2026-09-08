@@ -834,9 +834,13 @@ export class McpPool {
     this.disarm(entry);
     const timeout = entry.config.idleTimeoutMs ?? this.idleTimeoutMs;
     if (!timeout || !entry.client) return;
-    entry.idleTimer = setTimeout(() => this.reap(entry), timeout);
+    // The handle is passed to its own callback so `reap` can tell whether it is still the timer
+    // the entry is waiting on — see `reap`. Safe to close over: the callback cannot run before
+    // the assignment it reads.
+    const timer: ReturnType<typeof setTimeout> = setTimeout(() => this.reap(entry, timer), timeout);
+    entry.idleTimer = timer;
     // A pool waiting to reap a server is not a reason for the process to stay up.
-    entry.idleTimer.unref?.();
+    timer.unref?.();
   }
 
   private disarm(entry: Entry) {
@@ -853,11 +857,18 @@ export class McpPool {
    * operator reading `state()` sees a server that is fine and simply not running.
    *
    * @param entry The server whose clock fired. Ignored if it has been replaced or is not `ready`.
+   * @param timer The handle that fired, which is how a use that landed *after* it fired is seen
+   *   here. `clearTimeout` on a fired timer does nothing, so a `touch` in the window between the
+   *   fire and this queued work reaching the front cannot cancel it — it can only arm a new
+   *   handle, which is what this compares against. Without it, a call arriving in that window has
+   *   its client closed mid-flight and the model is handed a transport error from a server that
+   *   was in use.
    */
-  private reap(entry: Entry) {
+  private reap(entry: Entry, timer: ReturnType<typeof setTimeout>) {
     void this.queue(async () => {
       const current = this.entries.get(entry.config.id);
-      if (!current || current !== entry || current.status !== "ready") return;
+      if (!current || current !== entry || current.idleTimer !== timer) return;
+      if (current.status !== "ready") return;
       await this.close(current);
       current.status = "idle";
       current.tools = [];

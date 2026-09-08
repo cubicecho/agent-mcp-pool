@@ -172,6 +172,13 @@ server's tools without spawning it needs a cached last-known tool list, which is
 out a penalty for something that did not go wrong. Both options absent is exactly today's
 behaviour.
 
+A use that lands after the clock has already fired keeps the server: the reap runs on the
+reconcile queue, and it checks that the timer it was armed with is still the one the server is
+waiting on. Cancelling is not enough on its own — `clearTimeout` on a timer that has already fired
+does nothing — so without that check a call arriving in the window between the fire and the queued
+close had its client closed underneath it, and the model was handed a transport error from a server
+that was in use.
+
 ### Stopping and restarting one server
 
 `shutdown()` is every server and forgets them, and `sync()` only closes what the configs dropped.

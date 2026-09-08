@@ -60,12 +60,16 @@ them plus a hash of the whole, so the split of a shortened name is a tool its se
 offers nothing until something has used it; listing its tools without spawning it would need a
 cached last-known list, which does not exist yet.
 
-**Every use goes through `ensure()`.** It is the single door, so lazy connect and the idle clock
-cannot disagree about what counts as a use.
+**Every connect goes through `ensure()` or `wake()`, and both are queued.** A warm `call` touches
+the idle clock directly rather than taking a queue hop it does not need; what must not have two
+doors is the *dialling*, or two of them race for the same child. The clock is touched on every
+use, wherever that use enters.
 
 **A reap is a success path, not a crash.** An idle-closed server goes to `idle` with no error and
 no `failedAt`, so no backoff stands between it and the next call. Only a real failure sets
-`error`.
+`error`. And it is gated on the timer it was armed with: `clearTimeout` on a fired timer cancels
+nothing, so a use landing between the fire and the queued close is only visible as a handle that
+is no longer the reap's.
 
 **Reconciles are queued, never concurrent.** Two interleaving syncs both spawn a child for the
 same edited server and the second orphans the first — a live process with nothing holding a
