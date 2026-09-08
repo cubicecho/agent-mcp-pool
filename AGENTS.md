@@ -45,6 +45,10 @@ npm run llms:check       # fails if the committed llms.txt is stale
 optional set of ids, and the two cases must never collapse — "this agent has no servers linked"
 is a real and correct state, and collapsing it silently gives a scoped run the whole pool.
 
+**A wake is scoped and targeted.** The servers a name could have come from, inside the run's
+scope — not every idle one, and not every failed one. Refusing after the child is up refuses
+nothing that matters, and starting it tells the caller the server exists.
+
 **Two arguments of the same type get named, not ordered.** `tools({ names, servers })` takes one
 object because the positional pair was two collections of strings, and transposing them answered
 with an empty array — indistinguishable from a run scoped to servers that offer nothing.

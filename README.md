@@ -125,6 +125,13 @@ has no servers linked" is a real and correct state. `call` re-checks the scope r
 trusting the definitions the caller was given: a model that has seen a tool name once will call
 it again from memory.
 
+**A scoped `call` does not start a server the run cannot reach.** A name the index cannot answer
+wakes the servers whose slug could have produced it — a cold one under `lazy`, a crashed one past
+its backoff — and the run's scope gates that too, not only the refusal after it. Otherwise a run
+scoped to one server spawned another's child, drained its tool list, and *then* said no server
+offers that tool: a process started for a run that may not reach it, and a latency difference that
+answers the question the shared message exists to leave unanswered.
+
 `tools` names both of its own:
 
 ```ts

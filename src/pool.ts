@@ -517,41 +517,43 @@ export class McpPool {
   }
 
   /**
-   * Connects whatever might answer a name the index does not know: failed servers due a retry,
-   * plus — under `lazy` — the idle servers whose slug could have produced the name.
+   * Connects whatever might answer a name the index does not know: the cold servers whose slug
+   * could have produced it, and the failed ones that are due another attempt.
    *
    * `couldQualify` decides which those are, and it is exact in the direction that matters: every
    * server that really owns the name is woken. A name none of them could have produced is a name
    * no server has, and starting them to find that out is what a model inventing a tool used to
    * cost — one child process per configured server, dialled one after another, before the call
-   * failed anyway.
+   * failed anyway. It gates the failed servers too: a crashed one used to be redialled by traffic
+   * for any other server's tools, which is the same cost paid on the other path.
    *
-   * @param qualifiedName The `<slug>__<tool>` a call asked for and the index could not answer.
-   */
-  private async wake(qualifiedName: string): Promise<void> {
-    for (const entry of this.entries.values()) {
-      if (entry.status !== "idle") continue;
-      if (!couldQualify(slugOf(entry.config), qualifiedName)) continue;
-      await this.ensure(entry);
-    }
-    await this.retryFailed();
-  }
-
-  /**
-   * Dials every failed server that is due another attempt, using the configs already held.
+   * The run's scope gates both. `call` re-checks the scope *after* this, so without it a run
+   * scoped to one server could spawn a child for another by naming its tool — the whole case that
+   * check exists for, since a model that has seen a name once will call it again from memory.
+   * Refusing after the child is up refuses nothing that matters.
    *
    * Deliberately not a `sync()`: this runs from `call`, where the pool must not go back to `load`
    * for rows — a pool driven by explicit `sync(configs)` has no `load` at all, and asking an
    * absent one would reconcile against an empty set and close every server it has.
+   *
+   * @param qualifiedName The `<slug>__<tool>` a call asked for and the index could not answer.
+   * @param allowed The run's scope, already a set. `undefined` is every server — see `scope`.
    */
-  private retryFailed(): Promise<void> {
+  private wake(qualifiedName: string, allowed?: ReadonlySet<string>): Promise<void> {
     return this.queue(async () => {
-      const due = [...this.entries.values()].filter((entry) => this.retryDue(entry));
-      for (const entry of due) {
+      // Read inside the queue, like `ensure` does: another caller may have connected these while
+      // this one waited, and dialling one twice is the orphaned child the queue exists to prevent.
+      const candidates = [...this.entries.values()].filter(
+        (entry) =>
+          (allowed === undefined || allowed.has(entry.config.id)) &&
+          couldQualify(slugOf(entry.config), qualifiedName) &&
+          (entry.status === "idle" || this.retryDue(entry)),
+      );
+      for (const entry of candidates) {
         await this.close(entry);
-        await this.connect(entry.config);
+        await this.connect(entry.config, true);
       }
-      if (due.length > 0) this.reindex();
+      if (candidates.length > 0) this.reindex();
     });
   }
 
@@ -969,8 +971,10 @@ export class McpPool {
     if (!found && this.indexTools) {
       // A crashed server took its tools out of the index, and a lazy pool never put a cold
       // server's there at all. Telling the model a tool does not exist teaches it to stop asking,
-      // so bring back whatever is owed a connection and look once more.
-      await this.wake(qualifiedName);
+      // so bring back whatever is owed a connection and look once more — inside the scope, since
+      // the check below refuses a server this run may not reach and spawning it first refuses
+      // nothing.
+      await this.wake(qualifiedName, allowed);
       found = this.index.get(qualifiedName);
     }
     // A tool outside this run's scope is answered as one that does not exist, because to this run

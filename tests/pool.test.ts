@@ -1713,3 +1713,49 @@ test("a call against an unindexed pool is refused without starting anything", as
   expect(spawned()).toBe(0);
   expect(pool.state()).toMatchObject([{ status: "idle" }]);
 });
+
+/**
+ * The wake path used to run before the scope check and without it: a run scoped to one server
+ * that named another's tool spawned that server's child, drained its tool list, and only then
+ * answered "no server offers that". The refusal was right and everything before it was not — a
+ * process started for a run that may not reach it, and a latency difference that tells the caller
+ * the server exists.
+ */
+test("a scoped call does not start a server the run cannot reach", async () => {
+  pool = lazyPool();
+  await pool.sync([config({ id: "alpha", slug: "alpha" }), config({ id: "beta", slug: "beta" })]);
+
+  const refused = await refusal(pool.call("beta__ping", {}, ["alpha"]));
+
+  // The same answer a run gets for a tool that does not exist, which to this run it does not.
+  expect(refused.code).toBe("unknown-tool");
+  expect(spawned()).toBe(0);
+  expect(pool.state()).toMatchObject([
+    { id: "alpha", status: "idle" },
+    { id: "beta", status: "idle" },
+  ]);
+  expect(pool.state()[1]?.pid).toBeUndefined();
+});
+
+/**
+ * `couldQualify` gated the cold servers and not the failed ones, so a crashed server was redialled
+ * by traffic for any other server's tools — the one-child-per-configured-server cost that gate was
+ * added to stop, paid on the other path.
+ */
+test("a name no server could have built does not redial a crashed one either", async () => {
+  pool = makePool(undefined, 0);
+  await pool.sync([config({ id: "alpha", slug: "alpha" }), config({ id: "beta", slug: "beta" })]);
+  const beta = () => pool.state().find((entry) => entry.id === "beta");
+
+  process.kill(beta()?.pid as number, "SIGKILL");
+  await until(() => beta()?.status === "error", "the pool to notice beta died");
+  const before = spawned();
+
+  await expect(pool.call("totally__made_up", {})).rejects.toThrow(/no connected MCP server/);
+  expect(spawned()).toBe(before);
+  expect(beta()).toMatchObject({ status: "error" });
+
+  // Its own tool still brings it back: the targeting is about which names wake it, not whether.
+  expect(await pool.call("beta__ping", {})).toBe("ping({})");
+  expect(spawned()).toBe(before + 1);
+});
