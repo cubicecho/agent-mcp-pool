@@ -175,8 +175,14 @@ export interface McpServerState {
   /**
    * What this server offers, while it is connected. Empty under `indexTools: false`, which is the
    * honest answer: a consumer that opted out of indexing is not the one drawing a tool list.
+   *
+   * `name` is the server's own, `qualified` is `<slug>__<name>` — what the model is offered and
+   * what `call()` takes. Both, because an operator reads the first and debugs with the second,
+   * and because `CatalogServer.tools[].name` is the *qualified* one: two identically shaped lists
+   * meaning different things is a transposition waiting to happen, and the fix is to stop making
+   * the reader remember which is which.
    */
-  tools: { name: string; description: string }[];
+  tools: { name: string; qualified: string; description: string }[];
   /**
    * The stdio child's pid. Absent over http, and while the server is not connected.
    *
@@ -240,6 +246,11 @@ export interface McpProbe {
 export interface CatalogServer {
   id: string;
   label: string;
+  /**
+   * `name` is the **qualified** one — `<slug>__<tool>`, what the model calls — because the whole
+   * point of a catalogue is a list a model picks from. `McpServerState.tools[].name` is the
+   * server's own, with the qualified one beside it; the two lists look alike and are not.
+   */
   tools: { name: string; description: string }[];
 }
 

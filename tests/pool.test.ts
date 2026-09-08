@@ -1910,3 +1910,25 @@ test("a row's callTimeoutMs overrides the pool's, in both directions", async () 
 
   expect(await pool.call("echo__echo", { sleepMs: 300 })).toBe('echo({"sleepMs":300})');
 });
+
+/**
+ * `tools()` hands back the pool's own definition rather than a copy — the agent loop rebuilds its
+ * array every iteration, and the schema behind it cannot change without the connection being
+ * remade. Frozen, an edit that would have silently rewritten what every later run is offered
+ * fails at the edit instead.
+ */
+test("the definitions the pool hands out cannot be rewritten under it", async () => {
+  await pool.sync([config()]);
+  const [first] = pool.tools();
+  if (first?.type !== "function") throw new Error("expected a function tool");
+
+  expect(() => {
+    first.function.description = "something else entirely";
+  }).toThrow(TypeError);
+  expect(() => {
+    (first as { function: unknown }).function = { name: "echo__ping" };
+  }).toThrow(TypeError);
+
+  const [again] = pool.tools();
+  expect(again).toMatchObject({ function: { description: "[Echo] replies pong" } });
+});

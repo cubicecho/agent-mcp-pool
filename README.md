@@ -93,6 +93,13 @@ this the operator's list reorders itself according to which child started quicke
 `id`, `slug` and `label` stay alongside `config` — those are the *effective* values the pool
 actually used.
 
+Each tool in `state().tools` carries both of its names: `name` is the server's own, `qualified` is
+`<slug>__<name>` — what the model is offered and what `call()` takes. Both, because an operator
+reads the first and debugs with the second, and because `catalog()`'s identically shaped list
+carries the *qualified* one under `name`. Two `{ name, description }` lists meaning different
+things is a transposition waiting to happen, and the fix is to stop making the reader remember
+which is which.
+
 **`env` and `headers` are left out of it.** That UI is a browser, sending `state()` to it is the
 shortest way to draw that line, and for a real server those two fields are an API key and an
 `Authorization: Bearer` — so the default is the safe one, and the caller genuinely rendering the
@@ -277,6 +284,12 @@ A result with no content at all but a `structuredContent` — what a server with
 tends to answer with — is flattened to that structure as JSON, rather than reaching the model as
 `call()`'s `"(no output)"`. Text blocks win where there are any: they are what the server wrote
 for a reader.
+
+The definitions `tools()` hands back are the pool's own objects rather than copies — the agent
+loop rebuilds its tool array every iteration, and the schema behind one cannot change without the
+connection being torn down and remade — so they are **frozen**. An edit that would otherwise have
+silently rewritten what every later run is offered fails at the edit instead. Shallow: `parameters`
+is the server's own schema, passed through untouched.
 
 Everything else the pool does applies unchanged — reconcile, the queue, crash detection with the
 stderr tail, backoff, retry-on-use. A server that is merely down is retried first, the same as

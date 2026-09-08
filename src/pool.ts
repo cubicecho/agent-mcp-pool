@@ -1099,7 +1099,11 @@ export class McpPool {
       config: this.reportedConfig(entry.config, secrets),
       status: entry.status,
       error: entry.error ?? "",
-      tools: entry.tools.map(({ name, description }) => ({ name, description })),
+      tools: entry.tools.map(({ name, qualified, description }) => ({
+        name,
+        qualified,
+        description,
+      })),
       pid: entry.pid,
       startedAt:
         entry.startedAt === undefined ? undefined : new Date(entry.startedAt).toISOString(),
