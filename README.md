@@ -61,9 +61,9 @@ from a caller who said so.
 row it was configured from:
 
 ```ts
-for (const { config, status, error, tools, pid, startedAt } of mcp.state()) {
+for (const { config, status, error, tools, pid, startedAt, instructions } of mcp.state()) {
   // config is a copy of the row you passed in, minus its credentials;
-  // status/error/tools/pid/startedAt are what the pool made of it
+  // everything beside it is what the pool made of it, or what the server said for itself
 }
 ```
 
@@ -96,6 +96,26 @@ unless one is up, and `pid` over http, which has no child. They are what make `r
 something concrete to an operator: a pid finds a wedged child in `ps`, and a start time is how a
 server that is quietly crash-looping is spotted, since `status` reads `ready` either side of a
 restart.
+
+`instructions` and `capabilities` are the rest of what `initialize` returned, and are absent for
+the same reason — a server that is not connected has no handshake to report:
+
+```ts
+const guidance = mcp
+  .state()
+  .flatMap(({ label, instructions }) => (instructions ? [`## ${label}\n${instructions}`] : []))
+  .join("\n\n"); // straight into a system prompt, synchronously, spawning nothing
+```
+
+`instructions` is what a server says about itself for a model to read — the things a tool
+description has no room for, like "resolve the library id before querying docs" — so a system
+prompt is where it belongs. It is reported here rather than left to `client()` because that door
+*dials*: it connects an idle server by design, so under `lazy`, or with `idleTimeoutMs` set and a
+server just reaped, building a prompt would spawn children. `capabilities` is what says whether
+`resources/list` or `prompts/list` on a `client()` is worth attempting at all; without it the
+choice is an error round trip per server per surface, or not offering the surface. Both are
+reported under `indexTools: false` as well, unlike `tools` — they were already in hand, and the
+consumer that turned indexing off is the one proxying the protocol.
 
 ## Scope
 
@@ -309,8 +329,12 @@ A config is easy to get subtly wrong, and finding out at 3am when the task runs 
 `probe()` connects a config that may not be saved yet, lists its tools, and hangs up:
 
 ```ts
-const { ok, error, tools } = await mcp.probe(row); // { ok: false, error: "no module named …" }
+const { ok, error, tools, instructions } = await mcp.probe(row); // { ok: false, error: "no module named …" }
 ```
+
+`instructions` is there for the same reason `tools` is: "Test connection" is where an operator
+finds out what a row actually offers, and what its tools are *for* is the half a tool list does
+not show. Empty where the server sent none, or where the dial never got that far.
 
 It reports rather than throws, and `error` is the child's **stderr** where there is one — the same
 tail that makes a failed server diagnosable above, which is the whole difference between "no

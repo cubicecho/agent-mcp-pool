@@ -61,9 +61,15 @@ const tools = [
 
 const server = new Server(
   { name: "echo", version: "0.0.1" },
-  // Resources as well as tools, because the pool's own surface reaches only the tools half and
-  // a test for the raw client has to ask for something that surface cannot express.
-  { capabilities: { tools: {}, resources: {} } },
+  {
+    // Resources as well as tools, because the pool's own surface reaches only the tools half and
+    // a test for the raw client has to ask for something that surface cannot express.
+    capabilities: { tools: {}, resources: {} },
+    // What a server tells a model about itself, returned by `initialize` beside the capabilities.
+    // Off unless a test asks, since most of them are not about it — and a server that sends none
+    // is the ordinary case.
+    instructions: process.env.MCP_ECHO_INSTRUCTIONS || undefined,
+  },
 );
 // A server that connects cleanly and offers nothing. Rarer than a broken one and easier to miss,
 // because every status the pool reports about it says it is fine.

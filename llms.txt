@@ -12,6 +12,7 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 ### @modelcontextprotocol/sdk/types.js
 
 - `Notification` (type)
+- `ServerCapabilities` (type)
 
 ### errors
 
