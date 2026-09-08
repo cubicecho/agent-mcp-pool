@@ -1052,6 +1052,13 @@ export class McpPool {
       pid: entry.pid,
       startedAt:
         entry.startedAt === undefined ? undefined : new Date(entry.startedAt).toISOString(),
+      // Read off the client rather than held on the entry: both are cached reads of the handshake
+      // the SDK already made, and the client is what `forget()` clears — so they are absent while
+      // the server is down for the same reason `pid` is, without a second thing to remember to
+      // clear. Not gated on `indexTools`: these cost no round trip, and the consumer that turned
+      // indexing off is the one proxying the protocol.
+      instructions: entry.client?.getInstructions(),
+      capabilities: entry.client?.getServerCapabilities(),
     }));
   }
 

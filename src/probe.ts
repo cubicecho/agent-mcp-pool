@@ -35,7 +35,8 @@ export interface ProbeOptions extends TransportOptions {
  * @param options `childEnv` narrows a stdio child's inheritance, `timeoutMs` bounds the wait —
  *   and where it is unset, the row's own `connectTimeoutMs` does.
  * @returns Never throws — a failure is `{ ok: false }` carrying the child's stderr where there is
- *   any, since that is usually the only real explanation.
+ *   any, since that is usually the only real explanation. A success carries the server's tools and
+ *   its own `instructions`, both off the handshake it just made.
  */
 export async function probe(
   config: McpConnection,
@@ -74,9 +75,12 @@ export async function probe(
       ok: true,
       error: "",
       tools: tools.map((tool) => ({ name: tool.name, description: tool.description ?? "" })),
+      // A cached read of the handshake this probe already made. What a row offers is not only its
+      // tool list: a server's instructions are what its tools are for.
+      instructions: mcpClient.getInstructions() ?? "",
     };
   } catch (error) {
-    return { ok: false, error: stderrTail() || errorMessage(error), tools: [] };
+    return { ok: false, error: stderrTail() || errorMessage(error), tools: [], instructions: "" };
   } finally {
     await mcpClient.close().catch(() => {});
   }

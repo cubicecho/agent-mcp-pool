@@ -1362,6 +1362,76 @@ test("call() keeps the text and uris a server answers with", async () => {
   );
 });
 
+/**
+ * `initialize` returns `instructions` and `capabilities` beside `serverInfo`, and the SDK client
+ * caches both. Reaching them through `client()` means dialling: that door connects an idle server
+ * by design, so under `lazy` or with reaping on, building a system prompt spawned children.
+ */
+test("state() reports the instructions and capabilities the handshake returned", async () => {
+  await pool.sync([
+    config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_INSTRUCTIONS: "resolve ids first" } }),
+  ]);
+
+  expect(pool.state()[0]).toMatchObject({
+    status: "ready",
+    instructions: "resolve ids first",
+    // What a consumer needs to know whether `resources/list` on a `client()` is worth attempting.
+    capabilities: { tools: {}, resources: {} },
+  });
+  // No second child: both are cached reads of the handshake the connect already made.
+  expect(spawned()).toBe(1);
+});
+
+test("a server that sends no instructions reports none rather than an empty string", async () => {
+  await pool.sync([config()]);
+
+  expect(pool.state()[0]?.instructions).toBeUndefined();
+  expect(pool.state()[0]?.capabilities).toMatchObject({ tools: {} });
+});
+
+test("both describe the connection, so they go when it does", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, lazy: true });
+  const row = config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } });
+  await pool.sync([row]);
+
+  // Registered and not dialled: there is no handshake to report, and reporting one from a
+  // previous connection would name a server that is not running.
+  expect(pool.state()[0]).toMatchObject({ status: "idle" });
+  expect(pool.state()[0]?.instructions).toBeUndefined();
+  expect(pool.state()[0]?.capabilities).toBeUndefined();
+
+  await pool.call("echo__ping", {});
+  expect(pool.state()[0]?.instructions).toBe("resolve ids first");
+
+  await pool.stop("echo-1");
+  expect(pool.state()[0]?.instructions).toBeUndefined();
+});
+
+/**
+ * Unlike `tools`, these cost nothing to hold — and a consumer that turned indexing off is a
+ * gateway proxying the protocol, which is exactly the one that needs to know what it may proxy.
+ */
+test("indexTools: false keeps the tool index empty and still reports the handshake", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, indexTools: false });
+  await pool.sync([config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } })]);
+
+  expect(pool.state()[0]).toMatchObject({
+    tools: [],
+    instructions: "resolve ids first",
+    capabilities: { resources: {} },
+  });
+});
+
+test("a probe reports the instructions a row's server sends, and none when it fails", async () => {
+  const found = await pool.probe(config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } }));
+  expect(found).toMatchObject({ ok: true, instructions: "resolve ids first" });
+
+  // "Test connection" is where an operator finds out what a row offers, and a row that offers
+  // nothing has no instructions to show either.
+  const failed = await pool.probe(config({ env: { MCP_ECHO_FAIL: "no module named mcp" } }));
+  expect(failed).toMatchObject({ ok: false, instructions: "" });
+});
+
 test("client() refuses a server that is disabled or not configured at all", async () => {
   await pool.sync([config({ enabled: false })]);
 

@@ -1,3 +1,5 @@
+import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
+
 /**
  * A configured MCP server, as this package needs it.
  *
@@ -135,6 +137,27 @@ export interface McpServerState {
    * a restart, and only the start time says the restart happened.
    */
   startedAt?: string;
+  /**
+   * The server's own `instructions` from the handshake. Absent while it is not connected, and
+   * where the server sent none.
+   *
+   * What the field is for is a system prompt — servers use it for what a tool description has no
+   * room for ("resolve the library id before querying docs", "these are the roots I answer for").
+   * Reported here rather than left to `client()`, which is the call path's own door and *dials* an
+   * idle server: building a prompt must not spawn children, and it is synchronous where `client()`
+   * is not. Captured at connect like `tools`, so this costs no round trip.
+   */
+  instructions?: string;
+  /**
+   * What the server declared it supports in the handshake. Absent while it is not connected.
+   *
+   * Reported even under `indexTools: false`, unlike `tools`: this is one field off a handshake the
+   * pool made anyway, and the consumer that opted out of indexing — a gateway proxying the
+   * protocol — is exactly the one that needs it. Without it there is no way to tell whether
+   * `resources/list` or `prompts/list` on a `client()` is worth attempting, so the choice is an
+   * error round trip per server per surface, or not offering the surface at all.
+   */
+  capabilities?: ServerCapabilities;
 }
 
 /** What `probe` found: whether the config works, and what it offers if it does. */
@@ -142,6 +165,15 @@ export interface McpProbe {
   ok: boolean;
   error: string;
   tools: { name: string; description: string }[];
+  /**
+   * The server's own `instructions` from the handshake, empty where it sent none or never got
+   * that far.
+   *
+   * "Test connection" is where an operator finds out what a row actually offers, and a server's
+   * instructions are the half of that a tool list does not show — a row worth saving is often the
+   * one whose guidance says what its tools are for.
+   */
+  instructions: string;
 }
 
 /**
