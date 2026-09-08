@@ -1,3 +1,10 @@
+## [2.4.4](https://github.com/cubicecho/agent-mcp-pool/compare/v2.4.3...v2.4.4) (2026-09-08)
+
+
+### Bug Fixes
+
+* keep the text and uris a tool result carries ([46fea9f](https://github.com/cubicecho/agent-mcp-pool/commit/46fea9fd4bab5be1c506181b572d19314537303c)), closes [#71](https://github.com/cubicecho/agent-mcp-pool/issues/71)
+
 ## [2.4.3](https://github.com/cubicecho/agent-mcp-pool/compare/v2.4.2...v2.4.3) (2026-09-07)
 
 
