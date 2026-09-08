@@ -122,7 +122,11 @@ if (process.env.MCP_ECHO_HANG_TOOLS) {
     return { tools: offered };
   });
 }
-server.setRequestHandler(CallToolRequestSchema, (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  // The tool itself failing, which MCP reports as a successful response carrying `isError` rather
+  // than as a protocol error — so nothing below the pool distinguishes it from an answer.
+  if (request.params.arguments?.fail)
+    return { content: [{ type: "text", text: "the tool failed on purpose" }], isError: true };
   // A non-text content block on demand: what a tool returning a chart or a screenshot sends, and
   // what a result flattened to a string cannot carry.
   if (request.params.arguments?.image)

@@ -21,6 +21,12 @@ export const errorMessage = (error: unknown): string =>
  *
  * `no-configs` is the odd one out: not a refusal about a server, but about the call itself — a
  * reconcile with nothing to reconcile against, on a pool that has no `load` to ask.
+ *
+ * `tool-error` is not a refusal at all, which is why it was a plain `Error` for so long: the pool
+ * made the call and the *server* said it failed. It is here because it is the one a caller most
+ * needs to tell from the rest — a `backoff` or a `connect-failed` is worth retrying and a tool
+ * that rejected its arguments is not — and leaving it outside the type meant matching on message
+ * text, which is the whole thing this exists to stop.
  */
 export type McpPoolErrorCode =
   | "unknown-server"
@@ -29,7 +35,8 @@ export type McpPoolErrorCode =
   | "connect-failed"
   | "unknown-tool"
   | "out-of-scope"
-  | "no-configs";
+  | "no-configs"
+  | "tool-error";
 
 /** What an `McpPoolError` carries beyond its message. */
 export interface McpPoolErrorOptions {

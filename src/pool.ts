@@ -1009,7 +1009,16 @@ export class McpPool {
     });
 
     const text = resultText(result);
-    if (result.isError) throw new Error(text || "tool call failed");
+    // The server ran the tool and the tool failed — not one of the pool's refusals, which is why
+    // this was a plain `Error`. It carries a code anyway because a caller sorting failures cares
+    // most about this line: nothing about retrying a rejected argument resembles retrying a
+    // backoff. The message is what it always was.
+    if (result.isError) {
+      throw new McpPoolError("tool-error", text || "tool call failed", {
+        toolName: qualifiedName,
+        serverId: found.serverId,
+      });
+    }
     return text || "(no output)";
   }
 

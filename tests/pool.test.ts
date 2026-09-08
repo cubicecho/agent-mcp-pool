@@ -1874,3 +1874,15 @@ test("each arm of a row carries only its own transport's fields", async () => {
   ]);
   expect(await pool.call("echo__ping", {})).toBe("ping({})");
 });
+
+test("a tool that fails is a refusal with a code, not a bare error", async () => {
+  await pool.sync([config()]);
+
+  const failed = await refusal(pool.call("echo__echo", { fail: true }));
+
+  expect(failed.code).toBe("tool-error");
+  // The message is what it was before the code existed, for anything reading only that.
+  expect(failed.message).toBe("the tool failed on purpose");
+  expect(failed.toolName).toBe("echo__echo");
+  expect(failed.serverId).toBe("echo-1");
+});

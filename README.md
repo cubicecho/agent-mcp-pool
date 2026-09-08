@@ -310,6 +310,13 @@ child's stderr in `detail`). `call()` adds `unknown-tool` and `out-of-scope`, wh
 messages are unchanged from the plain `Error`s these replaced. `sync()` and `reconnect()` have one
 of their own, `no-configs` — see [the seam](#the-seam).
 
+`tool-error` is the odd one in the list: not a refusal from the pool at all, but the pool reporting
+that the *server* ran the tool and the tool failed — MCP's `isError` result, whose text becomes the
+message. It was a plain `Error` for exactly that reason, and it carries a code anyway because it is
+the one a caller most needs to tell from the others: retrying a `backoff` makes sense and retrying
+a tool that rejected its arguments does not. The message is unchanged, so anything reading
+`.message` is unaffected.
+
 A failed server is then retried, which is the other half: `sync` leaves a *healthy* unchanged
 server alone but treats a failed one as work to do, and `call` brings back a server that is
 merely down rather than telling the model its tool does not exist. Both are held off by
