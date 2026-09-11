@@ -211,8 +211,12 @@ const attribute = (text: string) =>
 export interface ContextBlocks {
   /** The blocks, blank-line separated; empty when no hook had anything to add. */
   text: string;
-  /** One entry per hook whose output made it in, in the order it appears. */
-  injected: { serverId: string; hookId: string; tokens: number }[];
+  /**
+   * One entry per hook whose output made it in, in the order it appears. `text` is what went inside
+   * its block — trimmed, cut with `…` if it was over a cap, without the `<context>` wrapper — so a
+   * host can show what each hook added without re-deriving the caps or parsing the wrapper back off.
+   */
+  injected: { serverId: string; hookId: string; tokens: number; text: string }[];
 }
 
 /**
@@ -244,7 +248,7 @@ export function contextBlocks(
     const tokens = estimateTokens(text);
     remaining -= tokens;
     blocks.push(`<context source="${attribute(outcome.label)}">\n${text}\n</context>`);
-    injected.push({ serverId: outcome.serverId, hookId: outcome.hookId, tokens });
+    injected.push({ serverId: outcome.serverId, hookId: outcome.hookId, tokens, text });
   }
   return { text: blocks.join("\n\n"), injected };
 }

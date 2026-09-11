@@ -151,8 +151,30 @@ test("contextBlocks wraps each injecting hook's output, naming its server", () =
     '<context source="Mem &quot;ory&quot; &lt;1>">\none\n</context>\n\n<context source="Other">\ntwo\n</context>',
   );
   expect(blocks.injected).toEqual([
-    { serverId: "echo-1", hookId: "h", tokens: 1 },
-    { serverId: "echo-1", hookId: "two", tokens: 1 },
+    { serverId: "echo-1", hookId: "h", tokens: 1, text: "one" },
+    { serverId: "echo-1", hookId: "two", tokens: 1, text: "two" },
+  ]);
+});
+
+/** The text inside each `<context>` block, in order. */
+const inner = (text: string) =>
+  [...text.matchAll(/<context source="[^"]*">\n([\s\S]*?)\n<\/context>/g)].map((m) => m[1]);
+
+test("contextBlocks reports each hook's text as it went into its block, cut or not", () => {
+  const long = "x".repeat(400); // 100 tokens
+  const blocks = contextBlocks(
+    [
+      outcome({ hookId: "whole", text: "  kept whole  " }),
+      outcome({ hookId: "own-cap", text: long, maxTokens: 10 }),
+      outcome({ hookId: "total", text: long }),
+    ],
+    { maxTokens: 30 },
+  );
+  expect(blocks.injected.map((i) => i.text)).toEqual(inner(blocks.text));
+  expect(blocks.injected.map((i) => i.text)).toEqual([
+    "kept whole",
+    `${"x".repeat(39)}…`,
+    `${"x".repeat(67)}…`,
   ]);
 });
 
