@@ -1,3 +1,10 @@
+# [3.1.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.0.0...v3.1.0) (2026-09-11)
+
+
+### Features
+
+* report each hook's injected text in contextBlocks ([4422998](https://github.com/cubicecho/agent-mcp-pool/commit/442299858497b1820a87659333ee0e44233e5879)), closes [#75](https://github.com/cubicecho/agent-mcp-pool/issues/75)
+
 # [3.0.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.6.0...v3.0.0) (2026-09-11)
 
 
