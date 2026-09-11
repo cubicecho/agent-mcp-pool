@@ -1,3 +1,34 @@
+# [3.0.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.6.0...v3.0.0) (2026-09-11)
+
+
+* feat!: split McpServerConfig into its stdio and http arms ([39ae1d4](https://github.com/cubicecho/agent-mcp-pool/commit/39ae1d4df95240d2e24cad017c40f92cf1f4b575))
+
+
+### Bug Fixes
+
+* bound the tools/list walk at a page count ([e34d116](https://github.com/cubicecho/agent-mcp-pool/commit/e34d1163367a2e3f254ccf2de0b0a2c4a4bc8486))
+* honour the run's scope, and the name, when waking a server ([6b4b9a3](https://github.com/cubicecho/agent-mcp-pool/commit/6b4b9a388effcd31477b040dc23ee13a55826765))
+* keep a server a call reached after its idle timer fired ([9fe6380](https://github.com/cubicecho/agent-mcp-pool/commit/9fe6380d7bd06f901f5fe86724de13757613ce33))
+* let a pending reconcile stop holding the process open ([295fff9](https://github.com/cubicecho/agent-mcp-pool/commit/295fff95575ca6e2cdbf9682fb229f1bb3e699e6))
+
+
+### Features
+
+* bound a tool call ([0892f48](https://github.com/cubicecho/agent-mcp-pool/commit/0892f48cba24c0631d0a12a5061fd01eeea4b84e))
+* classify a tool's own error as an McpPoolError ([459041b](https://github.com/cubicecho/agent-mcp-pool/commit/459041bf8086fda1cf48472d8645676d299c6832))
+* say which name is which, and stop handing out mutable definitions ([4101732](https://github.com/cubicecho/agent-mcp-pool/commit/41017325bea9915f13aff4908a0ec804ca765b6c))
+
+
+### BREAKING CHANGES
+
+* a row written as an object *literal* that supplies the other arm's fields
+now fails excess-property checking. A row that arrives from a typed variable — a Drizzle
+select, a parsed config — is unaffected. The fix is deleting the fields that row's transport
+never used.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018HWy4K98UGPvsGxvWdbTRs
+
 # [2.6.0](https://github.com/cubicecho/agent-mcp-pool/compare/v2.5.0...v2.6.0) (2026-09-11)
 
 
