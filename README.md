@@ -165,8 +165,85 @@ pool.tools({ names: ["echo__add"], servers: [agent.serverId] });
 transposition was not a type error — and its answer is an empty array, which is also the right
 answer for a run scoped to servers that offer nothing. A consumer adopting the pool swapped them,
 and the migration compiled, connected and offered its model no tools at all. `catalog(servers)`
-and `call(name, input, servers)` stay positional: neither has two arguments that could be
-confused for each other.
+stays positional: it has no two arguments that could be confused for each other. `call` takes
+its scope as the third argument as before, or an object when it needs more:
+
+```ts
+pool.call("echo__add", input, { servers, signal, timeoutMs: 5000 });
+```
+
+## Hooks
+
+A row can carry `hooks`: tool calls of its own that the host makes at points in a session, the way
+Claude Code's hooks run at SessionStart or Stop — except a hook here is an MCP tool call and never
+a command. Rows are edited from UIs, and a command hook would make "can edit the server list" the
+same permission as "can run anything on the host".
+
+The case it was written for is memory: a server that recalls before every turn and remembers
+after it, without the model having to decide to call either.
+
+```ts
+const memory = {
+  id: "zeromem",
+  label: "Memory",
+  // ...transport fields...
+  // The model is not offered these; hooks may still call them.
+  hiddenTools: ["zeromem_remember", "zeromem_forget_session"],
+  hooks: [
+    {
+      id: "recall", on: "beforeTurn", tool: "zeromem_recall", inject: true, maxTokens: 800,
+      args: { query: "{{prompt}}", exclude_session: "app:{{session.id}}", format: "text" },
+    },
+    {
+      id: "remember", on: "afterTurn", tool: "zeromem_remember",
+      args: { session_id: "app:{{session.id}}", turns: "{{turn.messages}}" },
+    },
+  ],
+};
+
+// Before the request:
+const outcomes = await pool.runHooks("beforeTurn", { session: { id }, prompt }, { signal, onNotice });
+const { text } = contextBlocks(outcomes); // <context source="Memory">…</context>, or ""
+
+// After the reply — not awaited, and not on the turn's signal:
+void pool.runHooks("afterTurn", { session: { id }, prompt, reply, turn: { index, messages } });
+```
+
+The pool never fires a hook itself — only the host knows when a turn starts. It supplies the runner,
+so every host runs the same rows the same way.
+
+| Event | Runs | Context beyond `session.id`, `host`, `now`, `vars.*` | `inject` |
+|---|---|---|---|
+| `sessionStart` | before a session's first turn | `prompt` | yes |
+| `beforeTurn` | before each turn's request | `prompt`, `turn.index` | yes |
+| `afterTurn` | once a turn has its reply | `prompt`, `reply`, `turn.index`, `turn.messages` | no |
+| `beforeCompact` | before old messages are summarised away | `compacting`, `range.from`, `range.through` | no |
+| `sessionEnd` | when a run that ends, ends | `status`, `reply` | no |
+| `sessionDelete` | when the host deletes a session | — | no |
+
+- **Templates.** A string that is exactly `"{{path}}"` becomes the value itself, so an array or a
+  number goes through as one. `{{path}}` inside a longer string is interpolated as text. A path the
+  context has no value for skips the hook: a `session_id` sent as `"app:"` would file a turn under
+  the wrong session.
+- **Validation.** `validateHooks(row.hooks)` reports an unknown event, a placeholder the event
+  does not offer, `inject` on an event that runs too late, and duplicate ids. Run it when the row is
+  saved.
+- **Never rejects.** A failed call, a timeout, an abort and a skipped hook each come back as an
+  outcome with `ok: false`, and are passed to `onNotice`. A memory server that is down costs the
+  turn its recall, not the turn.
+- **At once, in order.** An event's hooks run in parallel, and their outcomes come back in
+  configuration order.
+- **Bounded.** A hook gets its `timeoutMs`. Otherwise it gets 3s on `sessionStart` and `beforeTurn`,
+  because the user is waiting on those, and the SDK's timeout everywhere else. The bound covers
+  waking a server that is down as well as the request itself.
+- **Read and add only.** A hook cannot veto a turn or rewrite it. What it returns reaches the model
+  only through `contextBlocks`. That function caps each block at its hook's `maxTokens` (1000 by
+  default) and the total at 2000.
+
+`hiddenTools` is the other half. A hidden tool is left out of `tools()` and `catalog()`, and
+`call()` refuses it as one that does not exist, unless the caller passes `{ hidden: true }`. Hooks
+pass it. `state()` still reports hidden tools, marked `hidden`, so a form can offer to unhide them.
+Both fields are read at call time, so an edit applies without a reconnect.
 
 ## Lifecycle
 

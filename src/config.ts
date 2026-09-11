@@ -49,21 +49,28 @@ function sameHttp(a: HttpServerConfig, b: HttpServerConfig) {
  * itself, so the pool never reconnected, while `state()` reported the edit as though it had. The
  * child on the other end of the pipe was still the one started with the old arguments.
  *
- * Shallow but for the fields `sameConnection` reads by value; nothing else on a row is a
- * container. A branch per arm, because a row now carries only its own transport's fields — and
- * copying by arm is what keeps it that way: a spread that rebuilt `headers` on a stdio row would
- * put the other arm's field back on it.
+ * Shallow but for the fields that are containers: the ones `sameConnection` reads by value, and
+ * `hiddenTools` and `hooks`, which are read at call time and so must not change under the pool
+ * either. A hook's `args` is arbitrary JSON, hence the clone.
+ *
+ * A branch per arm, because a row carries only its own transport's fields — and copying by arm is
+ * what keeps it that way: a spread that rebuilt `headers` on a stdio row would put the other
+ * arm's field back on it.
  */
 export function copyConfig(config: McpServerConfig): McpServerConfig {
   // Kept as they came, so an absent `args` stays absent rather than becoming an empty array —
   // `sameConnection` treats the two the same, and `state()` should not invent a field.
-  return config.transport === "stdio"
-    ? {
-        ...config,
-        args: config.args ? [...config.args] : config.args,
-        env: config.env ? { ...config.env } : config.env,
-      }
-    : { ...config, headers: config.headers ? { ...config.headers } : config.headers };
+  const copy: McpServerConfig =
+    config.transport === "stdio"
+      ? {
+          ...config,
+          args: config.args ? [...config.args] : config.args,
+          env: config.env ? { ...config.env } : config.env,
+        }
+      : { ...config, headers: config.headers ? { ...config.headers } : config.headers };
+  if (config.hiddenTools) copy.hiddenTools = [...config.hiddenTools];
+  if (config.hooks) copy.hooks = structuredClone(config.hooks);
+  return copy;
 }
 
 /**

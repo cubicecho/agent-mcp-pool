@@ -123,14 +123,19 @@ if (process.env.MCP_ECHO_HANG_TOOLS) {
   });
 }
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  // The tool itself failing, which MCP reports as a successful response carrying `isError` rather
-  // than as a protocol error — so nothing below the pool distinguishes it from an answer.
-  if (request.params.arguments?.fail)
-    return { content: [{ type: "text", text: "the tool failed on purpose" }], isError: true };
+  const args = request.params.arguments ?? {};
   // A tool that is slow rather than broken: the case a call timeout is for, and the one a connect
-  // timeout says nothing about because the handshake already finished.
-  if (request.params.arguments?.sleepMs)
-    await new Promise((resolve) => setTimeout(resolve, Number(request.params.arguments.sleepMs)));
+  // timeout says nothing about because the handshake already finished. Also what an abort cuts.
+  if (args.sleepMs) await new Promise((done) => setTimeout(done, Number(args.sleepMs)));
+  // The tool itself failing, which MCP reports as a successful response carrying `isError` rather
+  // than as a protocol error — so nothing below the pool distinguishes it from an answer. A string
+  // is the message to fail with.
+  if (args.fail) {
+    const text = typeof args.fail === "string" ? args.fail : "the tool failed on purpose";
+    return { content: [{ type: "text", text }], isError: true };
+  }
+  // Nothing at all, which is what a recall with no hits answers with.
+  if (args.empty) return { content: [] };
   // A non-text content block on demand: what a tool returning a chart or a screenshot sends, and
   // what a result flattened to a string cannot carry.
   if (request.params.arguments?.image)

@@ -20,15 +20,33 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 - `McpPoolErrorCode` (type) — Which of the pool's refusals this is.
 - `McpPoolErrorOptions` (type) — What an `McpPoolError` carries beyond its message.
 
+### hooks
+
+MCP tools as lifecycle hooks — the half that needs no connection.
+
+- `ContextBlocks` (type) — What `contextBlocks` built, and what each hook contributed to it.
+- `contextBlocks` — The injecting hooks' output, as context for the model.
+- `DEFAULT_HOOK_MAX_TOKENS` — The cap on one hook's injected text when its row does not set `maxTokens`.
+- `ExpandedArgs` (type) — What `expandArgs` made of a hook's arguments.
+- `expandArgs` — Fills a hook's `args` from its context.
+- `HOOK_EVENTS` — Every event a hook can be bound to, in the order a session meets them.
+- `hookVars` — The template paths an event offers, `vars.*` aside.
+- `INJECT_EVENTS` — The events whose output can reach the model.
+- `INJECT_TIMEOUT_MS` — How long an injecting hook gets when its row does not say.
+- `templatePaths` — Every path a hook's `args` names, each once.
+- `validateHooks` — What is wrong with a row's hooks, for the form that saves them.
+
 ### listing
 
 - `listAllTools` — Every tool a server offers, following `tools/list`'s cursor to the end.
 
 ### pool
 
+- `CallOptions` (type) — How one `call()` is made, beyond its name and arguments.
 - `McpPool` — One MCP client per configured server, exposing their tools to an agent loop as `<slug>__<tool name>`.
 - `McpPoolOptions` (type) — How a pool is built: where its rows come from, how patient it is, and what it may spawn.
 - `PoolLog` (type) — Where the pool's own progress goes.
+- `RunHooksOptions` (type) — What `runHooks` takes beyond the event and its context.
 - `StateOptions` (type) — What `state()` takes: whether the rows it reports come back with their credentials.
 - `ToolsOptions` (type) — What `tools()` takes: which tools to send, and which servers this run may reach.
 
@@ -52,6 +70,10 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 
 - `CatalogServer` (type) — One server's tools, without their JSON schemas — the cheap half of a tool definition.
 - `ClientIdentity` (type) — How this process introduces itself in a handshake: the `clientInfo` of MCP's `initialize`.
+- `HookContext` (type) — What a host knows at an event, for a hook's templates.
+- `HookEvent` (type) — A point in a session a hook can be bound to.
+- `HookMessage` (type) — One message of a session as a hook is handed it.
+- `HookOutcome` (type) — What one hook did.
 - `HttpServerConfig` (type) — A server reached over streamable HTTP, at a url this process does not own the lifetime of.
 - `McpConnection` (type) — What it takes to reach a server — the connection half of a row, without its identity.
 - `McpProbe` (type) — What `probe` found: whether the config works, and what it offers if it does.
@@ -61,3 +83,4 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 - `McpStatus` (type) — `idle` is registered-but-not-connected, and where an idle-reaped server goes — a success state: nothing is wrong, there is simply no child right now.
 - `StdioServerConfig` (type) — A server reached by spawning a child process and speaking MCP over its stdio.
 - `ToolDefinition` (type) — One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's `ChatCompletionTool`, and assignable to it.
+- `ToolHook` (type) — One tool call a row wants made at a point in a session.

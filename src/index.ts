@@ -12,11 +12,26 @@
 // peer dependency anyway.
 export type { Notification, ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
 export { McpPoolError, type McpPoolErrorCode, type McpPoolErrorOptions } from "./errors.ts";
+export {
+  type ContextBlocks,
+  contextBlocks,
+  DEFAULT_HOOK_MAX_TOKENS,
+  type ExpandedArgs,
+  expandArgs,
+  HOOK_EVENTS,
+  hookVars,
+  INJECT_EVENTS,
+  INJECT_TIMEOUT_MS,
+  templatePaths,
+  validateHooks,
+} from "./hooks.ts";
 export { listAllTools } from "./listing.ts";
 export {
+  type CallOptions,
   McpPool,
   type McpPoolOptions,
   type PoolLog,
+  type RunHooksOptions,
   type StateOptions,
   type ToolsOptions,
 } from "./pool.ts";
@@ -31,6 +46,10 @@ export {
 export type {
   CatalogServer,
   ClientIdentity,
+  HookContext,
+  HookEvent,
+  HookMessage,
+  HookOutcome,
   HttpServerConfig,
   McpConnection,
   McpProbe,
@@ -40,4 +59,5 @@ export type {
   McpStatus,
   StdioServerConfig,
   ToolDefinition,
+  ToolHook,
 } from "./types.ts";
