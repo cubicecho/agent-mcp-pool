@@ -238,7 +238,9 @@ so every host runs the same rows the same way.
   waking a server that is down as well as the request itself.
 - **Read and add only.** A hook cannot veto a turn or rewrite it. What it returns reaches the model
   only through `contextBlocks`. That function caps each block at its hook's `maxTokens` (1000 by
-  default) and the total at 2000.
+  default) and the total at 2000. Its `injected` lists each hook that made it in, with its `tokens`
+  and its `text` exactly as it went into the block — trimmed, cut with `…` if over a cap, without
+  the wrapper — for a host that shows the user what each hook added.
 
 `hiddenTools` is the other half. A hidden tool is left out of `tools()` and `catalog()`, and
 `call()` refuses it as one that does not exist, unless the caller passes `{ hidden: true }`. Hooks
