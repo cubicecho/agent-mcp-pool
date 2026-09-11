@@ -3,13 +3,7 @@ import { afterEach, expect, test } from "vitest";
 import { McpPoolError } from "../src/errors.ts";
 import { contextBlocks, expandArgs, templatePaths, validateHooks } from "../src/hooks.ts";
 import { McpPool } from "../src/pool.ts";
-import type {
-  HookContext,
-  HookOutcome,
-  McpServerConfig,
-  StdioServerConfig,
-  ToolHook,
-} from "../src/types.ts";
+import type { HookContext, HookOutcome, StdioServerConfig, ToolHook } from "../src/types.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/mcp-echo.mjs", import.meta.url));
 
@@ -49,7 +43,7 @@ const hook = (over: Partial<ToolHook> = {}): ToolHook => ({
 });
 
 /** A pool holding one echo server with these hooks, connected. */
-async function withHooks(hooks: ToolHook[], over: Partial<McpServerConfig> = {}) {
+async function withHooks(hooks: ToolHook[], over: Partial<StdioServerConfig> = {}) {
   await pool.sync([config({ hooks, ...over })]);
 }
 
