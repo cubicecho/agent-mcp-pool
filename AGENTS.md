@@ -45,6 +45,10 @@ npm run llms:check       # fails if the committed llms.txt is stale
 optional set of ids, and the two cases must never collapse — "this agent has no servers linked"
 is a real and correct state, and collapsing it silently gives a scoped run the whole pool.
 
+**A wake is scoped and targeted.** The servers a name could have come from, inside the run's
+scope — not every idle one, and not every failed one. Refusing after the child is up refuses
+nothing that matters, and starting it tells the caller the server exists.
+
 **Two arguments of the same type get named, not ordered.** `tools({ names, servers })` takes one
 object because the positional pair was two collections of strings, and transposing them answered
 with an empty array — indistinguishable from a run scoped to servers that offer nothing.
@@ -56,12 +60,16 @@ them plus a hash of the whole, so the split of a shortened name is a tool its se
 offers nothing until something has used it; listing its tools without spawning it would need a
 cached last-known list, which does not exist yet.
 
-**Every use goes through `ensure()`.** It is the single door, so lazy connect and the idle clock
-cannot disagree about what counts as a use.
+**Every connect goes through `ensure()` or `wake()`, and both are queued.** A warm `call` touches
+the idle clock directly rather than taking a queue hop it does not need; what must not have two
+doors is the *dialling*, or two of them race for the same child. The clock is touched on every
+use, wherever that use enters.
 
 **A reap is a success path, not a crash.** An idle-closed server goes to `idle` with no error and
 no `failedAt`, so no backoff stands between it and the next call. Only a real failure sets
-`error`.
+`error`. And it is gated on the timer it was armed with: `clearTimeout` on a fired timer cancels
+nothing, so a use landing between the fire and the queued close is only visible as a handle that
+is no longer the reap's.
 
 **Reconciles are queued, never concurrent.** Two interleaving syncs both spawn a child for the
 same edited server and the second orphans the first — a live process with nothing holding a

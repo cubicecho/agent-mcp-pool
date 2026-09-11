@@ -121,6 +121,18 @@ export interface McpPoolOptions {
    */
   probeTimeoutMs?: number;
   /**
+   * How long one `call()` gets before it is abandoned.
+   *
+   * Absent leaves the SDK's own 60s, which is what this existed to improve on everywhere else and
+   * was unreachable here: `connectTimeoutMs` is worked out to three levels of precedence and then
+   * a tool call took whatever the SDK felt like. For an agent loop it is the number that matters
+   * most — a wedged tool holds up the turn, and the turn is what a person is waiting on.
+   *
+   * The pool-wide default. `McpServerConfig.callTimeoutMs` overrides it for one server, which is
+   * where a search that legitimately takes a minute belongs.
+   */
+  callTimeoutMs?: number;
+  /**
    * Register servers without connecting them; connect on first use instead.
    *
    * Off by default: for an agent loop, spawning a child per run costs more than the run. A
@@ -200,7 +212,7 @@ export interface CallOptions {
   servers?: Iterable<string>;
   /** Cancels the request; the call rejects with the SDK's abort error. */
   signal?: AbortSignal;
-  /** How long the request gets, overriding the SDK's 60s. */
+  /** How long the request gets, overriding the row's `callTimeoutMs` and the pool's. */
   timeoutMs?: number;
   /**
    * Reach a tool the row's `hiddenTools` keeps from the model. For the host's own calls — hooks —
@@ -303,6 +315,7 @@ export class McpPool {
   private readonly childEnv?: readonly string[];
   private readonly connectTimeoutMs?: number;
   private readonly probeTimeoutMs?: number;
+  private readonly callTimeoutMs?: number;
 
   /**
    * @param options See `McpPoolOptions`. All optional: a pool with no `load` is one driven by
@@ -317,6 +330,7 @@ export class McpPool {
     childEnv,
     connectTimeoutMs,
     probeTimeoutMs,
+    callTimeoutMs,
     lazy = false,
     idleTimeoutMs,
     indexTools = true,
@@ -328,6 +342,7 @@ export class McpPool {
     this.childEnv = childEnv;
     this.connectTimeoutMs = connectTimeoutMs;
     this.probeTimeoutMs = probeTimeoutMs;
+    this.callTimeoutMs = callTimeoutMs;
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
     this.indexTools = indexTools;
@@ -482,6 +497,9 @@ export class McpPool {
     this.owed = true;
     clearTimeout(this.pending);
     this.pending = setTimeout(() => void this.settle(), 50);
+    // A reconcile the pool has not got to yet is not a reason for the process to stay up, any
+    // more than a pending reap is. `flush()` is how a caller that does want to wait for it says so.
+    this.pending.unref?.();
   }
 
   private async settle() {
@@ -600,41 +618,43 @@ export class McpPool {
   }
 
   /**
-   * Connects whatever might answer a name the index does not know: failed servers due a retry,
-   * plus — under `lazy` — the idle servers whose slug could have produced the name.
+   * Connects whatever might answer a name the index does not know: the cold servers whose slug
+   * could have produced it, and the failed ones that are due another attempt.
    *
    * `couldQualify` decides which those are, and it is exact in the direction that matters: every
    * server that really owns the name is woken. A name none of them could have produced is a name
    * no server has, and starting them to find that out is what a model inventing a tool used to
    * cost — one child process per configured server, dialled one after another, before the call
-   * failed anyway.
+   * failed anyway. It gates the failed servers too: a crashed one used to be redialled by traffic
+   * for any other server's tools, which is the same cost paid on the other path.
    *
-   * @param qualifiedName The `<slug>__<tool>` a call asked for and the index could not answer.
-   */
-  private async wake(qualifiedName: string): Promise<void> {
-    for (const entry of this.entries.values()) {
-      if (entry.status !== "idle") continue;
-      if (!couldQualify(slugOf(entry.config), qualifiedName)) continue;
-      await this.ensure(entry);
-    }
-    await this.retryFailed();
-  }
-
-  /**
-   * Dials every failed server that is due another attempt, using the configs already held.
+   * The run's scope gates both. `call` re-checks the scope *after* this, so without it a run
+   * scoped to one server could spawn a child for another by naming its tool — the whole case that
+   * check exists for, since a model that has seen a name once will call it again from memory.
+   * Refusing after the child is up refuses nothing that matters.
    *
    * Deliberately not a `sync()`: this runs from `call`, where the pool must not go back to `load`
    * for rows — a pool driven by explicit `sync(configs)` has no `load` at all, and asking an
    * absent one would reconcile against an empty set and close every server it has.
+   *
+   * @param qualifiedName The `<slug>__<tool>` a call asked for and the index could not answer.
+   * @param allowed The run's scope, already a set. `undefined` is every server — see `scope`.
    */
-  private retryFailed(): Promise<void> {
+  private wake(qualifiedName: string, allowed?: ReadonlySet<string>): Promise<void> {
     return this.queue(async () => {
-      const due = [...this.entries.values()].filter((entry) => this.retryDue(entry));
-      for (const entry of due) {
+      // Read inside the queue, like `ensure` does: another caller may have connected these while
+      // this one waited, and dialling one twice is the orphaned child the queue exists to prevent.
+      const candidates = [...this.entries.values()].filter(
+        (entry) =>
+          (allowed === undefined || allowed.has(entry.config.id)) &&
+          couldQualify(slugOf(entry.config), qualifiedName) &&
+          (entry.status === "idle" || this.retryDue(entry)),
+      );
+      for (const entry of candidates) {
         await this.close(entry);
-        await this.connect(entry.config);
+        await this.connect(entry.config, true);
       }
-      if (due.length > 0) this.reindex();
+      if (candidates.length > 0) this.reindex();
     });
   }
 
@@ -856,6 +876,12 @@ export class McpPool {
    * onward has no other way to see them. The id comes first because a listener hears from every
    * server at once and the notification does not say which one sent it.
    *
+   * A subscription to the pool rather than to a connection, so it outlives both: a server that
+   * reconnects keeps delivering to it, and `shutdown()` — which documents that the pool stays
+   * usable — leaves it in place, so a consumer that subscribed once at boot is still subscribed
+   * after a shutdown and a fresh `sync()`. Unsubscribing is this function's job and nothing
+   * else's.
+   *
    * @param listener Called with the sending server's id and the notification. Throwing is
    *   contained — the other listeners still run.
    * @returns Unsubscribes. Safe to call more than once.
@@ -919,9 +945,13 @@ export class McpPool {
     this.disarm(entry);
     const timeout = entry.config.idleTimeoutMs ?? this.idleTimeoutMs;
     if (!timeout || !entry.client) return;
-    entry.idleTimer = setTimeout(() => this.reap(entry), timeout);
+    // The handle is passed to its own callback so `reap` can tell whether it is still the timer
+    // the entry is waiting on — see `reap`. Safe to close over: the callback cannot run before
+    // the assignment it reads.
+    const timer: ReturnType<typeof setTimeout> = setTimeout(() => this.reap(entry, timer), timeout);
+    entry.idleTimer = timer;
     // A pool waiting to reap a server is not a reason for the process to stay up.
-    entry.idleTimer.unref?.();
+    timer.unref?.();
   }
 
   private disarm(entry: Entry) {
@@ -938,11 +968,18 @@ export class McpPool {
    * operator reading `state()` sees a server that is fine and simply not running.
    *
    * @param entry The server whose clock fired. Ignored if it has been replaced or is not `ready`.
+   * @param timer The handle that fired, which is how a use that landed *after* it fired is seen
+   *   here. `clearTimeout` on a fired timer does nothing, so a `touch` in the window between the
+   *   fire and this queued work reaching the front cannot cancel it — it can only arm a new
+   *   handle, which is what this compares against. Without it, a call arriving in that window has
+   *   its client closed mid-flight and the model is handed a transport error from a server that
+   *   was in use.
    */
-  private reap(entry: Entry) {
+  private reap(entry: Entry, timer: ReturnType<typeof setTimeout>) {
     void this.queue(async () => {
       const current = this.entries.get(entry.config.id);
-      if (!current || current !== entry || current.status !== "ready") return;
+      if (!current || current !== entry || current.idleTimer !== timer) return;
+      if (current.status !== "ready") return;
       await this.close(current);
       current.status = "idle";
       current.tools = [];
@@ -1056,7 +1093,7 @@ export class McpPool {
     input: unknown,
     options?: Iterable<string> | CallOptions,
   ): Promise<string> {
-    const { servers, signal, timeoutMs, hidden = false } = callOptions(options);
+    const { servers, signal, timeoutMs: ownTimeoutMs, hidden = false } = callOptions(options);
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
     // past 64 characters, and the split of a shortened name is a tool its server never had.
@@ -1066,8 +1103,10 @@ export class McpPool {
     if (!found && this.indexTools) {
       // A crashed server took its tools out of the index, and a lazy pool never put a cold
       // server's there at all. Telling the model a tool does not exist teaches it to stop asking,
-      // so bring back whatever is owed a connection and look once more.
-      await this.wake(qualifiedName);
+      // so bring back whatever is owed a connection and look once more — inside the scope, since
+      // the check below refuses a server this run may not reach and spawning it first refuses
+      // nothing.
+      await this.wake(qualifiedName, allowed);
       found = this.index.get(qualifiedName);
     }
     // A tool outside this run's scope is answered as one that does not exist, because to this run
@@ -1093,6 +1132,12 @@ export class McpPool {
 
     if (entry) this.touch(entry);
 
+    // This call's own first — a hook's 3s on the path of a turn — then the row, then the pool's
+    // default, then the SDK's own 60s behind that: the same order `connectTimeoutMs` is read in,
+    // and read here rather than held on the entry for the same reason: an edited number applies to
+    // the next call without bouncing the child. One request, so a plain timeout rather than a
+    // `requestBudget`; budgets are for sequences.
+    const timeoutMs = ownTimeoutMs ?? entry?.config.callTimeoutMs ?? this.callTimeoutMs;
     const result = await found.client.callTool(
       {
         name: found.tool.name,
@@ -1100,17 +1145,29 @@ export class McpPool {
       },
       undefined,
       // Built only when there is something to say: a `timeout: undefined` handed to the SDK is
-      // not the same as none, depending on how it reads the field.
-      signal || timeoutMs !== undefined
+      // not the same as none, depending on how it reads the field. Deliberately without
+      // `resetTimeoutOnProgress`: a long call that reports progress is still cut off at this
+      // number. The alternative is a bound a server can hold open indefinitely by talking, which
+      // is not a bound. A consumer that wants the other reading has `client()`.
+      signal || timeoutMs != null
         ? {
             ...(signal ? { signal } : {}),
-            ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+            ...(timeoutMs != null ? { timeout: timeoutMs } : {}),
           }
         : undefined,
     );
 
     const text = resultText(result);
-    if (result.isError) throw new Error(text || "tool call failed");
+    // The server ran the tool and the tool failed — not one of the pool's refusals, which is why
+    // this was a plain `Error`. It carries a code anyway because a caller sorting failures cares
+    // most about this line: nothing about retrying a rejected argument resembles retrying a
+    // backoff. The message is what it always was.
+    if (result.isError) {
+      throw new McpPoolError("tool-error", text || "tool call failed", {
+        toolName: qualifiedName,
+        serverId: found.serverId,
+      });
+    }
     return text || "(no output)";
   }
 
@@ -1265,8 +1322,9 @@ export class McpPool {
       config: this.reportedConfig(entry.config, secrets),
       status: entry.status,
       error: entry.error ?? "",
-      tools: entry.tools.map(({ name, description }) => ({
+      tools: entry.tools.map(({ name, qualified, description }) => ({
         name,
+        qualified,
         description,
         hidden: isHidden(entry.config, name),
       })),
@@ -1296,7 +1354,13 @@ export class McpPool {
   private reportedConfig(config: McpServerConfig, secrets: boolean): McpServerPublicConfig {
     const copy = copyConfig(config);
     if (secrets) return copy;
-    const { env, headers, ...rest } = copy;
+    // One credential field per arm, stripped by arm: a row carries only its own transport's
+    // fields now, so there is no single destructure that names both.
+    if (copy.transport === "stdio") {
+      const { env, ...rest } = copy;
+      return rest;
+    }
+    const { headers, ...rest } = copy;
     return rest;
   }
 

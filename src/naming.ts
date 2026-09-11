@@ -109,13 +109,19 @@ export function pooledTool(
   return {
     ...tool,
     qualified,
-    definition: {
+    // Frozen because `tools()` hands this very object out rather than a copy — the agent loop
+    // rebuilds its tool array every iteration, and copying every schema each time to guard
+    // against an edit nobody makes is the wrong trade. Frozen, an edit that would have silently
+    // rewritten what every later run is offered fails at the edit instead. Shallow on purpose:
+    // `parameters` is the server's own schema, passed through untouched, and deep-freezing an
+    // arbitrary object costs a walk per tool for a case nobody has hit.
+    definition: Object.freeze({
       type: "function",
-      function: {
+      function: Object.freeze({
         name: qualified,
         description: `[${labelOf(config)}] ${tool.description}`.trim(),
         parameters: tool.parameters,
-      },
-    },
+      }),
+    }),
   };
 }

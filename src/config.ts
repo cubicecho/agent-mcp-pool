@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import type { McpServerConfig } from "./types.ts";
+import type { HttpServerConfig, McpServerConfig, StdioServerConfig } from "./types.ts";
 
 /**
  * Questions about the configured rows themselves — no connection, no pool state.
@@ -17,18 +17,27 @@ import type { McpServerConfig } from "./types.ts";
  * in its label.
  */
 export function sameConnection(a: McpServerConfig, b: McpServerConfig) {
+  if (a.enabled !== b.enabled || a.transport !== b.transport) return false;
+  // Narrowing `a` tells TypeScript nothing about `b` — it cannot correlate two discriminants it
+  // checked separately — so `b` is asserted once, here, where the equality above has already
+  // established which arm it is.
+  return a.transport === "stdio"
+    ? sameStdio(a, b as StdioServerConfig)
+    : sameHttp(a, b as HttpServerConfig);
+}
+
+/** `null` and empty mean the same absence: a row moving between them reaches the same child. */
+function sameStdio(a: StdioServerConfig, b: StdioServerConfig) {
   return (
-    a.enabled === b.enabled &&
-    a.transport === b.transport &&
     a.command === b.command &&
-    a.url === b.url &&
-    // `null` and empty mean the same absence: a row moving between them reaches the same child
-    // and must not restart it.
     (a.cwd ?? "") === (b.cwd ?? "") &&
     isDeepStrictEqual(a.args ?? [], b.args ?? []) &&
-    isDeepStrictEqual(a.env ?? {}, b.env ?? {}) &&
-    isDeepStrictEqual(a.headers ?? {}, b.headers ?? {})
+    isDeepStrictEqual(a.env ?? {}, b.env ?? {})
   );
+}
+
+function sameHttp(a: HttpServerConfig, b: HttpServerConfig) {
+  return a.url === b.url && isDeepStrictEqual(a.headers ?? {}, b.headers ?? {});
 }
 
 /**
@@ -40,19 +49,25 @@ export function sameConnection(a: McpServerConfig, b: McpServerConfig) {
  * itself, so the pool never reconnected, while `state()` reported the edit as though it had. The
  * child on the other end of the pipe was still the one started with the old arguments.
  *
- * Shallow but for the fields that are containers: the three `sameConnection` reads by value, and
+ * Shallow but for the fields that are containers: the ones `sameConnection` reads by value, and
  * `hiddenTools` and `hooks`, which are read at call time and so must not change under the pool
  * either. A hook's `args` is arbitrary JSON, hence the clone.
+ *
+ * A branch per arm, because a row carries only its own transport's fields — and copying by arm is
+ * what keeps it that way: a spread that rebuilt `headers` on a stdio row would put the other
+ * arm's field back on it.
  */
 export function copyConfig(config: McpServerConfig): McpServerConfig {
-  const copy: McpServerConfig = {
-    ...config,
-    // Kept as they came, so an absent `args` stays absent rather than becoming an empty array —
-    // `sameConnection` treats the two the same, and `state()` should not invent a field.
-    args: config.args ? [...config.args] : config.args,
-    env: config.env ? { ...config.env } : config.env,
-    headers: config.headers ? { ...config.headers } : config.headers,
-  };
+  // Kept as they came, so an absent `args` stays absent rather than becoming an empty array —
+  // `sameConnection` treats the two the same, and `state()` should not invent a field.
+  const copy: McpServerConfig =
+    config.transport === "stdio"
+      ? {
+          ...config,
+          args: config.args ? [...config.args] : config.args,
+          env: config.env ? { ...config.env } : config.env,
+        }
+      : { ...config, headers: config.headers ? { ...config.headers } : config.headers };
   if (config.hiddenTools) copy.hiddenTools = [...config.hiddenTools];
   if (config.hooks) copy.hooks = structuredClone(config.hooks);
   return copy;

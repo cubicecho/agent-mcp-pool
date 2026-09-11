@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
 import { copyConfig, sameConnection, scope } from "../src/config.ts";
-import type { McpServerConfig } from "../src/types.ts";
+import type { HttpServerConfig, StdioServerConfig } from "../src/types.ts";
 
-const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
+const config = (over: Partial<StdioServerConfig> = {}): StdioServerConfig => ({
   id: "echo-1",
   slug: "echo",
   label: "Echo",
@@ -11,8 +11,18 @@ const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
   command: "node",
   args: ["server.mjs"],
   env: { TOKEN: "t" },
-  url: "",
-  headers: null,
+  ...over,
+});
+
+/** The other arm. A row carries one transport's fields, so the pair has to be tested as a pair. */
+const remote = (over: Partial<HttpServerConfig> = {}): HttpServerConfig => ({
+  id: "echo-1",
+  slug: "echo",
+  label: "Echo",
+  enabled: true,
+  transport: "http",
+  url: "https://example.test/mcp",
+  headers: { Authorization: "Bearer t" },
   ...over,
 });
 
@@ -31,20 +41,29 @@ test("a row that changed only in what an operator reads is the same connection",
 });
 
 test("every field a child process is made of restarts it when it changes", () => {
-  const edits: Partial<McpServerConfig>[] = [
+  const stdioEdits: Partial<StdioServerConfig>[] = [
     { enabled: false },
-    { transport: "http" },
     { command: "python" },
-    { url: "https://example.test/mcp" },
     { cwd: "/srv/notes" },
     { args: ["server.mjs", "--verbose"] },
     { env: { TOKEN: "other" } },
-    { headers: { Authorization: "Bearer t" } },
   ];
-
-  for (const edit of edits) {
+  for (const edit of stdioEdits) {
     expect(sameConnection(config(), config(edit)), Object.keys(edit)[0]).toBe(false);
   }
+
+  const httpEdits: Partial<HttpServerConfig>[] = [
+    { enabled: false },
+    { url: "https://example.test/other" },
+    { headers: { Authorization: "Bearer other" } },
+  ];
+  for (const edit of httpEdits) {
+    expect(sameConnection(remote(), remote(edit)), Object.keys(edit)[0]).toBe(false);
+  }
+
+  // The discriminant itself: two rows that agree on nothing else cannot be the same connection,
+  // and it is the comparison every per-arm one is now reached through.
+  expect(sameConnection(config(), remote())).toBe(false);
 });
 
 test("absent and empty are the same absence", () => {
@@ -53,7 +72,7 @@ test("absent and empty are the same absence", () => {
   expect(sameConnection(config({ args: null }), config({ args: [] }))).toBe(true);
   expect(sameConnection(config({ args: [] }), config({ args: null }))).toBe(true);
   expect(sameConnection(config({ env: null }), config({ env: {} }))).toBe(true);
-  expect(sameConnection(config({ headers: null }), config({ headers: {} }))).toBe(true);
+  expect(sameConnection(remote({ headers: null }), remote({ headers: {} }))).toBe(true);
   expect(sameConnection(config({ cwd: null }), config({ cwd: undefined }))).toBe(true);
   expect(sameConnection(config({ cwd: null }), config({ cwd: "" }))).toBe(true);
 });
@@ -80,31 +99,46 @@ test("args and env are compared by value, not by identity", () => {
  * editable from outside it — and `sameConnection` a comparison between a row and itself.
  */
 test("a copied row is the caller's row, and no longer the same object", () => {
-  const row = config({ headers: { Authorization: "Bearer t" } });
-  const copy = copyConfig(row);
+  const row = config();
+  const copy = copyConfig(row) as StdioServerConfig;
 
   expect(copy).toEqual(row);
   expect(sameConnection(copy, row)).toBe(true);
 
   row.args?.push("--edited");
   if (row.env) row.env.TOKEN = "edited";
-  if (row.headers) row.headers.Authorization = "Bearer edited";
 
   // An edit on either side is invisible to the other, which is what lets the pool notice one.
   expect(sameConnection(copy, row)).toBe(false);
   expect(copy.args).toEqual(["server.mjs"]);
   expect(copy.env).toEqual({ TOKEN: "t" });
+});
+
+test("the other arm's container is copied too, rather than only the stdio ones", () => {
+  const row = remote();
+  const copy = copyConfig(row) as HttpServerConfig;
+
+  if (row.headers) row.headers.Authorization = "Bearer edited";
+
+  expect(sameConnection(copy, row)).toBe(false);
   expect(copy.headers).toEqual({ Authorization: "Bearer t" });
+});
+
+test("a copy carries only its own arm's fields, rather than the other arm's as empties", () => {
+  // The flat row wrote `headers: null` on every stdio server. Rebuilding both arms' containers
+  // here would put that back, and `state()` would show an operator a field their row has not got.
+  expect(copyConfig(config())).not.toHaveProperty("headers");
+  expect(copyConfig(remote())).not.toHaveProperty("env");
 });
 
 test("an absent container stays absent in the copy, rather than becoming an empty one", () => {
   // `sameConnection` reads null and empty as the same absence, and `state()` reports the copy —
   // inventing an empty array here would show an operator a field their row does not have.
-  const copy = copyConfig(config({ args: null, env: null }));
+  const copy = copyConfig(config({ args: null, env: null })) as StdioServerConfig;
 
   expect(copy.args).toBeNull();
   expect(copy.env).toBeNull();
-  expect(copy.headers).toBeNull();
+  expect(copyConfig(remote({ headers: null })) as HttpServerConfig).toHaveProperty("headers", null);
 });
 
 test("no scope and an empty scope are different answers", () => {

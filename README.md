@@ -40,6 +40,22 @@ quotes back in a support channel. The version defaults to this package's own, re
 manifest; set it beside the name, since a name that is yours next to a version that is the
 pool's tells the server something untrue.
 
+A row is one of two shapes, discriminated on `transport`, and carries only its own arm's fields:
+
+```ts
+{ id: "git",  label: "Git",  enabled: true, transport: "stdio", command: "uvx", args: ["mcp-server-git"] }
+{ id: "docs", label: "Docs", enabled: true, transport: "http",  url: "https://mcp.example.com/mcp" }
+```
+
+`StdioServerConfig` and `HttpServerConfig` are both exported; `McpServerConfig` is their union.
+Flat, an http row still had to write `command: ""`, `args: null`, `env: null` — three fields
+nothing would ever read, and a `command` that reads as configured rather than absent — while a
+stdio row with no `command` at all compiled, and `createTransport` could only refuse it at runtime,
+one connect too late. **Migrating:** a row written as an object *literal* that supplies the other
+arm's fields now fails excess-property checking; one that arrives from a typed variable — a Drizzle
+select, a parsed config — is unaffected. The fix is deleting the fields that row's transport never
+used.
+
 A stdio server may also name a `cwd`; absent, it inherits this process's. Several servers resolve
 relative paths — a filesystem root, a sqlite file — against their working directory rather than
 against an argument, and it counts as part of the connection: editing it restarts the child.
@@ -76,6 +92,13 @@ this the operator's list reorders itself according to which child started quicke
 
 `id`, `slug` and `label` stay alongside `config` — those are the *effective* values the pool
 actually used.
+
+Each tool in `state().tools` carries both of its names: `name` is the server's own, `qualified` is
+`<slug>__<name>` — what the model is offered and what `call()` takes. Both, because an operator
+reads the first and debugs with the second, and because `catalog()`'s identically shaped list
+carries the *qualified* one under `name`. Two `{ name, description }` lists meaning different
+things is a transposition waiting to happen, and the fix is to stop making the reader remember
+which is which.
 
 **`env` and `headers` are left out of it.** That UI is a browser, sending `state()` to it is the
 shortest way to draw that line, and for a real server those two fields are an API key and an
@@ -124,6 +147,13 @@ connected server; empty means none of them** — the two must not collapse, beca
 has no servers linked" is a real and correct state. `call` re-checks the scope rather than
 trusting the definitions the caller was given: a model that has seen a tool name once will call
 it again from memory.
+
+**A scoped `call` does not start a server the run cannot reach.** A name the index cannot answer
+wakes the servers whose slug could have produced it — a cold one under `lazy`, a crashed one past
+its backoff — and the run's scope gates that too, not only the refusal after it. Otherwise a run
+scoped to one server spawned another's child, drained its tool list, and *then* said no server
+offers that tool: a process started for a run that may not reach it, and a latency difference that
+answers the question the shared message exists to leave unanswered.
 
 `tools` names both of its own:
 
@@ -242,6 +272,13 @@ server's tools without spawning it needs a cached last-known tool list, which is
 out a penalty for something that did not go wrong. Both options absent is exactly today's
 behaviour.
 
+A use that lands after the clock has already fired keeps the server: the reap runs on the
+reconcile queue, and it checks that the timer it was armed with is still the one the server is
+waiting on. Cancelling is not enough on its own — `clearTimeout` on a timer that has already fired
+does nothing — so without that check a call arriving in the window between the fire and the queued
+close had its client closed underneath it, and the model was handed a transport error from a server
+that was in use.
+
 ### Stopping and restarting one server
 
 `shutdown()` is every server and forgets them, and `sync()` only closes what the configs dropped.
@@ -325,6 +362,12 @@ tends to answer with — is flattened to that structure as JSON, rather than rea
 `call()`'s `"(no output)"`. Text blocks win where there are any: they are what the server wrote
 for a reader.
 
+The definitions `tools()` hands back are the pool's own objects rather than copies — the agent
+loop rebuilds its tool array every iteration, and the schema behind one cannot change without the
+connection being torn down and remade — so they are **frozen**. An edit that would otherwise have
+silently rewritten what every later run is offered fails at the edit instead. Shallow: `parameters`
+is the server's own schema, passed through untouched.
+
 Everything else the pool does applies unchanged — reconcile, the queue, crash detection with the
 stderr tail, backoff, retry-on-use. A server that is merely down is retried first, the same as
 `call()` does; a disabled one is refused, because off is not the same as out of scope. **It
@@ -356,6 +399,13 @@ child's stderr in `detail`). `call()` adds `unknown-tool` and `out-of-scope`, wh
 **share their message**: a run must not learn that a server it was not scoped to exists. The
 messages are unchanged from the plain `Error`s these replaced. `sync()` and `reconnect()` have one
 of their own, `no-configs` — see [the seam](#the-seam).
+
+`tool-error` is the odd one in the list: not a refusal from the pool at all, but the pool reporting
+that the *server* ran the tool and the tool failed — MCP's `isError` result, whose text becomes the
+message. It was a plain `Error` for exactly that reason, and it carries a code anyway because it is
+the one a caller most needs to tell from the others: retrying a `backoff` makes sense and retrying
+a tool that rejected its arguments does not. The message is unchanged, so anything reading
+`.message` is unaffected.
 
 A failed server is then retried, which is the other half: `sync` leaves a *healthy* unchanged
 server alone but treats a failed one as work to do, and `call` brings back a server that is
@@ -399,6 +449,22 @@ time at all.
 The row is re-read on every reconcile, so a consumer whose configuration is hand-editable does not
 need a restart to change it. An edited timeout does not bounce a running child — it is read at
 connect time, so it applies to the next one.
+
+`callTimeoutMs` is the same idea for one `call()`, and for an agent loop it is the number most
+worth setting: unset, a tool call takes the SDK's 60s, which is most of a turn. It reads the same
+three levels — `McpServerConfig.callTimeoutMs`, then the pool's, then the SDK's — for the same
+reason the connect one does: a filesystem read and a deep-research server that thinks for ninety
+seconds cannot share a number, and the number that accommodates both leaves the fast server
+effectively unbounded. Read at call time, so an edit applies to the next call without a reconnect.
+
+```ts
+new McpPool({ load, callTimeoutMs: 30_000 });     // the pool's
+{ id: "research", url: "...", callTimeoutMs: 180_000 } // this server's
+```
+
+Deliberately *not* the SDK's `resetTimeoutOnProgress`: a long call that reports progress is still
+cut off at this number, because a bound a server can hold open indefinitely by talking is not a
+bound. A consumer that wants the other reading has `client()`.
 
 ## Probing
 

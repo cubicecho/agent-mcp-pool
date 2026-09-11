@@ -1,19 +1,15 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
 import { couldQualify, labelOf, pooledTool, qualify, SEPARATOR, slugOf } from "../src/naming.ts";
-import type { McpServerConfig } from "../src/types.ts";
+import type { StdioServerConfig } from "../src/types.ts";
 
-const config = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
+const config = (over: Partial<StdioServerConfig> = {}): StdioServerConfig => ({
   id: "echo-1",
   slug: "echo",
   label: "Echo",
   enabled: true,
   transport: "stdio",
   command: "node",
-  args: null,
-  env: null,
-  url: "",
-  headers: null,
   ...over,
 });
 
@@ -94,7 +90,7 @@ test("the definition is built from the same qualified name the index is keyed by
 });
 
 test("a tool is introduced by its server's label, falling back to the slug and then the id", () => {
-  const described = (over: Partial<McpServerConfig>) => {
+  const described = (over: Partial<StdioServerConfig>) => {
     const { definition } = pooledTool(config(over), tool());
     return definition.type === "function" ? definition.function.description : "";
   };

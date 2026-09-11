@@ -91,6 +91,14 @@ const pageDelay = () =>
 // then leaves the handshake half-finished.
 if (process.env.MCP_ECHO_HANG_TOOLS) {
   server.setRequestHandler(ListToolsRequestSchema, () => new Promise(() => {}));
+} else if (process.env.MCP_ECHO_ENDLESS_CURSOR) {
+  // A fresh cursor every page, for ever. Worse than the stuck one: each cursor is new, so a
+  // client remembering the ones it has seen never repeats and walks until something else stops it.
+  let page = 0;
+  server.setRequestHandler(ListToolsRequestSchema, () => {
+    page += 1;
+    return { tools: offered.slice(0, 1), nextCursor: `page-${page}` };
+  });
 } else if (process.env.MCP_ECHO_STUCK_CURSOR) {
   // Hands back the cursor it was given, for ever. A client that follows cursors without noticing
   // pages forever, which is worse than either a short list or an error.
@@ -116,10 +124,16 @@ if (process.env.MCP_ECHO_HANG_TOOLS) {
 }
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const args = request.params.arguments ?? {};
-  // A tool that takes its time, for the timeouts and aborts a caller puts around a call.
-  if (typeof args.sleepMs === "number") await new Promise((done) => setTimeout(done, args.sleepMs));
-  // The tool ran and failed: `isError`, which is the server's answer rather than the transport's.
-  if (args.fail) return { content: [{ type: "text", text: String(args.fail) }], isError: true };
+  // A tool that is slow rather than broken: the case a call timeout is for, and the one a connect
+  // timeout says nothing about because the handshake already finished. Also what an abort cuts.
+  if (args.sleepMs) await new Promise((done) => setTimeout(done, Number(args.sleepMs)));
+  // The tool itself failing, which MCP reports as a successful response carrying `isError` rather
+  // than as a protocol error — so nothing below the pool distinguishes it from an answer. A string
+  // is the message to fail with.
+  if (args.fail) {
+    const text = typeof args.fail === "string" ? args.fail : "the tool failed on purpose";
+    return { content: [{ type: "text", text }], isError: true };
+  }
   // Nothing at all, which is what a recall with no hits answers with.
   if (args.empty) return { content: [] };
   // A non-text content block on demand: what a tool returning a chart or a screenshot sends, and

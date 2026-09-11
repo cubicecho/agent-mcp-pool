@@ -44,7 +44,9 @@ export interface TransportOptions {
  * subtly different one.
  *
  * @param config The connection half of a row. `transport` picks the arm; the field that arm needs
- *   — `command` or `url` — must be set, or this throws.
+ *   — `command` or `url` — must be set, or this throws. The type requires it, so a TypeScript
+ *   consumer cannot reach these throws; they are for a JavaScript one, and for a row that came
+ *   out of a database column that allows null.
  * @param options `childEnv`, which narrows what a stdio child inherits. Ignored over http.
  * @returns An unconnected transport. Over stdio the child is not spawned until `connect`.
  */
