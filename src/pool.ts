@@ -3,13 +3,17 @@ import type { Notification } from "@modelcontextprotocol/sdk/types.js";
 import { requestBudget } from "./budget.ts";
 import { copyConfig, sameConnection, scope } from "./config.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
+import { DEFAULT_HOOK_MAX_TOKENS, expandArgs, INJECT_EVENTS, INJECT_TIMEOUT_MS } from "./hooks.ts";
 import { listAllTools } from "./listing.ts";
-import { couldQualify, labelOf, type PooledTool, pooledTool, slugOf } from "./naming.ts";
+import { couldQualify, labelOf, type PooledTool, pooledTool, qualify, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { resultText } from "./results.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type {
   CatalogServer,
+  HookContext,
+  HookEvent,
+  HookOutcome,
   McpConnection,
   McpProbe,
   McpServerConfig,
@@ -17,6 +21,7 @@ import type {
   McpServerState,
   McpStatus,
   ToolDefinition,
+  ToolHook,
 } from "./types.ts";
 import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
 
@@ -182,6 +187,84 @@ export interface StateOptions {
    * *server-side* is the case that legitimately needs them back: that one asks.
    */
   secrets?: boolean;
+}
+
+/**
+ * How one `call()` is made, beyond its name and arguments.
+ *
+ * An object since hooks needed more than the scope. The bare scope `call()` took before is still
+ * accepted in the same position, so no existing caller changes.
+ */
+export interface CallOptions {
+  /** The run's scope, read as `tools()` reads it. */
+  servers?: Iterable<string>;
+  /** Cancels the request; the call rejects with the SDK's abort error. */
+  signal?: AbortSignal;
+  /** How long the request gets, overriding the SDK's 60s. */
+  timeoutMs?: number;
+  /**
+   * Reach a tool the row's `hiddenTools` keeps from the model. For the host's own calls — hooks —
+   * never for a name the model sent, which is the whole of what hiding is for.
+   */
+  hidden?: boolean;
+}
+
+/** What `runHooks` takes beyond the event and its context. */
+export interface RunHooksOptions {
+  /** The run's scope: only these servers' hooks run. Absent is every server, empty is none. */
+  servers?: Iterable<string>;
+  /**
+   * Cancels every hook still running; each resolves promptly as a failed outcome. For the hooks
+   * on a turn's path, pass the turn's own signal — a user who stopped the turn stopped its recall.
+   */
+  signal?: AbortSignal;
+  /**
+   * Told about each hook that failed or was skipped, as it settles. A hook's failure never fails
+   * the turn, so this is the one place it is heard — a host that wants the user to see "recall
+   * failed" wires it here.
+   */
+  onNotice?: (notice: string, outcome: HookOutcome) => void;
+}
+
+/** Whether a row keeps one of its tools from the model. */
+const isHidden = (config: McpServerConfig, name: string) =>
+  config.hiddenTools?.includes(name) ?? false;
+
+/** `call()`'s third argument in either of the shapes it accepts. */
+function callOptions(options?: Iterable<string> | CallOptions): CallOptions {
+  if (options === undefined) return {};
+  if (typeof (options as Iterable<string>)[Symbol.iterator] === "function") {
+    return { servers: options as Iterable<string> };
+  }
+  return options as CallOptions;
+}
+
+/**
+ * `work`, or a rejection when the time or the signal runs out first.
+ *
+ * The request's own timeout and signal are passed to the SDK as well, which is what stops the
+ * server's work; this is what bounds everything before the request — waking a server that is down
+ * — which the SDK's timer never sees.
+ */
+function bounded<T>(work: Promise<T>, ms?: number, signal?: AbortSignal): Promise<T> {
+  if (ms === undefined && !signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => finish(() => reject(new Error("aborted")));
+    const finish = (settle: () => void) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      settle();
+    };
+    if (ms !== undefined) {
+      timer = setTimeout(() => finish(() => reject(new Error(`timed out after ${ms}ms`))), ms);
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
 }
 
 /**
@@ -729,6 +812,10 @@ export class McpPool {
         continue;
       }
       if (allowed && !allowed.has(found.serverId)) continue;
+      // Skipped silently even when asked for by name: to the model a hidden tool does not exist,
+      // and "no tool named …" in the log would read as a rename that never happened.
+      const owner = this.entries.get(found.serverId);
+      if (owner && isHidden(owner.config, found.tool.name)) continue;
       if (seen.has(found.tool.qualified)) continue;
       seen.add(found.tool.qualified);
       definitions.push(found.tool.definition);
@@ -878,12 +965,16 @@ export class McpPool {
     const allowed = scope(servers);
     const out: CatalogServer[] = [];
     for (const entry of this.entries.values()) {
-      if (entry.status !== "ready" || entry.tools.length === 0) continue;
+      if (entry.status !== "ready") continue;
       if (allowed && !allowed.has(entry.config.id)) continue;
+      // Before the emptiness check, so a server whose every tool is hidden drops out like one
+      // that offers none.
+      const offered = entry.tools.filter(({ name }) => !isHidden(entry.config, name));
+      if (offered.length === 0) continue;
       out.push({
         id: entry.config.id,
         label: labelOf(entry.config),
-        tools: entry.tools.map(({ qualified, description }) => ({
+        tools: offered.map(({ qualified, description }) => ({
           name: qualified,
           description,
         })),
@@ -951,15 +1042,21 @@ export class McpPool {
    *
    * @param qualifiedName `<slug>__<tool>`, resolved whole rather than split on `__`.
    * @param input The tool's arguments. Null or undefined is sent as `{}`.
-   * @param servers The run's scope. A tool outside it is refused as one that does not exist.
+   * @param options `CallOptions`, or the run's scope on its own as before. A tool outside the
+   *   scope is refused as one that does not exist, and so is a hidden one unless `hidden` is set.
    * @returns The result as text — see `resultText` for what each kind of content block flattens
    *   to, including a server that answers with `structuredContent` and no blocks at all — or
    *   `"(no output)"` when the server returned nothing whatsoever. A tool that answers with
    *   `isError` throws instead.
-   * @throws {McpPoolError} `unknown-tool`, or `out-of-scope` for a tool this run may not reach.
-   *   Both carry the same message, so the model cannot tell them apart.
+   * @throws {McpPoolError} `unknown-tool` (a hidden tool included), or `out-of-scope` for a tool
+   *   this run may not reach. All carry the same message, so the model cannot tell them apart.
    */
-  async call(qualifiedName: string, input: unknown, servers?: Iterable<string>): Promise<string> {
+  async call(
+    qualifiedName: string,
+    input: unknown,
+    options?: Iterable<string> | CallOptions,
+  ): Promise<string> {
+    const { servers, signal, timeoutMs, hidden = false } = callOptions(options);
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
     // past 64 characters, and the split of a shortened name is a tool its server never had.
@@ -975,27 +1072,147 @@ export class McpPool {
     }
     // A tool outside this run's scope is answered as one that does not exist, because to this run
     // it does not: "that server is not yours" would teach the model to ask again.
-    if (!found || (allowed && !allowed.has(found.serverId))) {
-      // One message for both, so a run cannot learn that a server it was not scoped to exists.
-      // The code separates them for a caller that wants the refusals in its own log.
+    const outOfScope = found !== undefined && allowed !== undefined && !allowed.has(found.serverId);
+    const entry = found && this.entries.get(found.serverId);
+    // A hidden tool is one the model was never offered, so a call to it is answered the way a
+    // call to a tool that does not exist is — the model is not to learn it is there.
+    const concealed =
+      !hidden &&
+      found !== undefined &&
+      entry !== undefined &&
+      isHidden(entry.config, found.tool.name);
+    if (!found || outOfScope || concealed) {
+      // One message for all of them, so a run cannot learn that a server it was not scoped to
+      // exists. The code separates them for a caller that wants the refusals in its own log.
       throw new McpPoolError(
-        found ? "out-of-scope" : "unknown-tool",
+        outOfScope ? "out-of-scope" : "unknown-tool",
         `no connected MCP server offers a tool called "${qualifiedName}"`,
         { toolName: qualifiedName, serverId: found?.serverId },
       );
     }
 
-    const entry = this.entries.get(found.serverId);
     if (entry) this.touch(entry);
 
-    const result = await found.client.callTool({
-      name: found.tool.name,
-      arguments: (input ?? {}) as Record<string, unknown>,
-    });
+    const result = await found.client.callTool(
+      {
+        name: found.tool.name,
+        arguments: (input ?? {}) as Record<string, unknown>,
+      },
+      undefined,
+      // Built only when there is something to say: a `timeout: undefined` handed to the SDK is
+      // not the same as none, depending on how it reads the field.
+      signal || timeoutMs !== undefined
+        ? {
+            ...(signal ? { signal } : {}),
+            ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+          }
+        : undefined,
+    );
 
     const text = resultText(result);
     if (result.isError) throw new Error(text || "tool call failed");
     return text || "(no output)";
+  }
+
+  /**
+   * Runs every hook bound to `event`, and hands back what each one did.
+   *
+   * Hooks come from the rows: each enabled server inside the scope contributes its enabled hooks
+   * for this event, in configuration order. They run at once rather than in turn — they are
+   * independent by construction, and on `beforeTurn` the user is waiting on the slowest of them.
+   *
+   * **Never rejects.** A hook is an addition to a session, never a condition of it: a memory
+   * server that is down must cost a turn its recall, not the turn. A failed call, a timeout, an
+   * abort and a placeholder with no value each come back as an outcome with `ok: false` and are
+   * told to `onNotice`.
+   *
+   * Hooks may call tools the row hides from the model — that is most of what hiding is for.
+   *
+   * @param event Which point in the session this is.
+   * @param context What the event carries, for the hooks' templates. `now` is filled in if absent.
+   * @param options Scope, signal and the failure listener — see `RunHooksOptions`.
+   * @returns One outcome per hook that was considered, in configuration order. Pair it with
+   *   `contextBlocks` to get what the injecting ones returned into a request.
+   */
+  async runHooks(
+    event: HookEvent,
+    context: HookContext,
+    options: RunHooksOptions = {},
+  ): Promise<HookOutcome[]> {
+    const allowed = scope(options.servers);
+    const full: HookContext = { ...context, now: context.now ?? new Date().toISOString() };
+    const running: Promise<HookOutcome>[] = [];
+    for (const entry of this.entries.values()) {
+      const row = entry.config;
+      if (!row.enabled || (allowed && !allowed.has(row.id))) continue;
+      for (const hook of row.hooks ?? []) {
+        if (hook.on !== event || hook.enabled === false) continue;
+        running.push(this.runHook(row, hook, full, options));
+      }
+    }
+    return Promise.all(running);
+  }
+
+  /** One hook, start to outcome. Resolves on every path; `runHooks` relies on that. */
+  private async runHook(
+    row: McpServerConfig,
+    hook: ToolHook,
+    context: HookContext,
+    { servers, signal, onNotice }: RunHooksOptions,
+  ): Promise<HookOutcome> {
+    const started = Date.now();
+    const base = {
+      serverId: row.id,
+      label: labelOf(row),
+      hookId: hook.id,
+      event: hook.on,
+      // Held to the events that can use it here as well as in `validateHooks`, since a row need
+      // not have been through that: an `afterTurn` hook marked inject would otherwise be handed
+      // to `contextBlocks` as though it had run in time.
+      inject: Boolean(hook.inject) && INJECT_EVENTS.has(hook.on),
+      maxTokens: hook.maxTokens ?? DEFAULT_HOOK_MAX_TOKENS,
+    };
+    const settle = (result: Pick<HookOutcome, "ok" | "text" | "error" | "skipped">) => {
+      const outcome: HookOutcome = { ...base, ...result, ms: Date.now() - started };
+      if (!outcome.ok) {
+        const notice = `${base.label}: ${hook.on} hook "${hook.id}" ${
+          outcome.skipped ? "skipped" : "failed"
+        }: ${outcome.error}`;
+        this.log.info?.(`[mcp] ${notice}`);
+        onNotice?.(notice, outcome);
+      }
+      return outcome;
+    };
+
+    if (signal?.aborted)
+      return settle({ ok: false, skipped: true, error: "aborted before it ran" });
+    const { args, missing } = expandArgs(hook.args, context);
+    if (missing.length > 0) {
+      const paths = missing.map((path) => `{{${path}}}`).join(", ");
+      return settle({ ok: false, skipped: true, error: `no value for ${paths}` });
+    }
+
+    // By the event rather than by `inject`: a `beforeTurn` hook that injects nothing still holds
+    // up the turn it runs in front of.
+    const timeoutMs =
+      hook.timeoutMs ?? (INJECT_EVENTS.has(hook.on) ? INJECT_TIMEOUT_MS : undefined);
+    try {
+      const text = await bounded(
+        this.call(qualify(slugOf(row), hook.tool), args, {
+          servers,
+          signal,
+          timeoutMs,
+          hidden: true,
+        }),
+        timeoutMs,
+        signal,
+      );
+      // The pool's own placeholder for an empty result is for a model, which must be told
+      // something; for a hook it is nothing to inject.
+      return settle({ ok: true, text: text === "(no output)" ? undefined : text });
+    } catch (error) {
+      return settle({ ok: false, error: errorMessage(error) });
+    }
   }
 
   /**
@@ -1048,7 +1265,11 @@ export class McpPool {
       config: this.reportedConfig(entry.config, secrets),
       status: entry.status,
       error: entry.error ?? "",
-      tools: entry.tools.map(({ name, description }) => ({ name, description })),
+      tools: entry.tools.map(({ name, description }) => ({
+        name,
+        description,
+        hidden: isHidden(entry.config, name),
+      })),
       pid: entry.pid,
       startedAt:
         entry.startedAt === undefined ? undefined : new Date(entry.startedAt).toISOString(),

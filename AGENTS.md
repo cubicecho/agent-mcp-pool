@@ -92,6 +92,17 @@ the caller's object makes `sameConnection` compare a row against itself, so an i
 reconnects. `state()` also drops `env` and `headers` unless asked: the documented reader of that
 row is a UI, and a UI is a browser.
 
+**A hook is a tool call, never a command.** Rows are edited from UIs, so a hook that ran a shell
+line would make editing the server list the same permission as running anything on the host.
+
+**`runHooks` never rejects.** Every path resolves as an outcome, including a failure, a timeout,
+an abort or a placeholder with no value. Hosts await it on a turn's path and rely on that. A new
+failure mode goes through `settle()`, never out as a throw.
+
+**Hooks may call hidden tools; the model may not.** `call(..., { hidden: true })` is for the host's
+own calls. Never pass it for a name a model sent, since keeping those tools from the model is the
+whole point of `hiddenTools`.
+
 **`llms.txt` is generated and committed.** Edit the doc comment it came from, then `npm run
 build`. CI fails on a diff.
 

@@ -114,7 +114,14 @@ if (process.env.MCP_ECHO_HANG_TOOLS) {
     return { tools: offered };
   });
 }
-server.setRequestHandler(CallToolRequestSchema, (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const args = request.params.arguments ?? {};
+  // A tool that takes its time, for the timeouts and aborts a caller puts around a call.
+  if (typeof args.sleepMs === "number") await new Promise((done) => setTimeout(done, args.sleepMs));
+  // The tool ran and failed: `isError`, which is the server's answer rather than the transport's.
+  if (args.fail) return { content: [{ type: "text", text: String(args.fail) }], isError: true };
+  // Nothing at all, which is what a recall with no hits answers with.
+  if (args.empty) return { content: [] };
   // A non-text content block on demand: what a tool returning a chart or a screenshot sends, and
   // what a result flattened to a string cannot carry.
   if (request.params.arguments?.image)

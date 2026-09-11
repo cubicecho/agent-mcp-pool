@@ -40,11 +40,12 @@ export function sameConnection(a: McpServerConfig, b: McpServerConfig) {
  * itself, so the pool never reconnected, while `state()` reported the edit as though it had. The
  * child on the other end of the pipe was still the one started with the old arguments.
  *
- * Shallow but for the three fields `sameConnection` reads by value; nothing else on a row is a
- * container.
+ * Shallow but for the fields that are containers: the three `sameConnection` reads by value, and
+ * `hiddenTools` and `hooks`, which are read at call time and so must not change under the pool
+ * either. A hook's `args` is arbitrary JSON, hence the clone.
  */
 export function copyConfig(config: McpServerConfig): McpServerConfig {
-  return {
+  const copy: McpServerConfig = {
     ...config,
     // Kept as they came, so an absent `args` stays absent rather than becoming an empty array —
     // `sameConnection` treats the two the same, and `state()` should not invent a field.
@@ -52,6 +53,9 @@ export function copyConfig(config: McpServerConfig): McpServerConfig {
     env: config.env ? { ...config.env } : config.env,
     headers: config.headers ? { ...config.headers } : config.headers,
   };
+  if (config.hiddenTools) copy.hiddenTools = [...config.hiddenTools];
+  if (config.hooks) copy.hooks = structuredClone(config.hooks);
+  return copy;
 }
 
 /**
