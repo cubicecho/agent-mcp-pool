@@ -1,4 +1,5 @@
 import type { ServerCapabilities, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type { McpPoolErrorCode } from "./errors.ts";
 
 /**
  * Everything a configured server carries whichever way it is reached — its identity and its
@@ -449,3 +450,47 @@ export interface ToolDefinition {
     parameters?: Record<string, unknown>;
   };
 }
+
+/**
+ * Why a connection closed, on a `close` event.
+ *
+ * `idle` is a reap, `stop` is `stop()`, `reconnect` is `reconnect()`, `removed` and `changed` are a
+ * sync that dropped the row or changed how it is reached, `redial` is a failed or idle server
+ * being dialled again, `shutdown` is `shutdown()`, and `crash` is the server closing on its own.
+ */
+export type PoolCloseReason =
+  | "idle"
+  | "stop"
+  | "reconnect"
+  | "removed"
+  | "changed"
+  | "redial"
+  | "shutdown"
+  | "crash";
+
+/**
+ * Something the pool did, as `McpPool.onEvent` reports it.
+ *
+ * `ms` is wall time, rounded. On a `call`, `serverId` and `toolName` are absent where the name
+ * resolved to nothing; `chars` is the text's length before any cap, and `truncated` whether the
+ * cap cut it; `raw` calls carry neither. A refusal carries its `McpPoolError` code, a `tool-error`
+ * included, and the message as `error`.
+ */
+export type PoolEvent =
+  | { type: "connect"; serverId: string; ms: number; tools: number }
+  | { type: "connect-failed"; serverId: string; ms: number; error: string }
+  | { type: "close"; serverId: string; reason: PoolCloseReason; error?: string }
+  | {
+      type: "call";
+      qualified: string;
+      serverId?: string;
+      toolName?: string;
+      hidden: boolean;
+      raw: boolean;
+      ms: number;
+      ok: boolean;
+      code?: McpPoolErrorCode;
+      error?: string;
+      chars?: number;
+      truncated?: boolean;
+    };

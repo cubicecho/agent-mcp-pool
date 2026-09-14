@@ -70,6 +70,8 @@ export type {
   McpServerPublicConfig,
   McpServerState,
   McpStatus,
+  PoolCloseReason,
+  PoolEvent,
   StdioServerConfig,
   ToolDefinition,
   ToolHook,

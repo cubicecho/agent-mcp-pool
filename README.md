@@ -659,6 +659,32 @@ a respawn, so a `logging/message` sent during a server's own startup is not miss
 can ignore all of this — the index is rebuilt on `sync()` — but a consumer relaying the protocol
 onward cannot.
 
+## Events
+
+`PoolLog` is for a person reading a console. A tracer, a metrics exporter or a UI's activity feed
+wants the same moments as data, and used to wrap every method to get them. `onEvent` hands them
+over:
+
+```ts
+const stop = pool.onEvent((event) => {
+  if (event.type === "call") span(event.qualified, event.ms, event.ok, event.code);
+});
+```
+
+| Event | Carries |
+| --- | --- |
+| `connect` | `serverId`, `ms`, and the number of `tools` it listed |
+| `connect-failed` | `serverId`, `ms`, and the `error` the row now reports |
+| `close` | `serverId` and a `reason`, plus the `error` for a crash |
+| `call` | `qualified`, `serverId` and `toolName` once resolved, `ms`, `ok`, the refusal `code` and `error`, `chars` before any cap, `truncated`, `hidden` and `raw` |
+
+A close's `reason` is one of `idle`, `stop`, `reconnect`, `removed`, `changed`, `redial`,
+`shutdown` or `crash`. It fires only for a connection that was open, and after `state()` already
+shows where the close left the server.
+
+Listeners run synchronously as each thing happens. One that throws is logged and skipped, since a
+tracer's bug must not fail a tool call. With no listener subscribed, a call does no extra work.
+
 ## The child's environment
 
 By default a stdio child inherits **all** of `process.env`, which is how the two servers this

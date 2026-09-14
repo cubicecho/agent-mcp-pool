@@ -26,6 +26,8 @@ import type {
   McpServerPublicConfig,
   McpServerState,
   McpStatus,
+  PoolCloseReason,
+  PoolEvent,
   ToolDefinition,
   ToolHook,
   ToolInfo,
@@ -302,6 +304,17 @@ export interface RunHooksOptions {
   onNotice?: (notice: string, outcome: HookOutcome) => void;
 }
 
+/** What `invoke` learns about a call on the way, for the `call` event. */
+interface CallTrace {
+  serverId?: string;
+  toolName?: string;
+  chars?: number;
+  truncated?: boolean;
+}
+
+/** Milliseconds since a `performance.now()` reading, rounded: an event is not a benchmark. */
+const elapsed = (started: number) => Math.round(performance.now() - started);
+
 /** Whether a row keeps one of its tools from the model. */
 const isHidden = (config: McpServerConfig, name: string) =>
   config.hiddenTools?.includes(name) ?? false;
@@ -373,6 +386,7 @@ export class McpPool {
 
   /** Everything currently subscribed to server→client notifications, across every server. */
   private listeners = new Set<(id: string, notification: Notification) => void>();
+  private eventListeners = new Set<(event: PoolEvent) => void>();
   private readonly lazy: boolean;
   private readonly idleTimeoutMs?: number;
   private readonly indexTools: boolean;
@@ -520,7 +534,7 @@ export class McpPool {
       this.requireConfigs(configs);
       const existing = this.entries.get(id);
       if (existing) {
-        await this.close(existing);
+        await this.close(existing, "reconnect");
         this.entries.delete(id);
       }
       await this.reconcile(configs, id);
@@ -548,10 +562,12 @@ export class McpPool {
     return this.queue(async () => {
       const entry = this.entries.get(id);
       if (!entry) return;
-      await this.close(entry);
+      // Settled before the close rather than after, so a listener told the server closed reads
+      // `state()` as the close left it.
       // A disabled server is already off, for a reason `idle` would lose. Everything else lands
       // where a reap leaves it, with the failure it may have been stopped over cleared.
       if (entry.status !== "disabled") entry.status = "idle";
+      await this.close(entry, "stop");
       entry.error = undefined;
       entry.failedAt = undefined;
       // Cleared with the connection that listed them, as `onClose` and `reap` do: a stopped
@@ -622,8 +638,9 @@ export class McpPool {
     const keep = new Set(wanted.map((config) => config.id));
     for (const [id, entry] of this.entries) {
       if (!keep.has(id)) {
-        await this.close(entry);
+        // Deleted first, so a listener told it closed does not find it still in `state()`.
         this.entries.delete(id);
+        await this.close(entry, "removed");
       }
     }
     await Promise.all(
@@ -640,7 +657,12 @@ export class McpPool {
           if (existing.status === "idle") return;
           if (!this.retryDue(existing)) return;
         }
-        if (existing) await this.close(existing);
+        if (existing) {
+          await this.close(
+            existing,
+            sameConnection(existing.config, config) ? "redial" : "changed",
+          );
+        }
         await this.connect(config, config.id === dial);
       }),
     );
@@ -730,7 +752,7 @@ export class McpPool {
           (entry.status === "idle" || this.retryDue(entry)),
       );
       for (const entry of candidates) {
-        await this.close(entry);
+        await this.close(entry, "redial");
         await this.connect(entry.config, true);
       }
       if (candidates.length > 0) this.reindex();
@@ -770,6 +792,7 @@ export class McpPool {
     // Held outside the try so the catch can close it. Between `connect` resolving and
     // `entry.client` being set there is a live child that only this variable names.
     let client: Client | undefined;
+    const started = performance.now();
     try {
       client = new Client({ name: this.clientName, version: this.clientVersion });
       // Before the connect, and per connection rather than once at construction: a server can
@@ -828,6 +851,12 @@ export class McpPool {
           ? `[mcp] ${slugOf(config)}: ${entry.tools.length} tool(s)`
           : `[mcp] ${slugOf(config)}: connected`,
       );
+      this.emit({
+        type: "connect",
+        serverId: config.id,
+        ms: elapsed(started),
+        tools: entry.tools.length,
+      });
     } catch (error) {
       // The handshake got far enough to start a child and not far enough to hand it over. Nothing
       // else holds this client, so `close()` and `shutdown()` would never reach the process.
@@ -838,6 +867,12 @@ export class McpPool {
       entry.error = entry.stderrTail?.() || errorMessage(error);
       entry.failedAt = Date.now();
       this.log.error?.(`[mcp] ${slugOf(config)}: ${entry.error}`);
+      this.emit({
+        type: "connect-failed",
+        serverId: config.id,
+        ms: elapsed(started),
+        error: entry.error,
+      });
     }
   }
 
@@ -860,22 +895,28 @@ export class McpPool {
     entry.tools = [];
     this.reindex();
     this.log.error?.(`[mcp] ${slugOf(entry.config)}: ${entry.error}`);
+    this.emit({ type: "close", serverId: entry.config.id, reason: "crash", error: entry.error });
   }
 
   /**
    * Closes a server's client and stops its idle clock, without touching its status.
    *
    * @param entry Marked `closing` first, so the close does not read as a crash to `onClose`.
+   * @param reason Why, for the `close` event.
    */
-  private async close(entry: Entry) {
+  private async close(entry: Entry, reason: PoolCloseReason) {
     entry.closing = true;
     this.disarm(entry);
+    const open = entry.client !== undefined;
     try {
       await entry.client?.close();
     } catch {
       // a server that died on its own is already closed
     }
     this.forget(entry);
+    // Only for a connection there was: a redial of a server that is already down closes nothing,
+    // and an event for it would read as a second close.
+    if (open) this.emit({ type: "close", serverId: entry.config.id, reason });
   }
 
   /**
@@ -955,6 +996,40 @@ export class McpPool {
   }
 
   /**
+   * Listens for what the pool does: each connect and how long it took, each close and why, and
+   * each `call()` with its duration, outcome and size.
+   *
+   * For a tracer, a metrics exporter or a UI's activity feed, which otherwise wrap every method.
+   * `PoolLog` is for a person reading; this is for code. Listeners run synchronously as each thing
+   * happens, and one that throws is logged and skipped.
+   *
+   * @param listener Called with every `PoolEvent`.
+   * @returns Unsubscribes this listener.
+   */
+  onEvent(listener: (event: PoolEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => {
+      this.eventListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Hands one event to every `onEvent` listener, synchronously.
+   *
+   * A throwing listener is logged and stepped over: events fire from inside a call, a connect
+   * and a close, and a tracer's bug must not become the pool's.
+   */
+  private emit(event: PoolEvent) {
+    for (const listener of this.eventListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        this.log.error?.(`[mcp] event listener threw on ${event.type}: ${errorMessage(error)}`);
+      }
+    }
+  }
+
+  /**
    * Subscribe to notifications from any connected server. Returns an unsubscribe function.
    *
    * The SDK drops whatever it does not handle, so without this a `tools/list_changed`,
@@ -1016,7 +1091,7 @@ export class McpPool {
         // waited, and dialling it twice is the orphaned child the queue exists to prevent.
         const current = this.entries.get(entry.config.id);
         if (!current || (current.status !== "idle" && !this.retryDue(current))) return;
-        await this.close(current);
+        await this.close(current, "redial");
         await this.connect(current.config, true);
         this.reindex();
       });
@@ -1066,10 +1141,11 @@ export class McpPool {
       const current = this.entries.get(entry.config.id);
       if (!current || current !== entry || current.idleTimer !== timer) return;
       if (current.status !== "ready") return;
-      await this.close(current);
+      // Settled before the close, as `stop` does, for a listener reading `state()`.
       current.status = "idle";
       current.tools = [];
       this.reindex();
+      await this.close(current, "idle");
       this.log.info?.(`[mcp] ${slugOf(current.config)}: idle, closed`);
     });
   }
@@ -1244,6 +1320,45 @@ export class McpPool {
     input: unknown,
     options?: Iterable<string> | CallOptions,
   ): Promise<string | CallToolResult> {
+    // Nobody listening is the ordinary case, and it should cost a call nothing.
+    if (this.eventListeners.size === 0) return this.invoke(qualifiedName, input, options, {});
+    const started = performance.now();
+    const { hidden = false, raw = false } = callOptions(options);
+    const trace: CallTrace = {};
+    const base = { type: "call" as const, qualified: qualifiedName, hidden, raw };
+    try {
+      const out = await this.invoke(qualifiedName, input, options, trace);
+      const failed = typeof out !== "string" && out.isError === true;
+      this.emit({
+        ...base,
+        ...trace,
+        ms: elapsed(started),
+        ok: !failed,
+        ...(failed ? { code: "tool-error" as const } : {}),
+      });
+      return out;
+    } catch (error) {
+      this.emit({
+        ...base,
+        ...trace,
+        ms: elapsed(started),
+        ok: false,
+        ...(error instanceof McpPoolError ? { code: error.code } : {}),
+        error: errorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * `call()`'s work, recording what the `call` event reports into `trace` as it learns it.
+   */
+  private async invoke(
+    qualifiedName: string,
+    input: unknown,
+    options: Iterable<string> | CallOptions | undefined,
+    trace: CallTrace,
+  ): Promise<string | CallToolResult> {
     const {
       servers,
       signal,
@@ -1289,6 +1404,8 @@ export class McpPool {
       );
     }
 
+    trace.serverId = found.serverId;
+    trace.toolName = found.tool.name;
     if (entry) this.touch(entry);
 
     // After the refusals above, so a call to a tool this run may not reach is answered as unknown
@@ -1357,12 +1474,16 @@ export class McpPool {
     // most about this line: nothing about retrying a rejected argument resembles retrying a
     // backoff. The message is what it always was.
     if (result.isError) {
+      trace.chars = text.length;
       throw new McpPoolError("tool-error", truncateText(text || "tool call failed", cap), {
         toolName: qualifiedName,
         serverId: found.serverId,
       });
     }
-    return truncateText(text || "(no output)", cap);
+    const out = truncateText(text || "(no output)", cap);
+    trace.chars = text.length;
+    trace.truncated = out.length < (text || "(no output)").length;
+    return out;
   }
 
   /**
@@ -1573,9 +1694,10 @@ export class McpPool {
     // Queued like a sync, so a reconnect already under way finishes before its children are
     // closed — otherwise shutdown closes entries the sync is in the middle of replacing.
     await this.queue(async () => {
-      await Promise.all([...this.entries.values()].map((entry) => this.close(entry)));
+      const entries = [...this.entries.values()];
       this.entries.clear();
       this.index.clear();
+      await Promise.all(entries.map((entry) => this.close(entry, "shutdown")));
     });
   }
 }

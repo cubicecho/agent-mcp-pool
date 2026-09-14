@@ -94,6 +94,8 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 - `McpServerPublicConfig` (type) — A row as `state()` reports it: everything except the credentials, unless they were asked for.
 - `McpServerState` (type) — One connected server as an operator sees it.
 - `McpStatus` (type) — `idle` is registered-but-not-connected, and where an idle-reaped server goes — a success state: nothing is wrong, there is simply no child right now.
+- `PoolCloseReason` (type) — Why a connection closed, on a `close` event.
+- `PoolEvent` (type) — Something the pool did, as `McpPool.onEvent` reports it.
 - `StdioServerConfig` (type) — A server reached by spawning a child process and speaking MCP over its stdio.
 - `ToolDefinition` (type) — One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's `ChatCompletionTool`, and assignable to it.
 - `ToolHook` (type) — One tool call a row wants made at a point in a session.
