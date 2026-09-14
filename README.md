@@ -685,6 +685,35 @@ shows where the close left the server.
 Listeners run synchronously as each thing happens. One that throws is logged and skipped, since a
 tracer's bug must not fail a tool call. With no listener subscribed, a call does no extra work.
 
+## Elicitation
+
+A server can stop in the middle of a tool and ask the user something: a missing field, a
+confirmation, a link to open. MCP calls that `elicitation/create`, and a client has to declare it
+at the handshake. Without `onElicit` the pool declares nothing, so the server refuses to ask and
+its tool fails. With it, every connection declares the capability and each request lands in the
+handler with the id of the server that sent it:
+
+```ts
+const pool = new McpPool({
+  clientName: "my-agent",
+  onElicit: async (serverId, params, { signal }) => {
+    const answer = await askTheUser(serverId, params.message, params, signal);
+    return answer ? { action: "accept", content: answer } : { action: "decline" };
+  },
+});
+```
+
+`params` carries `requestedSchema` for a form, or `url` when the server wants a link opened.
+Only `form` is declared by default; pass `elicitationModes: ["form", "url"]` when the host can open
+a link. A handler that throws is logged and answered `cancel`, so the server gets an answer it
+can handle rather than a protocol error.
+
+The call that caused the request is still on its clock while a person reads the question, so give
+that server a `callTimeoutMs` sized for the wait.
+
+Roots and sampling, the other two client capabilities, are deprecated in the 2026-07-28
+specification release candidate, so the pool does not offer them.
+
 ## The child's environment
 
 By default a stdio child inherits **all** of `process.env`, which is how the two servers this

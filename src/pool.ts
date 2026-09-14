@@ -1,6 +1,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
   type CallToolResult,
+  type ElicitRequestParams,
+  ElicitRequestSchema,
+  type ElicitResult,
   ErrorCode,
   McpError,
   type Notification,
@@ -164,6 +167,36 @@ export interface McpPoolOptions {
    * overrides it for one server and `CallOptions.maxResultChars` for one call.
    */
   maxResultChars?: number;
+  /**
+   * Answers a server that asks the user for input mid-call: MCP's `elicitation/create`.
+   *
+   * Absent, the pool declares no elicitation capability, so a well-behaved server does not ask and
+   * one that asks anyway is refused by the SDK. Present, every connection declares it and routes
+   * each request here with the id of the server that sent it. Resolve with `accept` and the
+   * `content`, or `decline` or `cancel`. A listener that throws is logged and answered `cancel`,
+   * so a broken prompt does not fail the server's tool with a protocol error.
+   *
+   * A person answering takes time, and the call that caused the request is still on its clock:
+   * set `callTimeoutMs` for that server with the wait in mind.
+   *
+   * @param serverId The config id of the server asking.
+   * @param params The request: `message`, and `requestedSchema` for a form or `url` for a link.
+   * @param extra `signal` aborts when the server gives up on the request.
+   * @returns The user's answer.
+   */
+  onElicit?: (
+    serverId: string,
+    params: ElicitRequestParams,
+    extra: { signal: AbortSignal },
+  ) => ElicitResult | Promise<ElicitResult>;
+  /**
+   * Which elicitation modes `onElicit` can handle. Defaults to `["form"]`.
+   *
+   * `form` asks for fields against a flat schema; `url` asks the user to open a link, for a flow
+   * such as an OAuth consent the client should not see. Declare `url` only when the host can open
+   * one, since a server takes the declaration as a promise.
+   */
+  elicitationModes?: ("form" | "url")[];
   /**
    * Register servers without connecting them; connect on first use instead.
    *
@@ -402,6 +435,8 @@ export class McpPool {
   private readonly callTimeoutMs?: number;
   private readonly coerceArguments: boolean;
   private readonly maxResultChars?: number;
+  private readonly onElicit?: McpPoolOptions["onElicit"];
+  private readonly elicitationModes: ("form" | "url")[];
   private readonly createTransport: TransportFactory;
 
   /**
@@ -420,6 +455,8 @@ export class McpPool {
     callTimeoutMs,
     coerceArguments = true,
     maxResultChars,
+    onElicit,
+    elicitationModes = ["form"],
     lazy = false,
     idleTimeoutMs,
     indexTools = true,
@@ -435,6 +472,8 @@ export class McpPool {
     this.callTimeoutMs = callTimeoutMs;
     this.coerceArguments = coerceArguments;
     this.maxResultChars = maxResultChars;
+    this.onElicit = onElicit;
+    this.elicitationModes = elicitationModes;
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
     this.indexTools = indexTools;
@@ -772,6 +811,34 @@ export class McpPool {
   }
 
   /**
+   * A client for one connection, declaring what the pool's options let it answer.
+   *
+   * Capabilities are fixed at the handshake, so this is the one place they can be declared; an
+   * elicitation handler set after the connect would be refused by the SDK as undeclared.
+   *
+   * @param serverId The server this client will dial, for the elicitation handler to report.
+   */
+  private newClient(serverId: string): Client {
+    const onElicit = this.onElicit;
+    const modes = Object.fromEntries(this.elicitationModes.map((mode) => [mode, {}]));
+    const client = new Client(
+      { name: this.clientName, version: this.clientVersion },
+      onElicit ? { capabilities: { elicitation: modes } } : {},
+    );
+    if (onElicit) {
+      client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
+        try {
+          return await onElicit(serverId, request.params, { signal: extra.signal });
+        } catch (error) {
+          this.log.error?.(`[mcp] ${serverId}: elicitation handler threw: ${errorMessage(error)}`);
+          return { action: "cancel" };
+        }
+      });
+    }
+    return client;
+  }
+
+  /**
    * Registers a server as an entry and, unless the pool is lazy, dials it.
    *
    * @param row The row to connect, copied on the way in. A disabled one is registered at
@@ -794,7 +861,7 @@ export class McpPool {
     let client: Client | undefined;
     const started = performance.now();
     try {
-      client = new Client({ name: this.clientName, version: this.clientVersion });
+      client = this.newClient(config.id);
       // Before the connect, and per connection rather than once at construction: a server can
       // send `logging/message` or `tools/list_changed` during its own startup, and a handler
       // installed after `listTools` would have missed it.

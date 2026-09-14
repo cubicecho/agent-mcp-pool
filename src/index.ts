@@ -7,11 +7,13 @@
  * `McpPoolOptions.load`.
  */
 
-// Re-exported so a consumer can type an `onNotification` listener, or the capabilities `state()`
-// reports, without depending on the SDK's module layout — which this package pins through its
-// peer dependency anyway.
+// Re-exported so a consumer can type an `onNotification` or `onElicit` listener, or the
+// capabilities `state()` reports, without depending on the SDK's module layout — which this
+// package pins through its peer dependency anyway.
 export type {
   CallToolResult,
+  ElicitRequestParams,
+  ElicitResult,
   Notification,
   ServerCapabilities,
   ToolAnnotations,

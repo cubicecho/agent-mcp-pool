@@ -12,6 +12,8 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 ### @modelcontextprotocol/sdk/types.js
 
 - `CallToolResult` (type)
+- `ElicitRequestParams` (type)
+- `ElicitResult` (type)
 - `Notification` (type)
 - `ServerCapabilities` (type)
 - `ToolAnnotations` (type)

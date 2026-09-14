@@ -67,8 +67,9 @@ export interface EchoServerOptions {
  *
  * A tool call answers `name({...arguments})` as text, unless an argument asks for something else:
  * `sleepMs` waits first, `fail` answers `isError` (a string is the message), `empty` answers no
- * content, `image` an image block, `repeat` that many characters of text, and `structured` a
- * `structuredContent` with its JSON mirrored in a text block.
+ * content, `image` an image block, `repeat` that many characters of text, `structured` a
+ * `structuredContent` with its JSON mirrored in a text block, and `elicit` asks the client for a
+ * `name` with that message and answers `elicit(<the client's reply>)`.
  *
  * @param options Which tools to list, and the instructions to send.
  * @returns An unconnected server. One per connection: an SDK server connects once.
@@ -85,6 +86,17 @@ export function echoServer({ tools = ECHO_TOOLS, instructions }: EchoServerOptio
     if (args.fail) {
       const text = typeof args.fail === "string" ? args.fail : "the tool failed on purpose";
       return { content: [{ type: "text", text }], isError: true };
+    }
+    if (args.elicit) {
+      const reply = await server.elicitInput({
+        message: String(args.elicit),
+        requestedSchema: {
+          type: "object",
+          properties: { name: { type: "string" } },
+          required: ["name"],
+        },
+      });
+      return { content: [{ type: "text", text: `elicit(${JSON.stringify(reply)})` }] };
     }
     if (args.empty) return { content: [] };
     if (args.image) return { content: [{ type: "image", data: "aGk=", mimeType: "image/png" }] };
