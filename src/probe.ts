@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { requestBudget } from "./budget.ts";
 import { errorMessage } from "./errors.ts";
 import { listAllTools } from "./listing.ts";
-import type { TransportOptions } from "./transport.ts";
+import type { TransportFactory, TransportOptions } from "./transport.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type { ClientIdentity, McpConnection, McpProbe } from "./types.ts";
 import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
@@ -20,6 +20,8 @@ export interface ProbeOptions extends TransportOptions {
    * not.
    */
   timeoutMs?: number;
+  /** Builds the transport instead of `createTransport` — see `TransportFactory`. */
+  createTransport?: TransportFactory;
 }
 
 /**
@@ -43,7 +45,7 @@ export async function probe(
   client: string | ClientIdentity = DEFAULT_CLIENT_NAME,
   // The same environment policy as the pool: a probe that hands the child a different
   // environment answers a question nobody asked.
-  { timeoutMs, ...transportOptions }: ProbeOptions = {},
+  { timeoutMs, createTransport: build = createTransport, ...transportOptions }: ProbeOptions = {},
 ): Promise<McpProbe> {
   // One argument rather than a name and a version side by side: two adjacent strings are two
   // arguments a caller can transpose, and a probe under `1.4.0-probe/my-gateway` is a mistake
@@ -55,7 +57,7 @@ export async function probe(
   });
   let stderrTail = () => "";
   try {
-    const transport = createTransport(config, transportOptions);
+    const transport = build(config, transportOptions);
     stderrTail = readStderrTail(transport);
     // The row's own patience where the caller named none. `connectTimeoutMs` is part of reaching a
     // server rather than of naming it, so a row that needs two minutes to start needs them behind

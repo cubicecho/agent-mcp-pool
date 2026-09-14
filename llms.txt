@@ -64,6 +64,7 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 - `createTransport` — The transport a config asks for, stdio or streamable HTTP, ready to connect.
 - `MINIMAL_CHILD_ENV` — A short allowlist of variables a stdio child usually cannot start without.
 - `readStderrTail` — Starts collecting a stdio child's stderr, and returns a reader for the last of it.
+- `TransportFactory` (type) — What builds the transport for one connection, where the pool's own construction is not wanted.
 - `TransportOptions` (type) — What a transport takes beyond the config itself.
 
 ### types

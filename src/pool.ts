@@ -8,7 +8,7 @@ import { listAllTools } from "./listing.ts";
 import { couldQualify, labelOf, type PooledTool, pooledTool, qualify, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { resultText } from "./results.ts";
-import { createTransport, readStderrTail } from "./transport.ts";
+import { createTransport, readStderrTail, type TransportFactory } from "./transport.ts";
 import type {
   CatalogServer,
   HookContext,
@@ -164,6 +164,14 @@ export interface McpPoolOptions {
    * probe exists to report what a config offers.
    */
   indexTools?: boolean;
+  /**
+   * Builds each connection's transport instead of `createTransport`.
+   *
+   * For a test that wants a server without a child — `memoryTransport` from
+   * `@cubicecho/agent-mcp-pool/testing` — or a consumer with a transport the pool does not know.
+   * `probe()` uses it too, so a "Test connection" button dials the way the pool does.
+   */
+  createTransport?: TransportFactory;
 }
 
 /**
@@ -316,6 +324,7 @@ export class McpPool {
   private readonly connectTimeoutMs?: number;
   private readonly probeTimeoutMs?: number;
   private readonly callTimeoutMs?: number;
+  private readonly createTransport: TransportFactory;
 
   /**
    * @param options See `McpPoolOptions`. All optional: a pool with no `load` is one driven by
@@ -334,6 +343,7 @@ export class McpPool {
     lazy = false,
     idleTimeoutMs,
     indexTools = true,
+    createTransport: transportFactory = createTransport,
   }: McpPoolOptions = {}) {
     this.load = load;
     this.clientName = clientName;
@@ -346,6 +356,7 @@ export class McpPool {
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
     this.indexTools = indexTools;
+    this.createTransport = transportFactory;
     this.log = log ?? {
       info: (message) => console.log(message),
       error: (message) => console.error(message),
@@ -699,7 +710,7 @@ export class McpPool {
       client.fallbackNotificationHandler = async (notification) => {
         this.notify(config.id, notification);
       };
-      const transport = createTransport(config, { childEnv: this.childEnv });
+      const transport = this.createTransport(config, { childEnv: this.childEnv });
       // Listening before the connect, because a server that dies during startup says whatever it
       // has to say then, and the connect only reports that the pipe closed.
       entry.stderrTail = readStderrTail(transport);
@@ -722,7 +733,8 @@ export class McpPool {
       entry.status = "ready";
       // Only reachable from inside this method — the transport is the pool's from here on, and an
       // operator with a wedged child has nothing else to find it in `ps` by.
-      entry.pid = "pid" in transport ? (transport.pid ?? undefined) : undefined;
+      const pid = "pid" in transport ? transport.pid : undefined;
+      entry.pid = typeof pid === "number" ? pid : undefined;
       entry.startedAt = Date.now();
       entry.tools = tools.map((tool) =>
         pooledTool(config, {
@@ -1294,6 +1306,7 @@ export class McpPool {
       { name: this.clientName, version: this.clientVersion },
       {
         childEnv: this.childEnv,
+        createTransport: this.createTransport,
         // The row outranks both pool-wide numbers, `probeTimeoutMs` included: a server whose own
         // row says it needs two minutes to start needs them behind the button too, and a probe
         // that gives it five seconds reports a failure for a server that works.

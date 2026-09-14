@@ -1,5 +1,6 @@
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpConnection } from "./types.ts";
 
 /** How much of a child's stderr is kept. Enough for a stack trace, bounded for a chatty server. */
@@ -35,6 +36,20 @@ export interface TransportOptions {
    */
   childEnv?: readonly string[];
 }
+
+/**
+ * What builds the transport for one connection, where the pool's own construction is not wanted.
+ *
+ * The seam a test uses to hand the pool one end of an in-memory pair instead of spawning a child —
+ * see `@cubicecho/agent-mcp-pool/testing` — and where a consumer plugs a transport the pool does
+ * not know, such as a socket or a worker. `createTransport` is the default.
+ *
+ * @param config The row being dialled, as the pool holds it.
+ * @param options The pool's environment policy, for a factory that still spawns.
+ * @returns An unconnected transport. A factory that throws fails the connect like a child that
+ *   would not start.
+ */
+export type TransportFactory = (config: McpConnection, options: TransportOptions) => Transport;
 
 /**
  * The transport a config asks for, stdio or streamable HTTP, ready to connect.
@@ -90,16 +105,24 @@ function inheritedEnv(allowed?: readonly string[]): Record<string, string> {
  * exists, which matters because a server that dies during startup does all its talking then.
  * Attaching also keeps the pipe drained. A no-op for an http transport.
  *
- * @param transport From `createTransport`, connected or not.
- * @returns A reader for the last 4000 characters written, trimmed — always empty over http.
+ * @param transport From `createTransport` or a `TransportFactory`, connected or not.
+ * @returns A reader for the last 4000 characters written, trimmed — always empty for a transport
+ *   with no `stderr` stream, which is every one but stdio.
  */
-export function readStderrTail(transport: PoolTransport): () => string {
+export function readStderrTail(transport: Transport | PoolTransport): () => string {
   let tail = "";
-  // Narrowed rather than optional-chained: an http transport has no `stderr` property at all,
-  // and an optional parameter type would accept anything at the call site.
-  const stderr = "stderr" in transport ? transport.stderr : null;
-  stderr?.on("data", (chunk: unknown) => {
+  // Read structurally: a factory's transport is whatever it built, so the only question worth
+  // asking is whether it has a stream to listen to.
+  const stderr = "stderr" in transport ? (transport as { stderr?: unknown }).stderr : null;
+  if (!isEmitter(stderr)) return () => tail;
+  stderr.on("data", (chunk: unknown) => {
     tail = (tail + String(chunk)).slice(-STDERR_TAIL_LIMIT);
   });
   return () => tail.trim();
 }
+
+/** Whether a value can be listened to — the one thing `readStderrTail` needs of a stream. */
+const isEmitter = (
+  value: unknown,
+): value is { on(event: string, listener: (chunk: unknown) => void): unknown } =>
+  typeof (value as { on?: unknown } | null)?.on === "function";

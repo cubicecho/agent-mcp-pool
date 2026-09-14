@@ -45,7 +45,7 @@ const tools = [
   {
     name: "echo",
     description: "echoes the text back",
-    // A union type, so the tests see a real schema go through the sanitizer.
+    // A union type, so the tests see a schema that is not one plain type go through unchanged.
     inputSchema: { type: "object", properties: { text: { type: ["string", "null"] } } },
   },
   {

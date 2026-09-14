@@ -41,6 +41,7 @@ export {
   createTransport,
   MINIMAL_CHILD_ENV,
   readStderrTail,
+  type TransportFactory,
   type TransportOptions,
 } from "./transport.ts";
 export type {

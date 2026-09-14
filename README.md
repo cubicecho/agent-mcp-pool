@@ -578,6 +578,34 @@ nothing that was unambiguous before changes on the wire.
 MCP client invented, longest-prefix-first, and applies the same scheme to resource URIs and prompt
 names. The two cannot be shared — unify on this truncation and its resource URIs corrupt.
 
+## Testing
+
+Every suite that exercised the pool spawned a child it was not about, and every consumer declared
+its own `makePool()` beside its own stdio fixture. `@cubicecho/agent-mcp-pool/testing` is that
+helper, published:
+
+```ts
+import { echoServer, makePool, memoryRow } from "@cubicecho/agent-mcp-pool/testing";
+
+const pool = makePool({ servers: { echo: () => echoServer() } });
+await pool.sync([memoryRow("echo")]);
+await pool.call("echo__add", { a: 1, b: 2 }); // 'add({"a":1,"b":2})'
+```
+
+No process starts. `makePool` passes `memoryTransport(servers)` as the pool's `createTransport`,
+which links the SDK's in-memory pair to a server built for that connect, found by the host of the
+row's `memory://` url. A builder rather than a server, because an SDK server connects once and a
+reconnect needs another. Any `McpServer` or low-level `Server` fits there, so a consumer tests
+against its own server as easily as against the echo one.
+
+`createTransport` is also the seam for a transport the pool does not know, such as a socket or a
+worker. It receives the row and the pool's `childEnv` policy, and returns an unconnected
+`Transport`; a factory that throws fails the connect the way a child that will not start does.
+`probe()` takes the same option. When the SDK ships the stateless HTTP transport of the
+2026-07-28 draft, this is where it plugs in before the pool learns it natively.
+
+A test that does want a real child has `echoServerPath`, a stdio script serving the same tools.
+
 ## Where the merged behaviour came from
 
 - The reconcile queue (`running`, `queue`, `syncSoon`, `flush`) is `task_server`'s. Without it,
