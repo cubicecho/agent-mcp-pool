@@ -180,3 +180,51 @@ test("a call that runs out of time is refused as timeout", async () => {
   });
   expect(httpStatusFor((error as McpPoolError).code)).toBe(504);
 });
+
+test("maxResultChars caps a call on the pool, the row and the call, nearest first", async () => {
+  pool = makePool({ servers: { ...servers, big: () => echoServer() }, maxResultChars: 100 });
+  await pool.sync([memoryRow("echo"), memoryRow("big", { maxResultChars: 0 })]);
+  const capped = await pool.call("echo__ping", { repeat: 10_000 });
+  expect(capped.length).toBeLessThanOrEqual(100);
+  expect(capped).toMatch(/\[truncated: kept \d+ of 10000 chars\]/);
+  expect(await pool.call("big__ping", { repeat: 10_000 })).toHaveLength(10_000);
+  const perCall = await pool.call("big__ping", { repeat: 10_000 }, { maxResultChars: 50 });
+  expect(perCall.length).toBeLessThanOrEqual(50);
+  expect(perCall).toMatch(/\[truncated: kept \d+ of 10000 chars\]/);
+  expect(await pool.call("echo__ping", { repeat: 10_000 }, { maxResultChars: 0 })).toHaveLength(
+    10_000,
+  );
+});
+
+test("a tool-error message is capped too", async () => {
+  pool = makePool({ servers, maxResultChars: 80 });
+  await pool.sync([memoryRow("echo")]);
+  const error = (await pool
+    .call("echo__ping", { fail: "e".repeat(5000) })
+    .catch((caught: unknown) => caught)) as McpPoolError;
+  expect(error.code).toBe("tool-error");
+  expect(error.message.length).toBeLessThanOrEqual(80);
+});
+
+test("raw returns the server's result under the same scope, uncut and unthrown", async () => {
+  pool = makePool({ servers, maxResultChars: 20 });
+  await pool.sync([memoryRow("echo")]);
+  const image = await pool.call("echo__ping", { image: true }, { raw: true });
+  expect(image.content).toEqual([{ type: "image", data: "aGk=", mimeType: "image/png" }]);
+  const long = await pool.call("echo__ping", { repeat: 500 }, { raw: true });
+  expect(long.content[0]).toEqual({ type: "text", text: "x".repeat(500) });
+  const failed = await pool.call("echo__ping", { fail: true }, { raw: true });
+  expect(failed.isError).toBe(true);
+  const structured = await pool.call("echo__ping", { structured: true }, { raw: true });
+  expect(structured.structuredContent).toEqual({ greeting: "hello", tools: 4 });
+  await expect(
+    pool.call("echo__ping", {}, { raw: true, servers: ["other"] }),
+  ).rejects.toMatchObject({ code: "out-of-scope" });
+  await expect(pool.call("echo__add", { a: "x" }, { raw: true })).rejects.toMatchObject({
+    code: "invalid-arguments",
+  });
+  // And the text path compacts the mirrored structure.
+  expect(await pool.call("echo__ping", { structured: true }, { maxResultChars: 0 })).toBe(
+    '{"greeting":"hello","tools":4}',
+  );
+});

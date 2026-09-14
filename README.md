@@ -355,14 +355,17 @@ handed an empty string and left to conclude the call failed:
 | --- | --- |
 | `text` | its `text` |
 | `resource`, text arm | the resource's own `text` — a file the server read is an answer, not a placeholder |
-| `resource`, blob arm | `[resource <uri> content]`, keeping the uri a follow-up call needs |
+| `resource`, blob arm | `[resource <uri> <mime>, <size> omitted]`, keeping the uri a follow-up call needs |
 | `resource_link` | `[resource_link <uri> — <name>: <description>]`, since the uri is what makes a link followable |
-| `image`, `audio`, anything else | `[<type> content]` |
+| `image`, `audio` | `[<type> <mime>, <size> omitted]`, such as `[image image/png, 42 KB omitted]` |
+| anything else | `[<type> content]` |
 
 A result with no content at all but a `structuredContent` — what a server with an `outputSchema`
 tends to answer with — is flattened to that structure as JSON, rather than reaching the model as
 `call()`'s `"(no output)"`. Text blocks win where there are any: they are what the server wrote
-for a reader.
+for a reader. The exception is text that only mirrors the structure, which the spec asks servers
+to send and most do pretty-printed. That arrives as the compact JSON, since it says the same thing
+in fewer tokens.
 
 The definitions `tools()` hands back are the pool's own objects rather than copies — the agent
 loop rebuilds its tool array every iteration, and the schema behind one cannot change without the
@@ -399,6 +402,38 @@ too, so a UI can badge a destructive tool before anything calls it.
 
 `describe()` never connects, like `tools()`, and refuses what `call()` would: a tool outside the
 scope, or a hidden one unless `hidden: true` is passed, answers `undefined`.
+
+### Results too big for the window
+
+A tool that reads a file or fetches a page can return more than a local model's whole context
+window. `maxResultChars` caps what `call()` returns, at the same three levels as the timeouts:
+
+```ts
+new McpPool({ load, maxResultChars: 16_000 });        // the pool's; unset is no cap
+{ id: "fetch", url: "...", maxResultChars: 4_000 }    // this server's; 0 is no cap
+await pool.call(name, input, { maxResultChars: 0 });  // this call's
+```
+
+Over the cap, the first two thirds of the budget and the last third are kept, with a marker
+between them on its own line:
+
+```text
+[truncated: kept 15958 of 204800 chars]
+```
+
+The head is where most answers start and the tail is where a log ends. The marker tells the model
+it did not see everything, so it can ask for less. A `tool-error` message is capped the same way.
+`truncateText(text, maxChars)` is the same cut, exported.
+
+A consumer that wants the blocks themselves, an image to render or `structuredContent` to read,
+passes `raw: true` and gets the server's `CallToolResult` back:
+
+```ts
+const result = await pool.call("charts__render", input, { servers, raw: true });
+```
+
+Unlike `client()`, that keeps the scope and hiding checks, coercion and the timeout. Nothing is
+truncated, and an `isError` result is returned rather than thrown.
 
 ## Arguments
 

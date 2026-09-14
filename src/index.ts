@@ -11,6 +11,7 @@
 // reports, without depending on the SDK's module layout — which this package pins through its
 // peer dependency anyway.
 export type {
+  CallToolResult,
   Notification,
   ServerCapabilities,
   ToolAnnotations,
@@ -47,7 +48,7 @@ export {
   type ToolsOptions,
 } from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
-export { resultText } from "./results.ts";
+export { resultText, truncateText } from "./results.ts";
 export {
   createTransport,
   MINIMAL_CHILD_ENV,

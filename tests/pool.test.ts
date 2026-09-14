@@ -1363,7 +1363,7 @@ test("client() keeps a tool result that call() has to flatten away", async () =>
 
   // The agent loop's own surface is unchanged and still right for it: a string is what goes back
   // into a message array. It is the only thing a string can be, though.
-  expect(await pool.call("echo__echo", { image: true })).toBe("[image content]");
+  expect(await pool.call("echo__echo", { image: true })).toMatch(/^\[image .*omitted\]$/);
 
   const result = await (await pool.client("echo-1")).callTool({
     name: "echo",

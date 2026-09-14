@@ -1,5 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { ErrorCode, McpError, type Notification } from "@modelcontextprotocol/sdk/types.js";
+import {
+  type CallToolResult,
+  ErrorCode,
+  McpError,
+  type Notification,
+} from "@modelcontextprotocol/sdk/types.js";
 import { coerceArguments } from "./arguments.ts";
 import { requestBudget } from "./budget.ts";
 import { copyConfig, sameConnection, scope } from "./config.ts";
@@ -8,7 +13,7 @@ import { DEFAULT_HOOK_MAX_TOKENS, expandArgs, INJECT_EVENTS, INJECT_TIMEOUT_MS }
 import { listAllTools } from "./listing.ts";
 import { couldQualify, labelOf, type PooledTool, pooledTool, qualify, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
-import { resultText } from "./results.ts";
+import { resultText, truncateText } from "./results.ts";
 import { createTransport, readStderrTail, type TransportFactory } from "./transport.ts";
 import type {
   CatalogServer,
@@ -149,6 +154,15 @@ export interface McpPoolOptions {
    */
   coerceArguments?: boolean;
   /**
+   * The most characters one `call()` returns, head and tail kept around a marker. Unset is no cap.
+   *
+   * A tool that reads a file or a page can return more than a local model's whole window, and a
+   * server does not know how small the reader is. Applied to the text a call returns and to a
+   * `tool-error`'s message; see `truncateText` for the cut. `McpServerConfig.maxResultChars`
+   * overrides it for one server and `CallOptions.maxResultChars` for one call.
+   */
+  maxResultChars?: number;
+  /**
    * Register servers without connecting them; connect on first use instead.
    *
    * Off by default: for an agent loop, spawning a child per run costs more than the run. A
@@ -249,6 +263,19 @@ export interface CallOptions {
    * `coerceArguments` and the pool's. False sends `input` exactly as given.
    */
   coerce?: boolean;
+  /**
+   * The most characters this call returns, overriding the row's `maxResultChars` and the pool's.
+   * `0` is no cap for this call.
+   */
+  maxResultChars?: number;
+  /**
+   * Return the server's `CallToolResult` as it came, rather than text.
+   *
+   * For a consumer that wants the blocks themselves, an image to show or `structuredContent` to
+   * read, without giving up the scope check `client()` skips. Scope, hiding, coercion and the
+   * timeout still apply; no truncation does, and an `isError` result is returned, not thrown.
+   */
+  raw?: boolean;
   /** How long the request gets, overriding the row's `callTimeoutMs` and the pool's. */
   timeoutMs?: number;
   /**
@@ -360,6 +387,7 @@ export class McpPool {
   private readonly probeTimeoutMs?: number;
   private readonly callTimeoutMs?: number;
   private readonly coerceArguments: boolean;
+  private readonly maxResultChars?: number;
   private readonly createTransport: TransportFactory;
 
   /**
@@ -377,6 +405,7 @@ export class McpPool {
     probeTimeoutMs,
     callTimeoutMs,
     coerceArguments = true,
+    maxResultChars,
     lazy = false,
     idleTimeoutMs,
     indexTools = true,
@@ -391,6 +420,7 @@ export class McpPool {
     this.probeTimeoutMs = probeTimeoutMs;
     this.callTimeoutMs = callTimeoutMs;
     this.coerceArguments = coerceArguments;
+    this.maxResultChars = maxResultChars;
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
     this.indexTools = indexTools;
@@ -1183,7 +1213,8 @@ export class McpPool {
    * @param input The tool's arguments. Null or undefined is sent as `{}`.
    * @param options `CallOptions`, or the run's scope on its own as before. A tool outside the
    *   scope is refused as one that does not exist, and so is a hidden one unless `hidden` is set.
-   * @returns The result as text — see `resultText` for what each kind of content block flattens
+   * @returns With `raw`, the server's result as it came. Otherwise the result as text, cut to
+   *   `maxResultChars` where one is set — see `resultText` for what each kind of content block flattens
    *   to, including a server that answers with `structuredContent` and no blocks at all — or
    *   `"(no output)"` when the server returned nothing whatsoever. A tool that answers with
    *   `isError` throws instead.
@@ -1193,17 +1224,34 @@ export class McpPool {
    *   message the model can correct from; `timeout` where the request ran out of time; and
    *   `tool-error` where the server answered `isError`.
    */
+  call(
+    qualifiedName: string,
+    input: unknown,
+    options: CallOptions & { raw: true },
+  ): Promise<CallToolResult>;
+  call(
+    qualifiedName: string,
+    input: unknown,
+    options?: Iterable<string> | (CallOptions & { raw?: false }),
+  ): Promise<string>;
+  call(
+    qualifiedName: string,
+    input: unknown,
+    options?: Iterable<string> | CallOptions,
+  ): Promise<string | CallToolResult>;
   async call(
     qualifiedName: string,
     input: unknown,
     options?: Iterable<string> | CallOptions,
-  ): Promise<string> {
+  ): Promise<string | CallToolResult> {
     const {
       servers,
       signal,
       timeoutMs: ownTimeoutMs,
       hidden = false,
       coerce: ownCoerce,
+      maxResultChars: ownMaxResultChars,
+      raw = false,
     } = callOptions(options);
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
@@ -1298,18 +1346,23 @@ export class McpPool {
         throw error;
       });
 
+    // The compatibility arm of the SDK's union is a pre-2024 server answering `toolResult`; it has
+    // no blocks either way, and `resultText` already reads it as empty.
+    if (raw) return result as CallToolResult;
+
+    const cap = ownMaxResultChars ?? entry?.config.maxResultChars ?? this.maxResultChars;
     const text = resultText(result);
     // The server ran the tool and the tool failed — not one of the pool's refusals, which is why
     // this was a plain `Error`. It carries a code anyway because a caller sorting failures cares
     // most about this line: nothing about retrying a rejected argument resembles retrying a
     // backoff. The message is what it always was.
     if (result.isError) {
-      throw new McpPoolError("tool-error", text || "tool call failed", {
+      throw new McpPoolError("tool-error", truncateText(text || "tool call failed", cap), {
         toolName: qualifiedName,
         serverId: found.serverId,
       });
     }
-    return text || "(no output)";
+    return truncateText(text || "(no output)", cap);
   }
 
   /**

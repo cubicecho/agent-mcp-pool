@@ -57,6 +57,11 @@ interface McpServerBase {
    */
   coerceArguments?: boolean | null;
   /**
+   * The most characters a `call()` to this server returns, overriding the pool's
+   * `maxResultChars`. `null` and absent mean "use the pool's"; `0` is no cap for this server.
+   */
+  maxResultChars?: number | null;
+  /**
    * This server's tools the model is not offered, by the server's own names.
    *
    * For a tool that is for the host rather than the model — a memory server's `remember`, run by

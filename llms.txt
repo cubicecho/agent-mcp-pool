@@ -11,6 +11,7 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 
 ### @modelcontextprotocol/sdk/types.js
 
+- `CallToolResult` (type)
 - `Notification` (type)
 - `ServerCapabilities` (type)
 - `ToolAnnotations` (type)
@@ -68,6 +69,7 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 ### results
 
 - `resultText` — What a tool call is worth as a tool message.
+- `truncateText` — Text cut to fit a character budget, keeping its head and its tail.
 
 ### transport
 
