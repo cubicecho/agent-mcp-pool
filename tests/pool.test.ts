@@ -798,7 +798,7 @@ test("tool names too long for the limit stay distinct instead of collapsing", as
   expect(toolNames(pool).toSorted()).toEqual(names.toSorted());
 
   // And each one reaches its own tool rather than whichever survived the overwrite.
-  const called = await Promise.all(names.map((name) => pool.call(name, {})));
+  const called = await Promise.all(names.map((name) => pool.call(name, { a: 1, b: 2 })));
   expect(called.map((result) => result.split("(")[0]).toSorted()).toEqual(["add", "echo", "ping"]);
 });
 
@@ -1625,7 +1625,10 @@ test("two calls arriving together on a cold server start one child", async () =>
   pool = lazyPool();
   await pool.sync([config()]);
 
-  const both = await Promise.all([pool.call("echo__ping", {}), pool.call("echo__add", {})]);
+  const both = await Promise.all([
+    pool.call("echo__ping", {}),
+    pool.call("echo__add", { a: 1, b: 2 }),
+  ]);
   expect(both[0]).toBe("ping({})");
   // Without the queue, both callers find the server idle and both dial it; the second's entry
   // replaces the first's and the first child is left running with nothing holding it.

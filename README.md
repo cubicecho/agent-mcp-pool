@@ -400,6 +400,45 @@ too, so a UI can badge a destructive tool before anything calls it.
 `describe()` never connects, like `tools()`, and refuses what `call()` would: a tool outside the
 scope, or a hidden one unless `hidden: true` is passed, answers `undefined`.
 
+## Arguments
+
+Local models get argument types wrong far more often than names. They send `"5"` for a number,
+`"true"` for a boolean, an object serialised into a string, and `""` for a parameter they meant to
+leave out. A server with a strict validator refuses each one, and the model reads a stack trace.
+So `call()` checks the arguments against the tool's own `inputSchema` first, and repairs what has
+only one reading:
+
+| The model sent | The schema says | Sent as |
+| --- | --- | --- |
+| `"5"` | `integer` or `number` | `5` |
+| `"true"`, `"FALSE"` | `boolean` | `true`, `false` |
+| `'{"a": 1}'`, `'[1, 2]'` | `object`, `array` | the parsed value |
+| `5`, `true` | `string` | `"5"`, `"true"` |
+| `""` or `null`, for an optional property | a type that is neither | left out |
+| the whole input as a JSON string | | the parsed object |
+
+It recurses through `properties` and `items`. Nothing is added, a property the schema does not
+name passes through, and `anyOf`, `$ref` and formats are left to the server. What still does not
+fit is refused as `invalid-arguments`, with a message written for the model to correct from:
+
+```text
+invalid arguments for "files__read": `limit` must be an integer, got "abc"; missing required `path`
+```
+
+That refusal comes after the scope and hiding checks, so a tool this run may not reach is still
+answered as one that does not exist.
+
+On by default, and configured at the same three levels as the timeouts, nearest first:
+
+```ts
+new McpPool({ load, coerceArguments: false });            // off for the pool
+{ id: "legacy", command: "...", coerceArguments: false }  // off for one server with a wrong schema
+await pool.call(name, input, { coerce: false });          // off for one call
+```
+
+Off sends the input exactly as given. `coerceArguments(input, schema)` is exported for a consumer
+driving `client()` itself.
+
 ## Failure
 
 A stdio server is a child process, and child processes die. The pool watches for it: an
@@ -432,6 +471,22 @@ message. It was a plain `Error` for exactly that reason, and it carries a code a
 the one a caller most needs to tell from the others: retrying a `backoff` makes sense and retrying
 a tool that rejected its arguments does not. The message is unchanged, so anything reading
 `.message` is unaffected.
+
+`invalid-arguments` is the pool refusing a call before the server sees it, because the arguments
+still failed the tool's schema after coercion. See [arguments](#arguments). `timeout` is a call
+that ran out of time. See [timeouts](#timeouts).
+
+A gateway answering over HTTP wants a status for each code, and every one that sat in front of
+this pool wrote the same table. `httpStatusFor(code)` is that table:
+
+| Code | Status |
+| --- | --- |
+| `unknown-server`, `disabled`, `unknown-tool`, `out-of-scope` | 404 |
+| `invalid-arguments` | 400 |
+| `no-configs` | 500 |
+| `connect-failed`, `tool-error` | 502 |
+| `backoff` | 503 |
+| `timeout` | 504 |
 
 A failed server is then retried, which is the other half: `sync` leaves a *healthy* unchanged
 server alone but treats a failed one as work to do, and `call` brings back a server that is
@@ -491,6 +546,10 @@ new McpPool({ load, callTimeoutMs: 30_000 });     // the pool's
 Deliberately *not* the SDK's `resetTimeoutOnProgress`: a long call that reports progress is still
 cut off at this number, because a bound a server can hold open indefinitely by talking is not a
 bound. A consumer that wants the other reading has `client()`.
+
+A call that runs out is refused as `McpPoolError` code `timeout`, carrying the `timeoutMs` that ran
+out. It used to surface as the SDK's "MCP error -32001: Request timed out", which a caller could
+only recognise by its wording.
 
 ## Probing
 

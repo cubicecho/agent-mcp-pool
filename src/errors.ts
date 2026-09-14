@@ -27,6 +27,12 @@ export const errorMessage = (error: unknown): string =>
  * needs to tell from the rest — a `backoff` or a `connect-failed` is worth retrying and a tool
  * that rejected its arguments is not — and leaving it outside the type meant matching on message
  * text, which is the whole thing this exists to stop.
+ *
+ * `invalid-arguments` is the pool refusing before the server sees the call: the arguments still
+ * failed the tool's own schema after coercion. Its message is written for the model to correct.
+ *
+ * `timeout` is a call, or a hook's wait for one, that ran out of time. It was a plain `Error`
+ * whose only mark was its wording, and it is the one failure a caller most wants to retry.
  */
 export type McpPoolErrorCode =
   | "unknown-server"
@@ -36,7 +42,9 @@ export type McpPoolErrorCode =
   | "unknown-tool"
   | "out-of-scope"
   | "no-configs"
-  | "tool-error";
+  | "tool-error"
+  | "invalid-arguments"
+  | "timeout";
 
 /** What an `McpPoolError` carries beyond its message. */
 export interface McpPoolErrorOptions {
@@ -48,6 +56,8 @@ export interface McpPoolErrorOptions {
   detail?: string;
   /** For `backoff`: when the next attempt becomes due, as a `Date.now()` stamp. */
   retryAt?: number;
+  /** For `timeout`: the bound that ran out, in milliseconds. */
+  timeoutMs?: number;
   cause?: unknown;
 }
 
@@ -65,6 +75,7 @@ export class McpPoolError extends Error {
   readonly toolName?: string;
   readonly detail?: string;
   readonly retryAt?: number;
+  readonly timeoutMs?: number;
 
   /**
    * @param code Which refusal this is.
@@ -80,5 +91,35 @@ export class McpPoolError extends Error {
     this.toolName = options.toolName;
     this.detail = options.detail;
     this.retryAt = options.retryAt;
+    this.timeoutMs = options.timeoutMs;
   }
 }
+
+/**
+ * The HTTP status a gateway answers each refusal with.
+ *
+ * Every consumer in front of an HTTP API wrote this table, and the copies disagreed at the edges.
+ * A tool or server that does not exist is `404`, out of scope included, since to that caller it
+ * does not exist; a failure on the far side of the pool is `502`; a backoff, which will clear on
+ * its own, is `503`; a timeout `504`; arguments the model got wrong `400`; and a pool with nothing
+ * to reconcile is the host's own misconfiguration, `500`.
+ *
+ * @param code An `McpPoolError`'s code.
+ * @returns The status to answer with.
+ */
+export function httpStatusFor(code: McpPoolErrorCode): number {
+  return HTTP_STATUS[code];
+}
+
+const HTTP_STATUS: Record<McpPoolErrorCode, number> = {
+  "unknown-server": 404,
+  disabled: 404,
+  backoff: 503,
+  "connect-failed": 502,
+  "unknown-tool": 404,
+  "out-of-scope": 404,
+  "no-configs": 500,
+  "tool-error": 502,
+  "invalid-arguments": 400,
+  timeout: 504,
+};

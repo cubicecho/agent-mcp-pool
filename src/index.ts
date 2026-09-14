@@ -15,7 +15,13 @@ export type {
   ServerCapabilities,
   ToolAnnotations,
 } from "@modelcontextprotocol/sdk/types.js";
-export { McpPoolError, type McpPoolErrorCode, type McpPoolErrorOptions } from "./errors.ts";
+export { type CoercedArguments, coerceArguments } from "./arguments.ts";
+export {
+  httpStatusFor,
+  McpPoolError,
+  type McpPoolErrorCode,
+  type McpPoolErrorOptions,
+} from "./errors.ts";
 export {
   type ContextBlocks,
   contextBlocks,

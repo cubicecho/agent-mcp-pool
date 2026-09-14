@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { Notification } from "@modelcontextprotocol/sdk/types.js";
+import { ErrorCode, McpError, type Notification } from "@modelcontextprotocol/sdk/types.js";
+import { coerceArguments } from "./arguments.ts";
 import { requestBudget } from "./budget.ts";
 import { copyConfig, sameConnection, scope } from "./config.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
@@ -25,6 +26,9 @@ import type {
   ToolInfo,
 } from "./types.ts";
 import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
+
+/** The SDK's own bound on a request, which a call with no timeout set runs under. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 /**
  * How long a failed server is left alone before anything dials it again.
@@ -134,6 +138,17 @@ export interface McpPoolOptions {
    */
   callTimeoutMs?: number;
   /**
+   * Repair a model's arguments against the tool's own schema before sending them, and refuse
+   * what cannot be repaired as `invalid-arguments`. On by default.
+   *
+   * Local models send `"5"` for a number, `"true"` for a boolean, an object as a JSON string, and
+   * `""` for a parameter they meant to omit; a strict server refuses every one, and the model
+   * reads its stack trace. See `coerceArguments` for exactly what is repaired. Off sends the
+   * arguments exactly as given. `McpServerConfig.coerceArguments` overrides this for one server,
+   * and `CallOptions.coerce` for one call.
+   */
+  coerceArguments?: boolean;
+  /**
    * Register servers without connecting them; connect on first use instead.
    *
    * Off by default: for an agent loop, spawning a child per run costs more than the run. A
@@ -229,6 +244,11 @@ export interface CallOptions {
   servers?: Iterable<string>;
   /** Cancels the request; the call rejects with the SDK's abort error. */
   signal?: AbortSignal;
+  /**
+   * Whether to repair and check the arguments against the tool's schema, overriding the row's
+   * `coerceArguments` and the pool's. False sends `input` exactly as given.
+   */
+  coerce?: boolean;
   /** How long the request gets, overriding the row's `callTimeoutMs` and the pool's. */
   timeoutMs?: number;
   /**
@@ -286,7 +306,13 @@ function bounded<T>(work: Promise<T>, ms?: number, signal?: AbortSignal): Promis
       settle();
     };
     if (ms !== undefined) {
-      timer = setTimeout(() => finish(() => reject(new Error(`timed out after ${ms}ms`))), ms);
+      timer = setTimeout(
+        () =>
+          finish(() =>
+            reject(new McpPoolError("timeout", `timed out after ${ms}ms`, { timeoutMs: ms })),
+          ),
+        ms,
+      );
     }
     signal?.addEventListener("abort", onAbort, { once: true });
     work.then(
@@ -333,6 +359,7 @@ export class McpPool {
   private readonly connectTimeoutMs?: number;
   private readonly probeTimeoutMs?: number;
   private readonly callTimeoutMs?: number;
+  private readonly coerceArguments: boolean;
   private readonly createTransport: TransportFactory;
 
   /**
@@ -349,6 +376,7 @@ export class McpPool {
     connectTimeoutMs,
     probeTimeoutMs,
     callTimeoutMs,
+    coerceArguments = true,
     lazy = false,
     idleTimeoutMs,
     indexTools = true,
@@ -362,6 +390,7 @@ export class McpPool {
     this.connectTimeoutMs = connectTimeoutMs;
     this.probeTimeoutMs = probeTimeoutMs;
     this.callTimeoutMs = callTimeoutMs;
+    this.coerceArguments = coerceArguments;
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
     this.indexTools = indexTools;
@@ -1160,13 +1189,22 @@ export class McpPool {
    *   `isError` throws instead.
    * @throws {McpPoolError} `unknown-tool` (a hidden tool included), or `out-of-scope` for a tool
    *   this run may not reach. All carry the same message, so the model cannot tell them apart.
+   *   `invalid-arguments` where the arguments fail the tool's schema after coercion, with a
+   *   message the model can correct from; `timeout` where the request ran out of time; and
+   *   `tool-error` where the server answered `isError`.
    */
   async call(
     qualifiedName: string,
     input: unknown,
     options?: Iterable<string> | CallOptions,
   ): Promise<string> {
-    const { servers, signal, timeoutMs: ownTimeoutMs, hidden = false } = callOptions(options);
+    const {
+      servers,
+      signal,
+      timeoutMs: ownTimeoutMs,
+      hidden = false,
+      coerce: ownCoerce,
+    } = callOptions(options);
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
     // past 64 characters, and the split of a shortened name is a tool its server never had.
@@ -1205,30 +1243,60 @@ export class McpPool {
 
     if (entry) this.touch(entry);
 
+    // After the refusals above, so a call to a tool this run may not reach is answered as unknown
+    // rather than as one whose arguments are wrong. The same precedence as the timeout below.
+    let args = (input ?? {}) as Record<string, unknown>;
+    if (ownCoerce ?? entry?.config.coerceArguments ?? this.coerceArguments) {
+      const coerced = coerceArguments(input, found.tool.parameters);
+      if (coerced.problems.length > 0) {
+        throw new McpPoolError(
+          "invalid-arguments",
+          `invalid arguments for "${qualifiedName}": ${coerced.problems.join("; ")}`,
+          { toolName: qualifiedName, serverId: found.serverId },
+        );
+      }
+      args = coerced.args;
+    }
+
     // This call's own first — a hook's 3s on the path of a turn — then the row, then the pool's
     // default, then the SDK's own 60s behind that: the same order `connectTimeoutMs` is read in,
     // and read here rather than held on the entry for the same reason: an edited number applies to
     // the next call without bouncing the child. One request, so a plain timeout rather than a
     // `requestBudget`; budgets are for sequences.
     const timeoutMs = ownTimeoutMs ?? entry?.config.callTimeoutMs ?? this.callTimeoutMs;
-    const result = await found.client.callTool(
-      {
-        name: found.tool.name,
-        arguments: (input ?? {}) as Record<string, unknown>,
-      },
-      undefined,
-      // Built only when there is something to say: a `timeout: undefined` handed to the SDK is
-      // not the same as none, depending on how it reads the field. Deliberately without
-      // `resetTimeoutOnProgress`: a long call that reports progress is still cut off at this
-      // number. The alternative is a bound a server can hold open indefinitely by talking, which
-      // is not a bound. A consumer that wants the other reading has `client()`.
-      signal || timeoutMs != null
-        ? {
-            ...(signal ? { signal } : {}),
-            ...(timeoutMs != null ? { timeout: timeoutMs } : {}),
-          }
-        : undefined,
-    );
+    const result = await found.client
+      .callTool(
+        { name: found.tool.name, arguments: args },
+        undefined,
+        // Built only when there is something to say: a `timeout: undefined` handed to the SDK is
+        // not the same as none, depending on how it reads the field. Deliberately without
+        // `resetTimeoutOnProgress`: a long call that reports progress is still cut off at this
+        // number. The alternative is a bound a server can hold open indefinitely by talking, which
+        // is not a bound. A consumer that wants the other reading has `client()`.
+        signal || timeoutMs != null
+          ? {
+              ...(signal ? { signal } : {}),
+              ...(timeoutMs != null ? { timeout: timeoutMs } : {}),
+            }
+          : undefined,
+      )
+      .catch((error: unknown) => {
+        // The SDK's own timeout, coded: a caller deciding whether to retry should not have to
+        // recognise "MCP error -32001" to find out the tool was merely slow.
+        if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+          throw new McpPoolError(
+            "timeout",
+            `"${qualifiedName}" timed out after ${timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS}ms`,
+            {
+              toolName: qualifiedName,
+              serverId: found.serverId,
+              timeoutMs: timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+              cause: error,
+            },
+          );
+        }
+        throw error;
+      });
 
     const text = resultText(result);
     // The server ran the tool and the tool failed — not one of the pool's refusals, which is why

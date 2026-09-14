@@ -49,6 +49,14 @@ interface McpServerBase {
    */
   callTimeoutMs?: number | null;
   /**
+   * Whether `call()` repairs and checks arguments against this server's schemas, overriding the
+   * pool's `coerceArguments`. `null` and absent both mean "use the pool's".
+   *
+   * Off for a server whose schemas are wrong: coercion trusts them, and a tool that declares
+   * `integer` and wants a string is better sent what the model wrote.
+   */
+  coerceArguments?: boolean | null;
+  /**
    * This server's tools the model is not offered, by the server's own names.
    *
    * For a tool that is for the host rather than the model — a memory server's `remember`, run by
