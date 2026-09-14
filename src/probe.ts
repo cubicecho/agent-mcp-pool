@@ -76,7 +76,12 @@ export async function probe(
     return {
       ok: true,
       error: "",
-      tools: tools.map((tool) => ({ name: tool.name, description: tool.description ?? "" })),
+      tools: tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description ?? "",
+        ...(tool.title !== undefined ? { title: tool.title } : {}),
+        ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
+      })),
       // A cached read of the handshake this probe already made. What a row offers is not only its
       // tool list: a server's instructions are what its tools are for.
       instructions: mcpClient.getInstructions() ?? "",

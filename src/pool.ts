@@ -22,6 +22,7 @@ import type {
   McpStatus,
   ToolDefinition,
   ToolHook,
+  ToolInfo,
 } from "./types.ts";
 import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
 
@@ -207,6 +208,14 @@ export interface StateOptions {
    * *server-side* is the case that legitimately needs them back: that one asks.
    */
   secrets?: boolean;
+}
+
+/** What `describe()` takes beside the name. */
+export interface DescribeOptions {
+  /** The run's scope, read as `call()` reads it: a tool outside it is not described. */
+  servers?: Iterable<string>;
+  /** Describe a tool the row hides from the model. The host's own lookups only, as for `call()`. */
+  hidden?: boolean;
 }
 
 /**
@@ -741,6 +750,12 @@ export class McpPool {
           name: tool.name,
           description: tool.description ?? "",
           parameters: (tool.inputSchema ?? { type: "object" }) as Record<string, unknown>,
+          // Kept, not interpreted: the pool has no use for them, and a host deciding whether a
+          // call needs a person's approval has no other way to see them.
+          title: tool.title,
+          annotations: tool.annotations,
+          outputSchema: tool.outputSchema as Record<string, unknown> | undefined,
+          meta: tool._meta,
         }),
       );
       // Installed only once the server is up: a child that dies mid-handshake is reported by
@@ -1023,13 +1038,59 @@ export class McpPool {
       out.push({
         id: entry.config.id,
         label: labelOf(entry.config),
-        tools: offered.map(({ qualified, description }) => ({
+        tools: offered.map(({ qualified, description, title, annotations }) => ({
           name: qualified,
           description,
+          ...(title !== undefined ? { title } : {}),
+          ...(annotations !== undefined ? { annotations } : {}),
         })),
       });
     }
     return out;
+  }
+
+  /**
+   * Everything the server said about one tool, by the name the model calls it.
+   *
+   * `tools()` stays OpenAI-shaped, so this is where a host reads what that shape has no room for:
+   * `annotations` to auto-approve a read-only tool or ask before a destructive one, `outputSchema`
+   * and the server's own `title`. **Annotations are the server's claims, not facts** — the spec
+   * calls them untrusted, and a host should honour `destructiveHint` from a server it does not
+   * trust no more than it would a tool description.
+   *
+   * Never connects, like `tools()`: a name on a cold server answers `undefined`. Obeys the same
+   * scope and the same hiding as `call()`, so it cannot confirm to a run that a tool it could not
+   * call exists.
+   *
+   * @param qualifiedName `<slug>__<tool>`, resolved whole.
+   * @param options `servers` is the run's scope; `hidden: true` answers for a hidden tool too.
+   * @returns The tool, or `undefined` where `call()` would refuse it as unknown.
+   */
+  describe(
+    qualifiedName: string,
+    { servers, hidden = false }: DescribeOptions = {},
+  ): ToolInfo | undefined {
+    const found = this.index.get(qualifiedName);
+    if (!found) return undefined;
+    const allowed = scope(servers);
+    if (allowed && !allowed.has(found.serverId)) return undefined;
+    const entry = this.entries.get(found.serverId);
+    const isHiddenTool = entry !== undefined && isHidden(entry.config, found.tool.name);
+    if (isHiddenTool && !hidden) return undefined;
+    const { name, qualified, description, parameters, title, annotations, outputSchema, meta } =
+      found.tool;
+    return {
+      serverId: found.serverId,
+      name,
+      qualified,
+      description,
+      inputSchema: parameters,
+      ...(title !== undefined ? { title } : {}),
+      ...(annotations !== undefined ? { annotations } : {}),
+      ...(outputSchema !== undefined ? { outputSchema } : {}),
+      ...(meta !== undefined ? { meta } : {}),
+      hidden: isHiddenTool,
+    };
   }
 
   /**
@@ -1335,10 +1396,12 @@ export class McpPool {
       config: this.reportedConfig(entry.config, secrets),
       status: entry.status,
       error: entry.error ?? "",
-      tools: entry.tools.map(({ name, qualified, description }) => ({
+      tools: entry.tools.map(({ name, qualified, description, title, annotations }) => ({
         name,
         qualified,
         description,
+        ...(title !== undefined ? { title } : {}),
+        ...(annotations !== undefined ? { annotations } : {}),
         hidden: isHidden(entry.config, name),
       })),
       pid: entry.pid,

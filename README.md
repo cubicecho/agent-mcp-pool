@@ -376,6 +376,30 @@ stderr tail, backoff, retry-on-use. A server that is merely down is retried firs
 bypasses the scope check by construction:** that guard defends against a model calling a name it
 remembers, and a caller holding a server id is not a model.
 
+### What a definition has no room for
+
+An OpenAI definition is a name, a description and a schema. A server says more than that about a
+tool, and a host deciding whether a call needs a person's approval wants the rest.
+`describe(qualified)` returns it:
+
+```ts
+const info = pool.describe("files__delete", { servers });
+if (info?.annotations?.destructiveHint !== false && !info?.annotations?.readOnlyHint) {
+  await askUser(info);
+}
+```
+
+`annotations` are `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`, as the
+server sent them. `title`, `outputSchema`, the untouched `inputSchema` and the tool's `_meta` (as
+`meta`) come with them. `state().tools`, `catalog()` and `probe()` carry `title` and `annotations`
+too, so a UI can badge a destructive tool before anything calls it.
+
+**Annotations are claims, not facts.** The spec calls them untrusted, and a server that says
+`readOnlyHint: true` has only said so. Trust them as far as you trust the server.
+
+`describe()` never connects, like `tools()`, and refuses what `call()` would: a tool outside the
+scope, or a hidden one unless `hidden: true` is passed, answers `undefined`.
+
 ## Failure
 
 A stdio server is a child process, and child processes die. The pool watches for it: an
