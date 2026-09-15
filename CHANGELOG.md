@@ -1,3 +1,10 @@
+# [3.3.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.2.0...v3.3.0) (2026-09-15)
+
+
+### Features
+
+* browser-safe hooks and servers entries ([bfb00e2](https://github.com/cubicecho/agent-mcp-pool/commit/bfb00e21ff1219a1a038af24f7eafecd2dc6bf44)), closes [#85](https://github.com/cubicecho/agent-mcp-pool/issues/85)
+
 # [3.2.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.1.0...v3.2.0) (2026-09-15)
 
 
