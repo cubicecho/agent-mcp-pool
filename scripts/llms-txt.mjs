@@ -1,5 +1,5 @@
 /**
- * Writes `llms.txt` from what `src/index.ts` actually exports.
+ * Writes `llms.txt` from what `src/index.ts` and each subpath entry actually export.
  *
  * Generated because a hand-written copy of an API surface drifts from the surface. Fix anything
  * wrong here in the doc comment it came from.
@@ -205,6 +205,58 @@ for (const { specifier, module, names } of reexports(index)) {
     total += 1;
     if (summary) described += 1;
     else undocumented.push(`${module}.${name}`);
+  }
+  out.push("");
+}
+
+/**
+ * What one subpath entry exports: its own declarations, then the names it re-exports in a local
+ * `export type { … };` list — which is how an entry hands on types declared elsewhere.
+ *
+ * @param source Full text of the entry's `.ts` file.
+ * @returns `{ name, isType, summary }` per export, declarations in source order first.
+ */
+function entryExports(source) {
+  const found = [];
+  for (const block of docBlocks(source)) {
+    const name = declaredName(block.next);
+    if (name)
+      found.push({
+        name,
+        isType: /^export\s+(?:interface|type)\s/.test(block.next),
+        summary: summarize(block.body),
+      });
+  }
+  for (const [, inner] of source.matchAll(/^export\s+type\s+\{([^}]*)\};/gm))
+    for (const name of inner.split(",").map((entry) => entry.trim()))
+      if (name !== "") found.push({ name, isType: true, summary: "" });
+  // Declarations with no doc comment would be missed by the walk above; count them all to notice.
+  const declared =
+    source.match(/^export\s+(?:async\s+)?(?:function|const|class|interface|type)\s+\w/gm)?.length ??
+    0;
+  const documented = found.filter((entry) => entry.summary !== "").length;
+  if (declared !== documented)
+    throw new Error(`an entry declares ${declared} exports and ${documented} carry a doc comment`);
+  return found;
+}
+
+// The root is indexed above; each other entry is listed with what it exports, since what a
+// consumer can import from `/hooks` in a browser is the question the entry exists to answer.
+const subpaths = Object.entries(pkg.exports).filter(([subpath]) => subpath !== ".");
+if (subpaths.length > 0) out.push("## Subpath entries", "");
+for (const [subpath, target] of subpaths) {
+  const module = target.import.match(/^\.\/dist\/(.+)\.js$/)?.[1];
+  if (!module) throw new Error(`exports["${subpath}"] does not point into dist`);
+  const source = read(`src/${module}.ts`);
+  const moduleDoc = docBlocks(source).find((block) => block.next.trim() === "");
+  out.push(`### ${pkg.name}${subpath.slice(1)}`, "");
+  // Two paragraphs, not one: an entry's second says where it may be imported from, and that is
+  // what separates it from the root.
+  if (moduleDoc)
+    for (const paragraph of paragraphs(moduleDoc.body).slice(0, 2)) out.push(paragraph, "");
+  for (const { name, isType, summary } of entryExports(source)) {
+    const label = isType ? `\`${name}\` (type)` : `\`${name}\``;
+    out.push(summary ? `- ${label} — ${summary}` : `- ${label}`);
   }
   out.push("");
 }

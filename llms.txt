@@ -73,6 +73,16 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 - `resultText` — What a tool call is worth as a tool message.
 - `truncateText` — Text cut to fit a character budget, keeping its head and its tail.
 
+### servers
+
+Questions about server rows that need neither a connection nor Node — for the form that edits one.
+
+- `fromMcpServersJson` — Rows from the `mcpServers` JSON that Claude Desktop, Claude Code, Cursor and most server READMEs describe a server with.
+- `McpServersJsonOptions` (type) — What `fromMcpServersJson` needs besides the JSON.
+- `sameConnection` — Whether two rows describe the same live connection.
+- `serversWith` — The connected servers that offer a capability — the filter every host wrote for itself.
+- `validateServerConfig` — What is wrong with a row, for the form that saves it — before `sync()` is handed it.
+
 ### transport
 
 - `createTransport` — The transport a config asks for, stdio or streamable HTTP, ready to connect.
@@ -102,3 +112,60 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 - `ToolDefinition` (type) — One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's `ChatCompletionTool`, and assignable to it.
 - `ToolHook` (type) — One tool call a row wants made at a point in a session.
 - `ToolInfo` (type) — One tool in full, as `McpPool.describe` returns it: what `ToolDefinition` has no room for.
+
+## Subpath entries
+
+### @cubicecho/agent-mcp-pool/hooks
+
+MCP tools as lifecycle hooks — the half that needs no connection.
+
+Importable in a browser as `@cubicecho/agent-mcp-pool/hooks`, for the editor that saves a row's hooks: nothing here, and nothing it imports, reaches for a `node:` module or the SDK at runtime.
+
+- `HOOK_EVENTS` — Every event a hook can be bound to, in the order a session meets them.
+- `INJECT_EVENTS` — The events whose output can reach the model.
+- `INJECT_TIMEOUT_MS` — How long an injecting hook gets when its row does not say.
+- `DEFAULT_HOOK_MAX_TOKENS` — The cap on one hook's injected text when its row does not set `maxTokens`.
+- `hookVars` — The template paths an event offers, `vars.*` aside.
+- `templatePaths` — Every path a hook's `args` names, each once.
+- `ExpandedArgs` (type) — What `expandArgs` made of a hook's arguments.
+- `expandArgs` — Fills a hook's `args` from its context.
+- `validateHooks` — What is wrong with a row's hooks, for the form that saves them.
+- `ContextBlocks` (type) — What `contextBlocks` built, and what each hook contributed to it.
+- `contextBlocks` — The injecting hooks' output, as context for the model.
+- `HookContext` (type)
+- `HookEvent` (type)
+- `HookMessage` (type)
+- `HookOutcome` (type)
+- `ToolHook` (type)
+
+### @cubicecho/agent-mcp-pool/servers
+
+Questions about server rows that need neither a connection nor Node — for the form that edits one.
+
+Importable in a browser as `@cubicecho/agent-mcp-pool/servers`: nothing here, and nothing it imports, reaches for a `node:` module or the SDK at runtime. Each UI that saved rows kept its own copy of these because the package's only entry spawned children.
+
+- `sameConnection` — Whether two rows describe the same live connection.
+- `serversWith` — The connected servers that offer a capability — the filter every host wrote for itself.
+- `McpServersJsonOptions` (type) — What `fromMcpServersJson` needs besides the JSON.
+- `fromMcpServersJson` — Rows from the `mcpServers` JSON that Claude Desktop, Claude Code, Cursor and most server READMEs describe a server with.
+- `validateServerConfig` — What is wrong with a row, for the form that saves it — before `sync()` is handed it.
+- `HttpServerConfig` (type)
+- `McpServerConfig` (type)
+- `McpServerState` (type)
+- `ServerCapabilities` (type)
+- `StdioServerConfig` (type)
+
+### @cubicecho/agent-mcp-pool/testing
+
+Test helpers: an MCP server that runs in-process, and a pool wired to reach it without a child.
+
+Every consumer's suite used to declare its own `makePool()` and its own stdio fixture, and every test of the pool itself spawned a process it was not about. Imported from `@cubicecho/agent-mcp-pool/testing`; nothing here is loaded by the main entry.
+
+- `ECHO_TOOLS` — The echo server's tools: `ping`, `echo`, `add`, and a `read` that carries annotations, a title and an output schema, so a test can see metadata go through.
+- `EchoServerOptions` (type) — What `echoServer` takes.
+- `echoServer` — An MCP server whose tools answer with what they were asked, for a pool to connect to.
+- `ConnectableServer` (type) — Anything that connects to a transport the way an SDK `Server` or `McpServer` does.
+- `memoryTransport` — A transport factory that reaches in-process servers by name, for `McpPoolOptions.createTransport`.
+- `memoryRow` — A row for an in-memory server.
+- `makePool` — A pool for a test: silent, named, and reaching in-process servers where `servers` is given.
+- `echoServerPath` — The path of a stdio script that serves `echoServer()`, for a test that wants a real child.

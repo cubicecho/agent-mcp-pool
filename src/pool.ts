@@ -10,13 +10,14 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { coerceArguments } from "./arguments.ts";
 import { requestBudget } from "./budget.ts";
-import { copyConfig, sameConnection, scope } from "./config.ts";
+import { copyConfig, scope } from "./config.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
 import { DEFAULT_HOOK_MAX_TOKENS, expandArgs, INJECT_EVENTS, INJECT_TIMEOUT_MS } from "./hooks.ts";
 import { listAllTools } from "./listing.ts";
 import { couldQualify, labelOf, type PooledTool, pooledTool, qualify, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { resultText, truncateText } from "./results.ts";
+import { sameConnection } from "./servers.ts";
 import { createTransport, readStderrTail, type TransportFactory } from "./transport.ts";
 import type {
   CatalogServer,

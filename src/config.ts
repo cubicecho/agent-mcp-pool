@@ -1,44 +1,12 @@
-import { isDeepStrictEqual } from "node:util";
-import type { HttpServerConfig, McpServerConfig, StdioServerConfig } from "./types.ts";
+import type { McpServerConfig } from "./types.ts";
 
 /**
- * Questions about the configured rows themselves — no connection, no pool state.
+ * The pool's handling of rows it has been given — no connection, no pool state.
  *
- * Both decide what happens to a live child process: whether an edited row is worth restarting
- * one for, and whether a run may reach it at all. They live here because neither needs anything
- * the class holds, and both are easier to test against a pair of plain objects.
+ * Kept apart from `servers.ts`, which answers questions a host asks about a row too: these two
+ * are the pool's own business, and they live outside the class because neither needs anything it
+ * holds and both are easier to test against plain objects.
  */
-
-/**
- * Whether two rows describe the same live connection.
- *
- * Only the fields a child process is made of. This was once a `JSON.stringify` of the whole row,
- * which bounced a running server — losing whatever state it held — because someone fixed a typo
- * in its label.
- */
-export function sameConnection(a: McpServerConfig, b: McpServerConfig) {
-  if (a.enabled !== b.enabled || a.transport !== b.transport) return false;
-  // Narrowing `a` tells TypeScript nothing about `b` — it cannot correlate two discriminants it
-  // checked separately — so `b` is asserted once, here, where the equality above has already
-  // established which arm it is.
-  return a.transport === "stdio"
-    ? sameStdio(a, b as StdioServerConfig)
-    : sameHttp(a, b as HttpServerConfig);
-}
-
-/** `null` and empty mean the same absence: a row moving between them reaches the same child. */
-function sameStdio(a: StdioServerConfig, b: StdioServerConfig) {
-  return (
-    a.command === b.command &&
-    (a.cwd ?? "") === (b.cwd ?? "") &&
-    isDeepStrictEqual(a.args ?? [], b.args ?? []) &&
-    isDeepStrictEqual(a.env ?? {}, b.env ?? {})
-  );
-}
-
-function sameHttp(a: HttpServerConfig, b: HttpServerConfig) {
-  return a.url === b.url && isDeepStrictEqual(a.headers ?? {}, b.headers ?? {});
-}
 
 /**
  * The pool's own copy of a row, so the caller's object and the pool's record are separate things.

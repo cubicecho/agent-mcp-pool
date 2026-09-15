@@ -52,6 +52,13 @@ export {
 export { type ProbeOptions, probe } from "./probe.ts";
 export { resultText, truncateText } from "./results.ts";
 export {
+  fromMcpServersJson,
+  type McpServersJsonOptions,
+  sameConnection,
+  serversWith,
+  validateServerConfig,
+} from "./servers.ts";
+export {
   createTransport,
   MINIMAL_CHILD_ENV,
   readStderrTail,

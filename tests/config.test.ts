@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
-import { copyConfig, sameConnection, scope } from "../src/config.ts";
+import { copyConfig, scope } from "../src/config.ts";
+import { sameConnection } from "../src/servers.ts";
 import type { HttpServerConfig, StdioServerConfig } from "../src/types.ts";
 
 const config = (over: Partial<StdioServerConfig> = {}): StdioServerConfig => ({

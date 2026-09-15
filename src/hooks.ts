@@ -1,7 +1,10 @@
-import type { HookContext, HookEvent, HookOutcome, ToolHook } from "./types.ts";
+import type { HookContext, HookEvent, HookMessage, HookOutcome, ToolHook } from "./types.ts";
 
 /**
  * MCP tools as lifecycle hooks — the half that needs no connection.
+ *
+ * Importable in a browser as `@cubicecho/agent-mcp-pool/hooks`, for the editor that saves a row's
+ * hooks: nothing here, and nothing it imports, reaches for a `node:` module or the SDK at runtime.
  *
  * A row's `hooks` say "at this point in a session, call this tool of mine with these arguments".
  * What is here reads and checks those rows and shapes what came back; `McpPool.runHooks` is the
@@ -12,6 +15,8 @@ import type { HookContext, HookEvent, HookOutcome, ToolHook } from "./types.ts";
  * edit their rows from a UI, and a hook that ran a shell line would make "can edit the server
  * list" the same permission as "can run anything on the host".
  */
+
+export type { HookContext, HookEvent, HookMessage, HookOutcome, ToolHook };
 
 /** Every event a hook can be bound to, in the order a session meets them. */
 export const HOOK_EVENTS: readonly HookEvent[] = [
@@ -161,25 +166,43 @@ const positive = (value: unknown) =>
  * tool exists is not checked — the server may not be connected, and a row saved before its server
  * is up is ordinary.
  *
+ * Takes `unknown` and checks the shape before the rules, since what a form holds is not yet a
+ * `ToolHook[]` — a hook with no `on`, or `inject: "yes"`, is reported rather than read as one.
+ *
  * @param hooks The row's `hooks`. Absent is none, which is valid.
  * @returns One message per problem, naming the hook. Empty means the hooks are fine.
  */
-export function validateHooks(hooks: readonly ToolHook[] | null | undefined): string[] {
+export function validateHooks(hooks: unknown): string[] {
+  if (hooks == null) return [];
+  if (!Array.isArray(hooks)) return ["hooks must be a list"];
   const errors: string[] = [];
   const ids = new Set<string>();
-  for (const [index, hook] of (hooks ?? []).entries()) {
-    const name = hook.id ? `hook "${hook.id}"` : `hook ${index + 1}`;
-    if (!hook.id?.trim()) errors.push(`${name}: needs an id`);
-    else if (ids.has(hook.id)) errors.push(`${name}: another hook on this server has that id`);
-    ids.add(hook.id);
+  for (const [index, item] of hooks.entries()) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      errors.push(`hook ${index + 1}: must be an object`);
+      continue;
+    }
+    // Every field is checked before it is read as its type, so past here the shape is known.
+    const hook = item as Partial<Record<keyof ToolHook, unknown>>;
+    const id = typeof hook.id === "string" ? hook.id : "";
+    const name = id ? `hook "${id}"` : `hook ${index + 1}`;
+    if (!id.trim()) errors.push(`${name}: needs an id`);
+    else if (ids.has(id)) errors.push(`${name}: another hook on this server has that id`);
+    ids.add(id);
 
-    if (!hook.tool?.trim()) errors.push(`${name}: needs a tool`);
-    if (!HOOK_EVENTS.includes(hook.on)) {
+    if (typeof hook.tool !== "string" || !hook.tool.trim()) errors.push(`${name}: needs a tool`);
+    for (const flag of ["inject", "enabled"] as const) {
+      if (hook[flag] != null && typeof hook[flag] !== "boolean") {
+        errors.push(`${name}: ${flag} must be true or false`);
+      }
+    }
+    if (!HOOK_EVENTS.includes(hook.on as HookEvent)) {
       errors.push(`${name}: "${hook.on}" is not an event (one of ${HOOK_EVENTS.join(", ")})`);
       continue;
     }
-    if (hook.inject && !INJECT_EVENTS.has(hook.on)) {
-      errors.push(`${name}: only sessionStart and beforeTurn can inject; ${hook.on} runs too late`);
+    const on = hook.on as HookEvent;
+    if (hook.inject && !INJECT_EVENTS.has(on)) {
+      errors.push(`${name}: only sessionStart and beforeTurn can inject; ${on} runs too late`);
     }
     if (hook.maxTokens != null && !positive(hook.maxTokens)) {
       errors.push(`${name}: maxTokens must be a positive whole number`);
@@ -187,10 +210,10 @@ export function validateHooks(hooks: readonly ToolHook[] | null | undefined): st
     if (hook.timeoutMs != null && !positive(hook.timeoutMs)) {
       errors.push(`${name}: timeoutMs must be a positive whole number`);
     }
-    const offered = hookVars(hook.on);
+    const offered = hookVars(on);
     for (const path of templatePaths(hook.args)) {
       if (offered.includes(path) || path.startsWith("vars.")) continue;
-      errors.push(`${name}: ${hook.on} has no {{${path}}} (it offers ${offered.join(", ")})`);
+      errors.push(`${name}: ${on} has no {{${path}}} (it offers ${offered.join(", ")})`);
     }
   }
   return errors;
