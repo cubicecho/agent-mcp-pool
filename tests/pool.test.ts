@@ -798,7 +798,7 @@ test("tool names too long for the limit stay distinct instead of collapsing", as
   expect(toolNames(pool).toSorted()).toEqual(names.toSorted());
 
   // And each one reaches its own tool rather than whichever survived the overwrite.
-  const called = await Promise.all(names.map((name) => pool.call(name, {})));
+  const called = await Promise.all(names.map((name) => pool.call(name, { a: 1, b: 2 })));
   expect(called.map((result) => result.split("(")[0]).toSorted()).toEqual(["add", "echo", "ping"]);
 });
 
@@ -1363,7 +1363,7 @@ test("client() keeps a tool result that call() has to flatten away", async () =>
 
   // The agent loop's own surface is unchanged and still right for it: a string is what goes back
   // into a message array. It is the only thing a string can be, though.
-  expect(await pool.call("echo__echo", { image: true })).toBe("[image content]");
+  expect(await pool.call("echo__echo", { image: true })).toMatch(/^\[image .*omitted\]$/);
 
   const result = await (await pool.client("echo-1")).callTool({
     name: "echo",
@@ -1625,7 +1625,10 @@ test("two calls arriving together on a cold server start one child", async () =>
   pool = lazyPool();
   await pool.sync([config()]);
 
-  const both = await Promise.all([pool.call("echo__ping", {}), pool.call("echo__add", {})]);
+  const both = await Promise.all([
+    pool.call("echo__ping", {}),
+    pool.call("echo__add", { a: 1, b: 2 }),
+  ]);
   expect(both[0]).toBe("ping({})");
   // Without the queue, both callers find the server idle and both dial it; the second's entry
   // replaces the first's and the first child is left running with nothing holding it.

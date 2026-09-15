@@ -11,11 +11,23 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 
 ### @modelcontextprotocol/sdk/types.js
 
+- `CallToolResult` (type)
+- `ElicitRequestParams` (type)
+- `ElicitResult` (type)
 - `Notification` (type)
 - `ServerCapabilities` (type)
+- `ToolAnnotations` (type)
+
+### arguments
+
+Arguments as a model wrote them, brought into line with the schema the server published.
+
+- `CoercedArguments` (type) — What `coerceArguments` returns.
+- `coerceArguments` — Repairs a model's arguments against a tool's input schema, and says what it could not repair.
 
 ### errors
 
+- `httpStatusFor` — The HTTP status a gateway answers each refusal with.
 - `McpPoolError` — A refusal from the pool, with a discriminant.
 - `McpPoolErrorCode` (type) — Which of the pool's refusals this is.
 - `McpPoolErrorOptions` (type) — What an `McpPoolError` carries beyond its message.
@@ -43,6 +55,7 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 ### pool
 
 - `CallOptions` (type) — How one `call()` is made, beyond its name and arguments.
+- `DescribeOptions` (type) — What `describe()` takes beside the name.
 - `McpPool` — One MCP client per configured server, exposing their tools to an agent loop as `<slug>__<tool name>`.
 - `McpPoolOptions` (type) — How a pool is built: where its rows come from, how patient it is, and what it may spawn.
 - `PoolLog` (type) — Where the pool's own progress goes.
@@ -58,12 +71,14 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 ### results
 
 - `resultText` — What a tool call is worth as a tool message.
+- `truncateText` — Text cut to fit a character budget, keeping its head and its tail.
 
 ### transport
 
 - `createTransport` — The transport a config asks for, stdio or streamable HTTP, ready to connect.
 - `MINIMAL_CHILD_ENV` — A short allowlist of variables a stdio child usually cannot start without.
 - `readStderrTail` — Starts collecting a stdio child's stderr, and returns a reader for the last of it.
+- `TransportFactory` (type) — What builds the transport for one connection, where the pool's own construction is not wanted.
 - `TransportOptions` (type) — What a transport takes beyond the config itself.
 
 ### types
@@ -81,6 +96,9 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 - `McpServerPublicConfig` (type) — A row as `state()` reports it: everything except the credentials, unless they were asked for.
 - `McpServerState` (type) — One connected server as an operator sees it.
 - `McpStatus` (type) — `idle` is registered-but-not-connected, and where an idle-reaped server goes — a success state: nothing is wrong, there is simply no child right now.
+- `PoolCloseReason` (type) — Why a connection closed, on a `close` event.
+- `PoolEvent` (type) — Something the pool did, as `McpPool.onEvent` reports it.
 - `StdioServerConfig` (type) — A server reached by spawning a child process and speaking MCP over its stdio.
 - `ToolDefinition` (type) — One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's `ChatCompletionTool`, and assignable to it.
 - `ToolHook` (type) — One tool call a row wants made at a point in a session.
+- `ToolInfo` (type) — One tool in full, as `McpPool.describe` returns it: what `ToolDefinition` has no room for.

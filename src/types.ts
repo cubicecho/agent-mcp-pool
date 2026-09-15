@@ -1,4 +1,5 @@
-import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import type { ServerCapabilities, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type { McpPoolErrorCode } from "./errors.ts";
 
 /**
  * Everything a configured server carries whichever way it is reached — its identity and its
@@ -48,6 +49,19 @@ interface McpServerBase {
    * A call's own `CallOptions.timeoutMs` — a hook's — overrides this in turn.
    */
   callTimeoutMs?: number | null;
+  /**
+   * Whether `call()` repairs and checks arguments against this server's schemas, overriding the
+   * pool's `coerceArguments`. `null` and absent both mean "use the pool's".
+   *
+   * Off for a server whose schemas are wrong: coercion trusts them, and a tool that declares
+   * `integer` and wants a string is better sent what the model wrote.
+   */
+  coerceArguments?: boolean | null;
+  /**
+   * The most characters a `call()` to this server returns, overriding the pool's
+   * `maxResultChars`. `null` and absent mean "use the pool's"; `0` is no cap for this server.
+   */
+  maxResultChars?: number | null;
   /**
    * This server's tools the model is not offered, by the server's own names.
    *
@@ -311,7 +325,16 @@ export interface McpServerState {
    * `hidden` is whether the row's `hiddenTools` keeps it from the model. Reported rather than
    * filtered out: the operator is the one who hid it, and the form they unhide it from needs it.
    */
-  tools: { name: string; qualified: string; description: string; hidden: boolean }[];
+  tools: {
+    name: string;
+    qualified: string;
+    description: string;
+    /** The server's display name for the tool, where it sent one. */
+    title?: string;
+    /** The server's own hints about the tool. Untrusted: see `McpPool.describe`. */
+    annotations?: ToolAnnotations;
+    hidden: boolean;
+  }[];
   /**
    * The stdio child's pid. Absent over http, and while the server is not connected.
    *
@@ -353,7 +376,9 @@ export interface McpServerState {
 export interface McpProbe {
   ok: boolean;
   error: string;
-  tools: { name: string; description: string }[];
+  /** With `title` and `annotations` where the server sent them, so a UI can badge a row's
+   * destructive tools before it is saved. */
+  tools: { name: string; description: string; title?: string; annotations?: ToolAnnotations }[];
   /**
    * The server's own `instructions` from the handshake, empty where it sent none or never got
    * that far.
@@ -380,7 +405,31 @@ export interface CatalogServer {
    * point of a catalogue is a list a model picks from. `McpServerState.tools[].name` is the
    * server's own, with the qualified one beside it; the two lists look alike and are not.
    */
-  tools: { name: string; description: string }[];
+  tools: { name: string; description: string; title?: string; annotations?: ToolAnnotations }[];
+}
+
+/**
+ * One tool in full, as `McpPool.describe` returns it: what `ToolDefinition` has no room for.
+ */
+export interface ToolInfo {
+  /** The config id of the server offering it. */
+  serverId: string;
+  /** As the server named it. */
+  name: string;
+  /** `<slug>__<name>`, what the model calls. */
+  qualified: string;
+  /** The server's description, without the `[Label]` prefix the model is shown. */
+  description: string;
+  title?: string;
+  /** The server's hints: read-only, destructive, idempotent, open-world. Untrusted. */
+  annotations?: ToolAnnotations;
+  /** The server's own schema for the arguments, untouched. */
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  /** The tool's `_meta`. */
+  meta?: Record<string, unknown>;
+  /** Whether the row's `hiddenTools` keeps it from the model. */
+  hidden: boolean;
 }
 
 /**
@@ -401,3 +450,47 @@ export interface ToolDefinition {
     parameters?: Record<string, unknown>;
   };
 }
+
+/**
+ * Why a connection closed, on a `close` event.
+ *
+ * `idle` is a reap, `stop` is `stop()`, `reconnect` is `reconnect()`, `removed` and `changed` are a
+ * sync that dropped the row or changed how it is reached, `redial` is a failed or idle server
+ * being dialled again, `shutdown` is `shutdown()`, and `crash` is the server closing on its own.
+ */
+export type PoolCloseReason =
+  | "idle"
+  | "stop"
+  | "reconnect"
+  | "removed"
+  | "changed"
+  | "redial"
+  | "shutdown"
+  | "crash";
+
+/**
+ * Something the pool did, as `McpPool.onEvent` reports it.
+ *
+ * `ms` is wall time, rounded. On a `call`, `serverId` and `toolName` are absent where the name
+ * resolved to nothing; `chars` is the text's length before any cap, and `truncated` whether the
+ * cap cut it; `raw` calls carry neither. A refusal carries its `McpPoolError` code, a `tool-error`
+ * included, and the message as `error`.
+ */
+export type PoolEvent =
+  | { type: "connect"; serverId: string; ms: number; tools: number }
+  | { type: "connect-failed"; serverId: string; ms: number; error: string }
+  | { type: "close"; serverId: string; reason: PoolCloseReason; error?: string }
+  | {
+      type: "call";
+      qualified: string;
+      serverId?: string;
+      toolName?: string;
+      hidden: boolean;
+      raw: boolean;
+      ms: number;
+      ok: boolean;
+      code?: McpPoolErrorCode;
+      error?: string;
+      chars?: number;
+      truncated?: boolean;
+    };

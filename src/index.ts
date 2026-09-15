@@ -7,11 +7,24 @@
  * `McpPoolOptions.load`.
  */
 
-// Re-exported so a consumer can type an `onNotification` listener, or the capabilities `state()`
-// reports, without depending on the SDK's module layout — which this package pins through its
-// peer dependency anyway.
-export type { Notification, ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
-export { McpPoolError, type McpPoolErrorCode, type McpPoolErrorOptions } from "./errors.ts";
+// Re-exported so a consumer can type an `onNotification` or `onElicit` listener, or the
+// capabilities `state()` reports, without depending on the SDK's module layout — which this
+// package pins through its peer dependency anyway.
+export type {
+  CallToolResult,
+  ElicitRequestParams,
+  ElicitResult,
+  Notification,
+  ServerCapabilities,
+  ToolAnnotations,
+} from "@modelcontextprotocol/sdk/types.js";
+export { type CoercedArguments, coerceArguments } from "./arguments.ts";
+export {
+  httpStatusFor,
+  McpPoolError,
+  type McpPoolErrorCode,
+  type McpPoolErrorOptions,
+} from "./errors.ts";
 export {
   type ContextBlocks,
   contextBlocks,
@@ -28,6 +41,7 @@ export {
 export { listAllTools } from "./listing.ts";
 export {
   type CallOptions,
+  type DescribeOptions,
   McpPool,
   type McpPoolOptions,
   type PoolLog,
@@ -36,11 +50,12 @@ export {
   type ToolsOptions,
 } from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
-export { resultText } from "./results.ts";
+export { resultText, truncateText } from "./results.ts";
 export {
   createTransport,
   MINIMAL_CHILD_ENV,
   readStderrTail,
+  type TransportFactory,
   type TransportOptions,
 } from "./transport.ts";
 export type {
@@ -57,7 +72,10 @@ export type {
   McpServerPublicConfig,
   McpServerState,
   McpStatus,
+  PoolCloseReason,
+  PoolEvent,
   StdioServerConfig,
   ToolDefinition,
   ToolHook,
+  ToolInfo,
 } from "./types.ts";

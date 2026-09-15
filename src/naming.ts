@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerConfig, ToolDefinition } from "./types.ts";
 
 /** Between a server's namespace and its tool's own name, in every name the model sees. */
@@ -29,6 +30,14 @@ export interface PooledTool {
   /** The server's own JSON Schema, kept so a rename can rebuild the definition without asking
    * for the schemas again. */
   parameters: Record<string, unknown>;
+  /** The server's display name for the tool, where it sent one. Never what the model calls. */
+  title?: string;
+  /** The server's hints about the tool: read-only, destructive, idempotent, open-world. */
+  annotations?: ToolAnnotations;
+  /** The JSON Schema the server promises its `structuredContent` matches. */
+  outputSchema?: Record<string, unknown>;
+  /** The tool's `_meta`, passed through for a consumer that knows what a server puts there. */
+  meta?: Record<string, unknown>;
   /** `<slug>__<name>`: what the model sees, and what it calls. */
   qualified: string;
   definition: ToolDefinition;
@@ -102,12 +111,21 @@ export function couldQualify(slug: string, qualified: string) {
  */
 export function pooledTool(
   config: McpServerConfig,
-  tool: { name: string; description: string; parameters: Record<string, unknown> },
+  tool: Omit<PooledTool, "qualified" | "definition">,
 ): PooledTool {
   const slug = slugOf(config);
   const qualified = qualify(slug, tool.name);
+  // Picked rather than spread: `relabel` hands back a whole `PooledTool`, and its old `definition`
+  // must not outlive the name it was built under.
+  const { name, description, parameters, title, annotations, outputSchema, meta } = tool;
   return {
-    ...tool,
+    name,
+    description,
+    parameters,
+    ...(title !== undefined ? { title } : {}),
+    ...(annotations !== undefined ? { annotations } : {}),
+    ...(outputSchema !== undefined ? { outputSchema } : {}),
+    ...(meta !== undefined ? { meta } : {}),
     qualified,
     // Frozen because `tools()` hands this very object out rather than a copy — the agent loop
     // rebuilds its tool array every iteration, and copying every schema each time to guard

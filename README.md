@@ -355,14 +355,17 @@ handed an empty string and left to conclude the call failed:
 | --- | --- |
 | `text` | its `text` |
 | `resource`, text arm | the resource's own `text` — a file the server read is an answer, not a placeholder |
-| `resource`, blob arm | `[resource <uri> content]`, keeping the uri a follow-up call needs |
+| `resource`, blob arm | `[resource <uri> <mime>, <size> omitted]`, keeping the uri a follow-up call needs |
 | `resource_link` | `[resource_link <uri> — <name>: <description>]`, since the uri is what makes a link followable |
-| `image`, `audio`, anything else | `[<type> content]` |
+| `image`, `audio` | `[<type> <mime>, <size> omitted]`, such as `[image image/png, 42 KB omitted]` |
+| anything else | `[<type> content]` |
 
 A result with no content at all but a `structuredContent` — what a server with an `outputSchema`
 tends to answer with — is flattened to that structure as JSON, rather than reaching the model as
 `call()`'s `"(no output)"`. Text blocks win where there are any: they are what the server wrote
-for a reader.
+for a reader. The exception is text that only mirrors the structure, which the spec asks servers
+to send and most do pretty-printed. That arrives as the compact JSON, since it says the same thing
+in fewer tokens.
 
 The definitions `tools()` hands back are the pool's own objects rather than copies — the agent
 loop rebuilds its tool array every iteration, and the schema behind one cannot change without the
@@ -375,6 +378,101 @@ stderr tail, backoff, retry-on-use. A server that is merely down is retried firs
 `call()` does; a disabled one is refused, because off is not the same as out of scope. **It
 bypasses the scope check by construction:** that guard defends against a model calling a name it
 remembers, and a caller holding a server id is not a model.
+
+### What a definition has no room for
+
+An OpenAI definition is a name, a description and a schema. A server says more than that about a
+tool, and a host deciding whether a call needs a person's approval wants the rest.
+`describe(qualified)` returns it:
+
+```ts
+const info = pool.describe("files__delete", { servers });
+if (info?.annotations?.destructiveHint !== false && !info?.annotations?.readOnlyHint) {
+  await askUser(info);
+}
+```
+
+`annotations` are `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`, as the
+server sent them. `title`, `outputSchema`, the untouched `inputSchema` and the tool's `_meta` (as
+`meta`) come with them. `state().tools`, `catalog()` and `probe()` carry `title` and `annotations`
+too, so a UI can badge a destructive tool before anything calls it.
+
+**Annotations are claims, not facts.** The spec calls them untrusted, and a server that says
+`readOnlyHint: true` has only said so. Trust them as far as you trust the server.
+
+`describe()` never connects, like `tools()`, and refuses what `call()` would: a tool outside the
+scope, or a hidden one unless `hidden: true` is passed, answers `undefined`.
+
+### Results too big for the window
+
+A tool that reads a file or fetches a page can return more than a local model's whole context
+window. `maxResultChars` caps what `call()` returns, at the same three levels as the timeouts:
+
+```ts
+new McpPool({ load, maxResultChars: 16_000 });        // the pool's; unset is no cap
+{ id: "fetch", url: "...", maxResultChars: 4_000 }    // this server's; 0 is no cap
+await pool.call(name, input, { maxResultChars: 0 });  // this call's
+```
+
+Over the cap, the first two thirds of the budget and the last third are kept, with a marker
+between them on its own line:
+
+```text
+[truncated: kept 15958 of 204800 chars]
+```
+
+The head is where most answers start and the tail is where a log ends. The marker tells the model
+it did not see everything, so it can ask for less. A `tool-error` message is capped the same way.
+`truncateText(text, maxChars)` is the same cut, exported.
+
+A consumer that wants the blocks themselves, an image to render or `structuredContent` to read,
+passes `raw: true` and gets the server's `CallToolResult` back:
+
+```ts
+const result = await pool.call("charts__render", input, { servers, raw: true });
+```
+
+Unlike `client()`, that keeps the scope and hiding checks, coercion and the timeout. Nothing is
+truncated, and an `isError` result is returned rather than thrown.
+
+## Arguments
+
+Local models get argument types wrong far more often than names. They send `"5"` for a number,
+`"true"` for a boolean, an object serialised into a string, and `""` for a parameter they meant to
+leave out. A server with a strict validator refuses each one, and the model reads a stack trace.
+So `call()` checks the arguments against the tool's own `inputSchema` first, and repairs what has
+only one reading:
+
+| The model sent | The schema says | Sent as |
+| --- | --- | --- |
+| `"5"` | `integer` or `number` | `5` |
+| `"true"`, `"FALSE"` | `boolean` | `true`, `false` |
+| `'{"a": 1}'`, `'[1, 2]'` | `object`, `array` | the parsed value |
+| `5`, `true` | `string` | `"5"`, `"true"` |
+| `""` or `null`, for an optional property | a type that is neither | left out |
+| the whole input as a JSON string | | the parsed object |
+
+It recurses through `properties` and `items`. Nothing is added, a property the schema does not
+name passes through, and `anyOf`, `$ref` and formats are left to the server. What still does not
+fit is refused as `invalid-arguments`, with a message written for the model to correct from:
+
+```text
+invalid arguments for "files__read": `limit` must be an integer, got "abc"; missing required `path`
+```
+
+That refusal comes after the scope and hiding checks, so a tool this run may not reach is still
+answered as one that does not exist.
+
+On by default, and configured at the same three levels as the timeouts, nearest first:
+
+```ts
+new McpPool({ load, coerceArguments: false });            // off for the pool
+{ id: "legacy", command: "...", coerceArguments: false }  // off for one server with a wrong schema
+await pool.call(name, input, { coerce: false });          // off for one call
+```
+
+Off sends the input exactly as given. `coerceArguments(input, schema)` is exported for a consumer
+driving `client()` itself.
 
 ## Failure
 
@@ -408,6 +506,22 @@ message. It was a plain `Error` for exactly that reason, and it carries a code a
 the one a caller most needs to tell from the others: retrying a `backoff` makes sense and retrying
 a tool that rejected its arguments does not. The message is unchanged, so anything reading
 `.message` is unaffected.
+
+`invalid-arguments` is the pool refusing a call before the server sees it, because the arguments
+still failed the tool's schema after coercion. See [arguments](#arguments). `timeout` is a call
+that ran out of time. See [timeouts](#timeouts).
+
+A gateway answering over HTTP wants a status for each code, and every one that sat in front of
+this pool wrote the same table. `httpStatusFor(code)` is that table:
+
+| Code | Status |
+| --- | --- |
+| `unknown-server`, `disabled`, `unknown-tool`, `out-of-scope` | 404 |
+| `invalid-arguments` | 400 |
+| `no-configs` | 500 |
+| `connect-failed`, `tool-error` | 502 |
+| `backoff` | 503 |
+| `timeout` | 504 |
 
 A failed server is then retried, which is the other half: `sync` leaves a *healthy* unchanged
 server alone but treats a failed one as work to do, and `call` brings back a server that is
@@ -467,6 +581,10 @@ new McpPool({ load, callTimeoutMs: 30_000 });     // the pool's
 Deliberately *not* the SDK's `resetTimeoutOnProgress`: a long call that reports progress is still
 cut off at this number, because a bound a server can hold open indefinitely by talking is not a
 bound. A consumer that wants the other reading has `client()`.
+
+A call that runs out is refused as `McpPoolError` code `timeout`, carrying the `timeoutMs` that ran
+out. It used to surface as the SDK's "MCP error -32001: Request timed out", which a caller could
+only recognise by its wording.
 
 ## Probing
 
@@ -541,6 +659,61 @@ a respawn, so a `logging/message` sent during a server's own startup is not miss
 can ignore all of this — the index is rebuilt on `sync()` — but a consumer relaying the protocol
 onward cannot.
 
+## Events
+
+`PoolLog` is for a person reading a console. A tracer, a metrics exporter or a UI's activity feed
+wants the same moments as data, and used to wrap every method to get them. `onEvent` hands them
+over:
+
+```ts
+const stop = pool.onEvent((event) => {
+  if (event.type === "call") span(event.qualified, event.ms, event.ok, event.code);
+});
+```
+
+| Event | Carries |
+| --- | --- |
+| `connect` | `serverId`, `ms`, and the number of `tools` it listed |
+| `connect-failed` | `serverId`, `ms`, and the `error` the row now reports |
+| `close` | `serverId` and a `reason`, plus the `error` for a crash |
+| `call` | `qualified`, `serverId` and `toolName` once resolved, `ms`, `ok`, the refusal `code` and `error`, `chars` before any cap, `truncated`, `hidden` and `raw` |
+
+A close's `reason` is one of `idle`, `stop`, `reconnect`, `removed`, `changed`, `redial`,
+`shutdown` or `crash`. It fires only for a connection that was open, and after `state()` already
+shows where the close left the server.
+
+Listeners run synchronously as each thing happens. One that throws is logged and skipped, since a
+tracer's bug must not fail a tool call. With no listener subscribed, a call does no extra work.
+
+## Elicitation
+
+A server can stop in the middle of a tool and ask the user something: a missing field, a
+confirmation, a link to open. MCP calls that `elicitation/create`, and a client has to declare it
+at the handshake. Without `onElicit` the pool declares nothing, so the server refuses to ask and
+its tool fails. With it, every connection declares the capability and each request lands in the
+handler with the id of the server that sent it:
+
+```ts
+const pool = new McpPool({
+  clientName: "my-agent",
+  onElicit: async (serverId, params, { signal }) => {
+    const answer = await askTheUser(serverId, params.message, params, signal);
+    return answer ? { action: "accept", content: answer } : { action: "decline" };
+  },
+});
+```
+
+`params` carries `requestedSchema` for a form, or `url` when the server wants a link opened.
+Only `form` is declared by default; pass `elicitationModes: ["form", "url"]` when the host can open
+a link. A handler that throws is logged and answered `cancel`, so the server gets an answer it
+can handle rather than a protocol error.
+
+The call that caused the request is still on its clock while a person reads the question, so give
+that server a `callTimeoutMs` sized for the wait.
+
+Roots and sampling, the other two client capabilities, are deprecated in the 2026-07-28
+specification release candidate, so the pool does not offer them.
+
 ## The child's environment
 
 By default a stdio child inherits **all** of `process.env`, which is how the two servers this
@@ -577,6 +750,34 @@ nothing that was unambiguous before changes on the wire.
 `mcp-router` has a namespacing scheme that looks identical and is not: it splits names a *foreign*
 MCP client invented, longest-prefix-first, and applies the same scheme to resource URIs and prompt
 names. The two cannot be shared — unify on this truncation and its resource URIs corrupt.
+
+## Testing
+
+Every suite that exercised the pool spawned a child it was not about, and every consumer declared
+its own `makePool()` beside its own stdio fixture. `@cubicecho/agent-mcp-pool/testing` is that
+helper, published:
+
+```ts
+import { echoServer, makePool, memoryRow } from "@cubicecho/agent-mcp-pool/testing";
+
+const pool = makePool({ servers: { echo: () => echoServer() } });
+await pool.sync([memoryRow("echo")]);
+await pool.call("echo__add", { a: 1, b: 2 }); // 'add({"a":1,"b":2})'
+```
+
+No process starts. `makePool` passes `memoryTransport(servers)` as the pool's `createTransport`,
+which links the SDK's in-memory pair to a server built for that connect, found by the host of the
+row's `memory://` url. A builder rather than a server, because an SDK server connects once and a
+reconnect needs another. Any `McpServer` or low-level `Server` fits there, so a consumer tests
+against its own server as easily as against the echo one.
+
+`createTransport` is also the seam for a transport the pool does not know, such as a socket or a
+worker. It receives the row and the pool's `childEnv` policy, and returns an unconnected
+`Transport`; a factory that throws fails the connect the way a child that will not start does.
+`probe()` takes the same option. When the SDK ships the stateless HTTP transport of the
+2026-07-28 draft, this is where it plugs in before the pool learns it natively.
+
+A test that does want a real child has `echoServerPath`, a stdio script serving the same tools.
 
 ## Where the merged behaviour came from
 

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { resultText } from "../src/results.ts";
+import { resultText, truncateText } from "../src/results.ts";
 
 /**
  * The flattening every tool result goes through on its way into a message array. Exercising these
@@ -16,13 +16,27 @@ test("text blocks are joined in order", () => {
   ).toBe("one\ntwo");
 });
 
-test("a non-text block is named rather than dropped", () => {
+test("a non-text block is named rather than dropped, with what it is and how big", () => {
   // A model handed nothing would conclude the call failed; told it got an image, it can say so.
   expect(resultText({ content: [{ type: "image", data: "aGk=", mimeType: "image/png" }] })).toBe(
-    "[image content]",
+    "[image image/png, 2 bytes omitted]",
   );
   expect(resultText({ content: [{ type: "resource", resource: {} }] })).toBe("[resource content]");
-  expect(resultText({ content: [{ type: "audio", data: "aGk=" }] })).toBe("[audio content]");
+  expect(resultText({ content: [{ type: "audio", data: "aGk=" }] })).toBe(
+    "[audio 2 bytes omitted]",
+  );
+  expect(resultText({ content: [{ type: "image" }] })).toBe("[image content]");
+  expect(
+    resultText({
+      content: [{ type: "image", data: "A".repeat(4 * 1024 * 50), mimeType: "image/jpeg" }],
+    }),
+  ).toBe("[image image/jpeg, 150 KB omitted]");
+  expect(
+    resultText({
+      content: [{ type: "audio", data: "A".repeat(4 * 1024 * 1024), mimeType: "audio/wav" }],
+    }),
+  ).toBe("[audio audio/wav, 3.0 MB omitted]");
+  expect(resultText({ content: [{ type: "image", data: "YQ==" }] })).toBe("[image 1 byte omitted]");
 });
 
 /**
@@ -49,7 +63,17 @@ test("an embedded blob keeps its uri in the placeholder", () => {
     resultText({
       content: [{ type: "resource", resource: { uri: "file:///chart.png", blob: "aGk=" } }],
     }),
-  ).toBe("[resource file:///chart.png content]");
+  ).toBe("[resource file:///chart.png 2 bytes omitted]");
+  expect(
+    resultText({
+      content: [
+        {
+          type: "resource",
+          resource: { uri: "file:///chart.png", blob: "aGk=", mimeType: "image/png" },
+        },
+      ],
+    }),
+  ).toBe("[resource file:///chart.png image/png, 2 bytes omitted]");
 });
 
 test("a resource link keeps the uri that makes it followable", () => {
@@ -91,6 +115,49 @@ test("structured output is read when the blocks come to nothing", () => {
   expect(resultText({ content: [], structuredContent: null })).toBe("");
 });
 
+test("text that only mirrors the structured output is sent compact", () => {
+  const structuredContent = { rows: [1, 2], ok: true };
+  const pretty = JSON.stringify(structuredContent, null, 2);
+  expect(resultText({ content: [{ type: "text", text: pretty }], structuredContent })).toBe(
+    '{"rows":[1,2],"ok":true}',
+  );
+  // Different text is the server's own words for a reader, and wins.
+  expect(
+    resultText({ content: [{ type: "text", text: '{"rows": [1]}' }], structuredContent }),
+  ).toBe('{"rows": [1]}');
+});
+
+test("truncateText keeps head and tail within the budget", () => {
+  const text = `${"a".repeat(600)}${"z".repeat(400)}`;
+  const cut = truncateText(text, 200);
+  expect(cut.length).toBeLessThanOrEqual(200);
+  expect(cut.startsWith("aaaa")).toBe(true);
+  expect(cut.endsWith("zzzz")).toBe(true);
+  const [head = "", marker = "", tail = ""] = cut.split("\n");
+  const kept = Number(marker.match(/^\[truncated: kept (\d+) of 1000 chars\]$/)?.[1]);
+  expect(head.length + tail.length).toBe(kept);
+  // Two thirds of what is kept from the start.
+  expect(head.length).toBe(Math.ceil((kept * 2) / 3));
+
+  expect(truncateText("short", 200)).toBe("short");
+  expect(truncateText(text, undefined)).toBe(text);
+  expect(truncateText(text, 0)).toBe(text);
+  expect(truncateText(text, null)).toBe(text);
+  // Smaller than its own marker: cut plainly.
+  expect(truncateText(text, 10)).toBe("aaaaaaaaaa");
+});
+
+test("truncateText never splits a surrogate pair", () => {
+  const text = "😀".repeat(500);
+  for (const max of [60, 61, 62, 63, 99, 100]) {
+    const cut = truncateText(text, max);
+    expect(cut.length).toBeLessThanOrEqual(max);
+    expect(cut).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+    );
+  }
+});
+
 test("a block with no type at all is still accounted for", () => {
   expect(resultText({ content: [{}] })).toBe("[unknown content]");
 });
@@ -101,7 +168,9 @@ test("text and non-text keep their places relative to each other", () => {
     { type: "image", data: "aGk=", mimeType: "image/png" },
     { type: "text", text: "and its caption" },
   ];
-  expect(resultText({ content })).toBe("here is the chart:\n[image content]\nand its caption");
+  expect(resultText({ content })).toBe(
+    "here is the chart:\n[image image/png, 2 bytes omitted]\nand its caption",
+  );
 });
 
 test("a text block with no text contributes an empty line rather than the word undefined", () => {
