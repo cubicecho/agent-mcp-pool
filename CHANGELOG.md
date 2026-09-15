@@ -1,3 +1,15 @@
+# [3.2.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.1.0...v3.2.0) (2026-09-15)
+
+
+### Features
+
+* a transport seam and a published testing entry ([9fa9f93](https://github.com/cubicecho/agent-mcp-pool/commit/9fa9f93cb0f93b2266dc19a28d939dc40884cd73)), closes [#88](https://github.com/cubicecho/agent-mcp-pool/issues/88)
+* answer server elicitation through onElicit ([2b63c97](https://github.com/cubicecho/agent-mcp-pool/commit/2b63c973c22a04c35b4cc869b7e6451edba954a8)), closes [#89](https://github.com/cubicecho/agent-mcp-pool/issues/89)
+* cap tool results, describe binary blocks, and add a raw call ([94641bb](https://github.com/cubicecho/agent-mcp-pool/commit/94641bb7a68d7d8bd664dd5e3a854fdbecece3ee)), closes [#83](https://github.com/cubicecho/agent-mcp-pool/issues/83)
+* carry tool annotations, title and outputSchema through ([9a84f2a](https://github.com/cubicecho/agent-mcp-pool/commit/9a84f2ae7aaab330f16352dc10c830369307ec91)), closes [#81](https://github.com/cubicecho/agent-mcp-pool/issues/81)
+* coerce and validate call arguments, and code timeouts ([e6e7a8d](https://github.com/cubicecho/agent-mcp-pool/commit/e6e7a8d9cd95b572d4ce2b34cd614e9a6a5d0bad)), closes [#82](https://github.com/cubicecho/agent-mcp-pool/issues/82)
+* report connects, closes and calls through onEvent ([13c9d49](https://github.com/cubicecho/agent-mcp-pool/commit/13c9d49821b07e053d69a9aea6a80144ef46a424)), closes [#86](https://github.com/cubicecho/agent-mcp-pool/issues/86)
+
 # [3.1.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.0.0...v3.1.0) (2026-09-11)
 
 
