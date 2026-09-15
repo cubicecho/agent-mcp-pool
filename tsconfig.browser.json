@@ -1,0 +1,9 @@
+// The browser entries, compiled as a browser bundle would see them: no Node types, so a `node:`
+// import or a bare `process` in `hooks.ts`, `servers.ts` or anything they import fails typecheck
+// here even though the main build, which has Node's types, would accept it.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "rootDir": ".", "lib": ["ES2023", "DOM"], "types": [] },
+  "include": ["tests/browser/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

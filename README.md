@@ -140,6 +140,17 @@ choice is an error round trip per server per surface, or not offering the surfac
 reported under `indexTools: false` as well, unlike `tools` — they were already in hand, and the
 consumer that turned indexing off is the one proxying the protocol.
 
+`serversWith(state, capability)` is that check written once — the connected servers whose
+handshake offered it, which every host had spelled out for itself:
+
+```ts
+import { serversWith } from "@cubicecho/agent-mcp-pool";
+
+for (const { id } of serversWith(mcp.state(), "prompts")) {
+  // worth a prompts/list
+}
+```
+
 ## Scope
 
 `tools`, `catalog` and `call` all take an optional set of server ids. **Absent means every
@@ -226,8 +237,9 @@ so every host runs the same rows the same way.
   context has no value for skips the hook: a `session_id` sent as `"app:"` would file a turn under
   the wrong session.
 - **Validation.** `validateHooks(row.hooks)` reports an unknown event, a placeholder the event
-  does not offer, `inject` on an event that runs too late, and duplicate ids. Run it when the row is
-  saved.
+  does not offer, `inject` on an event that runs too late, and duplicate ids. It takes `unknown`
+  and reports a hook's shape too — a missing `on`, an `inject` that is not a boolean — since what a
+  form holds is not yet a `ToolHook`. Run it when the row is saved.
 - **Never rejects.** A failed call, a timeout, an abort and a skipped hook each come back as an
   outcome with `ok: false`, and are passed to `onNotice`. A memory server that is down costs the
   turn its recall, not the turn.
@@ -246,6 +258,46 @@ so every host runs the same rows the same way.
 `call()` refuses it as one that does not exist, unless the caller passes `{ hidden: true }`. Hooks
 pass it. `state()` still reports hidden tools, marked `hidden`, so a form can offer to unhide them.
 Both fields are read at call time, so an edit applies without a reconnect.
+
+## Editing rows in a browser
+
+The root entry spawns children, so importing it pulls in `node:child_process` and the SDK's stdio
+transport — which is why each UI that edits rows kept its own copy of the hook events and its own
+config importer. Two subpath entries import nothing from Node or the SDK at runtime, and are what
+a browser bundle takes instead:
+
+- **`@cubicecho/agent-mcp-pool/hooks`** — `HOOK_EVENTS`, `INJECT_EVENTS`, `hookVars`,
+  `validateHooks` and the rest of `src/hooks.ts`, with the hook types.
+- **`@cubicecho/agent-mcp-pool/servers`** — `fromMcpServersJson`, `validateServerConfig`,
+  `sameConnection` and `serversWith`, with the row types.
+
+Both are also exported from the root, for a server that already imports it. A test compiles them
+with no Node types and walks their import graph, so a `node:` import there fails CI rather than a
+consumer's build.
+
+```ts
+import { fromMcpServersJson, validateServerConfig } from "@cubicecho/agent-mcp-pool/servers";
+
+// A paste of Claude Desktop's, Cursor's or a README's config. `{ "mcpServers": { … } }`, VS Code's
+// `servers`, `{ "fs": { … } }` and a bare body (with `{ name }`) are all read.
+const rows = fromMcpServersJson(text, { env: {} });
+const problems = rows.flatMap((row) => validateServerConfig(row).map((p) => `${row.id}: ${p}`));
+```
+
+- **Each key is the row's `id`, `slug` and `label`**, and `disabled: true` is `enabled: false`.
+  A `url` with no `type` is http. `sse` is refused with a message rather than imported as a row
+  that could never connect: the pool speaks streamable HTTP.
+- **`${VAR}` and `${VAR:-default}` are filled from `env`**, which defaults to `process.env` where
+  there is one and to nothing in a browser. A variable with no value is left as written, so the
+  form shows what still needs filling in rather than an empty string.
+- **`validateServerConfig(row)`** reports every problem with a row of any shape — a missing
+  command, a url that is not http, a timeout that is not a whole number, an id that cannot
+  namespace tool names — and its hooks' problems through `validateHooks`. Empty means `sync()` can
+  have it. Whether the server answers is `probe()`'s question.
+- **`sameConnection(a, b)`** is the pool's own answer to whether an edit reconnects: only the fields
+  a child is made of, with absent and empty the same. A host that decides before handing the row
+  over should ask this rather than compare rows itself, or the two disagree about which edits
+  restart a server.
 
 ## Lifecycle
 

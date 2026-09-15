@@ -137,6 +137,30 @@ test("validation names each problem and the hook it is on", () => {
   ]);
 });
 
+/**
+ * A form holds whatever was typed, not a `ToolHook[]` — two of the three hosts wrapped the
+ * validator in guards of their own because it read fields off its parameter as though it were one.
+ */
+test("validation reports a hook's shape rather than trusting its type", () => {
+  expect(validateHooks("recall")).toEqual(["hooks must be a list"]);
+  expect(
+    validateHooks([
+      null,
+      [],
+      { id: 7, on: "beforeTurn", tool: "recall" },
+      { id: "x", tool: "recall" },
+      { id: "y", on: "beforeTurn", tool: "recall", inject: "yes", enabled: 1 },
+    ]),
+  ).toEqual([
+    "hook 1: must be an object",
+    "hook 2: must be an object",
+    "hook 3: needs an id",
+    expect.stringMatching(/^hook "x": "undefined" is not an event/),
+    'hook "y": inject must be true or false',
+    'hook "y": enabled must be true or false',
+  ]);
+});
+
 // --- context blocks -----------------------------------------------------------------------------
 
 test("contextBlocks wraps each injecting hook's output, naming its server", () => {
