@@ -35,7 +35,9 @@ export {
   hookVars,
   INJECT_EVENTS,
   INJECT_TIMEOUT_MS,
+  readVeto,
   templatePaths,
+  VETO_EVENTS,
   validateHooks,
 } from "./hooks.ts";
 export { listAllTools } from "./listing.ts";

@@ -136,6 +136,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
   // Nothing at all, which is what a recall with no hits answers with.
   if (args.empty) return { content: [] };
+  // The text verbatim, rather than wrapped in the call that asked for it. A hook's veto is read
+  // out of the tool's own output, so a test needs a tool that can answer with an exact string.
+  if (typeof args.raw === "string") return { content: [{ type: "text", text: args.raw }] };
   // A non-text content block on demand: what a tool returning a chart or a screenshot sends, and
   // what a result flattened to a string cannot carry.
   if (request.params.arguments?.image)

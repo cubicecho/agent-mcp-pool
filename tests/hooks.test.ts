@@ -1,7 +1,14 @@
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "vitest";
 import { McpPoolError } from "../src/errors.ts";
-import { contextBlocks, expandArgs, templatePaths, validateHooks } from "../src/hooks.ts";
+import {
+  contextBlocks,
+  expandArgs,
+  INJECT_TIMEOUT_MS,
+  readVeto,
+  templatePaths,
+  validateHooks,
+} from "../src/hooks.ts";
 import { McpPool } from "../src/pool.ts";
 import type { HookContext, HookOutcome, StdioServerConfig, ToolHook } from "../src/types.ts";
 
@@ -110,6 +117,7 @@ test("a well-formed set of hooks has nothing wrong with it", () => {
       hook({ id: "remember", on: "afterTurn", args: { turns: "{{turn.messages}}" } }),
       hook({ id: "card", on: "sessionEnd", args: { card: "{{vars.cardId}}", s: "{{status}}" } }),
       hook({ id: "forget", on: "sessionDelete", args: { session_id: "{{session.id}}" } }),
+      hook({ id: "keep", on: "beforeCompact", veto: true, args: { r: "{{range.from}}" } }),
     ]),
   ).toEqual([]);
   expect(validateHooks(null)).toEqual([]);
@@ -119,6 +127,7 @@ test("validation names each problem and the hook it is on", () => {
   const errors = validateHooks([
     hook({ id: "a", on: "whenever" as never }),
     hook({ id: "b", on: "afterTurn", inject: true }),
+    hook({ id: "v", on: "afterTurn", veto: true }),
     hook({ id: "c", args: { text: "{{reply}}" } }),
     hook({ id: "c" }),
     hook({ id: "d", tool: "" }),
@@ -128,12 +137,13 @@ test("validation names each problem and the hook it is on", () => {
   expect(errors).toEqual([
     expect.stringMatching(/^hook "a": "whenever" is not an event/),
     expect.stringMatching(/^hook "b": only sessionStart and beforeTurn can inject/),
+    expect.stringMatching(/^hook "v": only beforeCompact can veto/),
     expect.stringMatching(/^hook "c": beforeTurn has no \{\{reply\}\}/),
     expect.stringMatching(/^hook "c": another hook on this server has that id/),
     expect.stringMatching(/^hook "d": needs a tool/),
     expect.stringMatching(/^hook "e": maxTokens/),
     expect.stringMatching(/^hook "e": timeoutMs/),
-    expect.stringMatching(/^hook 7: needs an id/),
+    expect.stringMatching(/^hook 8: needs an id/),
   ]);
 });
 
@@ -150,6 +160,7 @@ test("validation reports a hook's shape rather than trusting its type", () => {
       { id: 7, on: "beforeTurn", tool: "recall" },
       { id: "x", tool: "recall" },
       { id: "y", on: "beforeTurn", tool: "recall", inject: "yes", enabled: 1 },
+      { id: "z", on: "beforeCompact", tool: "recall", veto: "maybe" },
     ]),
   ).toEqual([
     "hook 1: must be an object",
@@ -158,7 +169,42 @@ test("validation reports a hook's shape rather than trusting its type", () => {
     expect.stringMatching(/^hook "x": "undefined" is not an event/),
     'hook "y": inject must be true or false',
     'hook "y": enabled must be true or false',
+    'hook "z": veto must be true or false',
   ]);
+});
+
+// --- reading a veto out of an answer ------------------------------------------------------------
+
+test("readVeto asks for a JSON object saying so, and takes its reason", () => {
+  expect(readVeto('{"veto":true}')).toEqual({ veto: true });
+  expect(readVeto('  {"veto": true, "reason": "  a write is in flight  "}  ')).toEqual({
+    veto: true,
+    reason: "a write is in flight",
+  });
+  // A reason that is not usable text leaves the veto standing on its own.
+  expect(readVeto('{"veto":true,"reason":"   "}')).toEqual({ veto: true });
+  expect(readVeto('{"veto":true,"reason":7}')).toEqual({ veto: true });
+});
+
+/** A tool that has never heard of any of this must not be able to stall a compaction. */
+test("nothing but that object is a veto", () => {
+  for (const text of [
+    undefined,
+    "",
+    "no thanks",
+    "veto",
+    '{"veto":false}',
+    '{"veto":"true"}',
+    '{"veto":1}',
+    "{}",
+    '[{"veto":true}]',
+    "true",
+    "null",
+    '"{\\"veto\\":true}"',
+    '{"veto":true',
+  ]) {
+    expect(readVeto(text), text).toEqual({ veto: false });
+  }
 });
 
 // --- context blocks -----------------------------------------------------------------------------
@@ -331,6 +377,82 @@ test("inject is ignored on an event that runs too late, even on an unvalidated r
   await withHooks([hook({ on: "afterTurn", inject: true })]);
   const [result] = await pool.runHooks("afterTurn", context);
   expect(result.inject).toBe(false);
+});
+
+// --- vetoing a compaction -----------------------------------------------------------------------
+
+/** The context `beforeCompact` carries, which its hooks' templates are validated against. */
+const compacting: HookContext = {
+  session: { id: "s1" },
+  compacting: [{ speaker: "user", text: "hi", uuid: "s1:0" }],
+  range: { from: 0, through: 4 },
+};
+
+/** A `beforeCompact` hook answering with `text` verbatim, so the veto reader sees exactly it. */
+const vetoHook = (text: string, over: Partial<ToolHook> = {}): ToolHook =>
+  hook({ on: "beforeCompact", veto: true, args: { raw: text }, ...over });
+
+test("a hook allowed to veto, answering with one, comes back as a veto and its reason", async () => {
+  await withHooks([vetoHook('{"veto":true,"reason":"still writing"}')]);
+  const [result] = await pool.runHooks("beforeCompact", compacting);
+  expect(result).toMatchObject({ ok: true, veto: true, text: "still writing" });
+
+  await withHooks([vetoHook('{"veto":true}')]);
+  const [bare] = await pool.runHooks("beforeCompact", compacting);
+  expect(bare.veto).toBe(true);
+  // The JSON it asked with is not an answer a host would show anyone.
+  expect(bare.text).toBeUndefined();
+});
+
+test("the same answer from a row that may not veto is an ordinary one", async () => {
+  await withHooks([vetoHook('{"veto":true}', { veto: false })]);
+  const [result] = await pool.runHooks("beforeCompact", compacting);
+  expect(result).toMatchObject({ ok: true, text: '{"veto":true}' });
+  expect(result.veto).toBeUndefined();
+});
+
+/** `veto` is held to its event in the runner too, since a row need not have been validated. */
+test("veto on an event that announces nothing stoppable is ignored", async () => {
+  await withHooks([vetoHook('{"veto":true}', { on: "afterTurn" })]);
+  const [result] = await pool.runHooks("afterTurn", context);
+  expect(result).toMatchObject({ ok: true, text: '{"veto":true}' });
+  expect(result.veto).toBeUndefined();
+});
+
+test("prose from a hook that may veto is an answer, not a refusal", async () => {
+  await withHooks([vetoHook("go ahead")]);
+  const [result] = await pool.runHooks("beforeCompact", compacting);
+  expect(result).toMatchObject({ ok: true, text: "go ahead" });
+  expect(result.veto).toBeUndefined();
+});
+
+/** agent-core reads `ok: false` as no opinion, so a server that is down must not stall every
+ * compaction. Each of the three ways a hook can fail to answer has to leave `veto` unset. */
+test("a failure, a timeout and a skip never veto", async () => {
+  await withHooks([
+    vetoHook("", { id: "failed", args: { fail: '{"veto":true}' } }),
+    vetoHook("", { id: "slow", timeoutMs: 100, args: { raw: '{"veto":true}', sleepMs: 2000 } }),
+    vetoHook('{"veto":true}', { id: "skipped", args: { raw: "{{vars.absent}}" } }),
+  ]);
+  const outcomes = await pool.runHooks("beforeCompact", compacting);
+  expect(outcomes.map(({ hookId, ok }) => [hookId, ok])).toEqual([
+    ["failed", false],
+    ["slow", false],
+    ["skipped", false],
+  ]);
+  expect(outcomes.every((o) => o.veto === undefined)).toBe(true);
+});
+
+/** Nothing waits on `beforeCompact` unless a hook can veto, so that is where the short patience
+ * comes from — otherwise the compaction would sit behind the SDK's own timeout. */
+test("a hook that can veto gets the waited-on timeout rather than the call's", async () => {
+  await withHooks([vetoHook("", { args: { raw: '{"veto":true}', sleepMs: 5000 } })]);
+  const started = Date.now();
+  const [result] = await pool.runHooks("beforeCompact", compacting);
+  expect(result.ok).toBe(false);
+  expect(result.veto).toBeUndefined();
+  expect(Date.now() - started).toBeLessThan(INJECT_TIMEOUT_MS + 1500);
+  expect(result.ms).toBeGreaterThanOrEqual(INJECT_TIMEOUT_MS - 200);
 });
 
 test("runHooks fills in now when the caller did not", async () => {

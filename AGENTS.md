@@ -107,6 +107,12 @@ line would make editing the server list the same permission as running anything 
 an abort or a placeholder with no value. Hosts await it on a turn's path and rely on that. A new
 failure mode goes through `settle()`, never out as a throw.
 
+**A veto is granted by the row and only asked for by the tool.** `ToolHook.veto` is what lets a
+`beforeCompact` hook decline a compaction; the tool's `{"veto": true}` without it is an ordinary
+answer. Inferring it from the output would make "connected a server" the same permission as "can
+stall this session's compaction". And it is only ever set beside `ok: true` — agent-core reads a
+failure as no opinion, so a memory server that is down must not stall every compaction.
+
 **Hooks may call hidden tools; the model may not.** `call(..., { hidden: true })` is for the host's
 own calls. Never pass it for a name a model sent, since keeping those tools from the model is the
 whole point of `hiddenTools`.

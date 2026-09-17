@@ -44,8 +44,10 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 - `HOOK_EVENTS` — Every event a hook can be bound to, in the order a session meets them.
 - `hookVars` — The template paths an event offers, `vars.*` aside.
 - `INJECT_EVENTS` — The events whose output can reach the model.
-- `INJECT_TIMEOUT_MS` — How long an injecting hook gets when its row does not say.
+- `INJECT_TIMEOUT_MS` — How long a hook something waits on gets when its row does not say.
+- `readVeto` — Whether a hook's answer asked for a veto, and why.
 - `templatePaths` — Every path a hook's `args` names, each once.
+- `VETO_EVENTS` — The events a hook may decline.
 - `validateHooks` — What is wrong with a row's hooks, for the form that saves them.
 
 ### listing
@@ -123,13 +125,15 @@ Importable in a browser as `@cubicecho/agent-mcp-pool/hooks`, for the editor tha
 
 - `HOOK_EVENTS` — Every event a hook can be bound to, in the order a session meets them.
 - `INJECT_EVENTS` — The events whose output can reach the model.
-- `INJECT_TIMEOUT_MS` — How long an injecting hook gets when its row does not say.
+- `VETO_EVENTS` — The events a hook may decline.
+- `INJECT_TIMEOUT_MS` — How long a hook something waits on gets when its row does not say.
 - `DEFAULT_HOOK_MAX_TOKENS` — The cap on one hook's injected text when its row does not set `maxTokens`.
 - `hookVars` — The template paths an event offers, `vars.*` aside.
 - `templatePaths` — Every path a hook's `args` names, each once.
 - `ExpandedArgs` (type) — What `expandArgs` made of a hook's arguments.
 - `expandArgs` — Fills a hook's `args` from its context.
 - `validateHooks` — What is wrong with a row's hooks, for the form that saves them.
+- `readVeto` — Whether a hook's answer asked for a veto, and why.
 - `ContextBlocks` (type) — What `contextBlocks` built, and what each hook contributed to it.
 - `contextBlocks` — The injecting hooks' output, as context for the model.
 - `HookContext` (type)

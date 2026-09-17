@@ -12,7 +12,14 @@ import { coerceArguments } from "./arguments.ts";
 import { requestBudget } from "./budget.ts";
 import { copyConfig, scope } from "./config.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
-import { DEFAULT_HOOK_MAX_TOKENS, expandArgs, INJECT_EVENTS, INJECT_TIMEOUT_MS } from "./hooks.ts";
+import {
+  DEFAULT_HOOK_MAX_TOKENS,
+  expandArgs,
+  INJECT_EVENTS,
+  INJECT_TIMEOUT_MS,
+  readVeto,
+  VETO_EVENTS,
+} from "./hooks.ts";
 import { listAllTools } from "./listing.ts";
 import { couldQualify, labelOf, type PooledTool, pooledTool, qualify, slugOf } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
@@ -1568,6 +1575,10 @@ export class McpPool {
    *
    * Hooks may call tools the row hides from the model — that is most of what hiding is for.
    *
+   * A `beforeCompact` hook whose row says `veto` can ask that the compaction not happen, and its
+   * outcome carries `veto: true`; see `readVeto`. Whether that is acted on is the host's — in
+   * agent-core, `consult` and `compactTranscript`'s `honourVeto`.
+   *
    * @param event Which point in the session this is.
    * @param context What the event carries, for the hooks' templates. `now` is filled in if absent.
    * @param options Scope, signal and the failure listener — see `RunHooksOptions`.
@@ -1612,7 +1623,10 @@ export class McpPool {
       inject: Boolean(hook.inject) && INJECT_EVENTS.has(hook.on),
       maxTokens: hook.maxTokens ?? DEFAULT_HOOK_MAX_TOKENS,
     };
-    const settle = (result: Pick<HookOutcome, "ok" | "text" | "error" | "skipped">) => {
+    // Held to its events for the same reason as `inject`, and the stakes are higher: a row that
+    // never went through `validateHooks` must not be able to stall a compaction from `afterTurn`.
+    const mayVeto = Boolean(hook.veto) && VETO_EVENTS.has(hook.on);
+    const settle = (result: Pick<HookOutcome, "ok" | "text" | "error" | "skipped" | "veto">) => {
       const outcome: HookOutcome = { ...base, ...result, ms: Date.now() - started };
       if (!outcome.ok) {
         const notice = `${base.label}: ${hook.on} hook "${hook.id}" ${
@@ -1633,9 +1647,10 @@ export class McpPool {
     }
 
     // By the event rather than by `inject`: a `beforeTurn` hook that injects nothing still holds
-    // up the turn it runs in front of.
-    const timeoutMs =
-      hook.timeoutMs ?? (INJECT_EVENTS.has(hook.on) ? INJECT_TIMEOUT_MS : undefined);
+    // up the turn it runs in front of. A hook that can veto is waited on the same way — the
+    // compaction does not start until it answers — so it gets that patience too.
+    const waitedOn = INJECT_EVENTS.has(hook.on) || mayVeto;
+    const timeoutMs = hook.timeoutMs ?? (waitedOn ? INJECT_TIMEOUT_MS : undefined);
     try {
       const text = await bounded(
         this.call(qualify(slugOf(row), hook.tool), args, {
@@ -1647,6 +1662,12 @@ export class McpPool {
         timeoutMs,
         signal,
       );
+      // Only a call that came back can veto. A failure is no opinion — agent-core reads `ok:
+      // false` as such — so a memory server that is down cannot stall every compaction.
+      if (mayVeto) {
+        const { veto, reason } = readVeto(text);
+        if (veto) return settle({ ok: true, veto: true, text: reason });
+      }
       // The pool's own placeholder for an empty result is for a model, which must be told
       // something; for a hook it is nothing to inject.
       return settle({ ok: true, text: text === "(no output)" ? undefined : text });
