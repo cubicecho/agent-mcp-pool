@@ -228,7 +228,7 @@ so every host runs the same rows the same way.
 | `sessionStart` | before a session's first turn | `prompt` | yes |
 | `beforeTurn` | before each turn's request | `prompt`, `turn.index` | yes |
 | `afterTurn` | once a turn has its reply | `prompt`, `reply`, `turn.index`, `turn.messages` | no |
-| `beforeCompact` | before old messages are summarised away | `compacting`, `range.from`, `range.through` | no |
+| `beforeCompact` | before old messages are summarised away | `compacting`, `range.from`, `range.through` | no, but see `veto` |
 | `sessionEnd` | when a run that ends, ends | `status`, `reply` | no |
 | `sessionDelete` | when the host deletes a session | — | no |
 
@@ -237,7 +237,8 @@ so every host runs the same rows the same way.
   context has no value for skips the hook: a `session_id` sent as `"app:"` would file a turn under
   the wrong session.
 - **Validation.** `validateHooks(row.hooks)` reports an unknown event, a placeholder the event
-  does not offer, `inject` on an event that runs too late, and duplicate ids. It takes `unknown`
+  does not offer, `inject` on an event that runs too late, `veto` on an event that announces
+  nothing stoppable, and duplicate ids. It takes `unknown`
   and reports a hook's shape too — a missing `on`, an `inject` that is not a boolean — since what a
   form holds is not yet a `ToolHook`. Run it when the row is saved.
 - **Never rejects.** A failed call, a timeout, an abort and a skipped hook each come back as an
@@ -246,13 +247,43 @@ so every host runs the same rows the same way.
 - **At once, in order.** An event's hooks run in parallel, and their outcomes come back in
   configuration order.
 - **Bounded.** A hook gets its `timeoutMs`. Otherwise it gets 3s on `sessionStart` and `beforeTurn`,
-  because the user is waiting on those, and the SDK's timeout everywhere else. The bound covers
-  waking a server that is down as well as the request itself.
-- **Read and add only.** A hook cannot veto a turn or rewrite it. What it returns reaches the model
+  because the user is waiting on those, and on a hook that can veto, because the compaction is —
+  and the SDK's timeout everywhere else. The bound covers waking a server that is down as well as
+  the request itself.
+- **Read and add only.** A hook cannot stop a turn or rewrite it. What it returns reaches the model
   only through `contextBlocks`. That function caps each block at its hook's `maxTokens` (1000 by
   default) and the total at 2000. Its `injected` lists each hook that made it in, with its `tokens`
   and its `text` exactly as it went into the block — trimmed, cut with `…` if over a cap, without
   the wrapper — for a host that shows the user what each hook added.
+
+### Declining a compaction
+
+The one thing a hook can stop is a compaction. A `beforeCompact` hook whose row says `veto: true`
+may ask for the summary not to be written — a memory server mid-write, a session the operator has
+pinned. Its outcome then carries `veto: true`, and agent-core's `consult` (and
+`compactTranscript` with `hooks.honourVeto`) is what acts on it. Nothing in the pool acts on it:
+the pool reports what the hook said.
+
+```ts
+hooks: [{ id: "hold", on: "beforeCompact", tool: "zeromem_status", veto: true }],
+```
+
+- **The row grants it, the tool asks for it.** Like `inject`, `veto` is set on the row, so which
+  servers may stall a compaction is the operator's choice rather than the choice of whoever wrote
+  the tool. Without the flag, a tool answering `{"veto": true}` has simply answered that.
+- **How a tool asks.** Its output parses as a JSON object whose `veto` is `true` — MCP gives a
+  tool no channel but its result. A `reason` string becomes the outcome's `text`, so a host's
+  note can say why. Prose, a list, `{"veto": "true"}`: none of them is a veto, so a tool that has
+  never heard of any of this cannot stop a compaction by accident. `readVeto` is that rule, and
+  is exported for a host that wants to hold a server to it.
+- **A failure is no opinion.** `veto` is only ever set beside `ok: true`. A call that failed,
+  timed out or was skipped leaves it unset, because agent-core reads `ok: false` as "no opinion" —
+  a memory server that is down must cost a compaction nothing, not stall every one of them.
+- **Only `beforeCompact`, validated or not.** `validateHooks` refuses `veto` on any other event,
+  and `runHooks` holds a row to the same rule, since a row need not have been through the
+  validator.
+- **A forced compaction ignores it.** That is agent-core's rule: a run already past its window has
+  no better option, and a veto there trades the summary for a `ContextOverflow`.
 
 `hiddenTools` is the other half. A hidden tool is left out of `tools()` and `catalog()`, and
 `call()` refuses it as one that does not exist, unless the caller passes `{ hidden: true }`. Hooks
@@ -266,8 +297,8 @@ transport — which is why each UI that edits rows kept its own copy of the hook
 config importer. Two subpath entries import nothing from Node or the SDK at runtime, and are what
 a browser bundle takes instead:
 
-- **`@cubicecho/agent-mcp-pool/hooks`** — `HOOK_EVENTS`, `INJECT_EVENTS`, `hookVars`,
-  `validateHooks` and the rest of `src/hooks.ts`, with the hook types.
+- **`@cubicecho/agent-mcp-pool/hooks`** — `HOOK_EVENTS`, `INJECT_EVENTS`, `VETO_EVENTS`,
+  `hookVars`, `validateHooks` and the rest of `src/hooks.ts`, with the hook types.
 - **`@cubicecho/agent-mcp-pool/servers`** — `fromMcpServersJson`, `validateServerConfig`,
   `sameConnection` and `serversWith`, with the row types.
 

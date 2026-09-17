@@ -8,7 +8,9 @@ import {
   type HookEvent,
   hookVars,
   INJECT_EVENTS,
+  readVeto,
   type ToolHook,
+  VETO_EVENTS,
   validateHooks,
 } from "../../src/hooks.ts";
 import {
@@ -26,6 +28,8 @@ const rows: McpServerConfig[] = fromMcpServersJson('{"mcpServers":{}}', { env: {
 export const checked = [
   events.map(hookVars),
   INJECT_EVENTS.has(hook.on),
+  VETO_EVENTS.has(hook.on),
+  readVeto('{"veto":true}').veto,
   validateHooks([hook]),
   rows.map(validateServerConfig),
   rows.length > 1 && sameConnection(rows[0], rows[1]),

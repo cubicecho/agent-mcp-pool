@@ -53,11 +53,19 @@ const COMMON_VARS = ["session.id", "host", "now"] as const;
 export const INJECT_EVENTS: ReadonlySet<HookEvent> = new Set(["sessionStart", "beforeTurn"]);
 
 /**
- * How long an injecting hook gets when its row does not say.
+ * The events a hook may decline. Only `beforeCompact` announces something that has not happened
+ * yet and can still be called off — a turn is the user's, and the rest are reports.
+ */
+export const VETO_EVENTS: ReadonlySet<HookEvent> = new Set(["beforeCompact"]);
+
+/**
+ * How long a hook something waits on gets when its row does not say.
  *
  * An injecting hook is on the path of the user's reply, so its patience is the user's: a memory
  * server that has not answered in three seconds costs more than the context it would have added.
- * The others run beside or after the turn, and get the call's ordinary timeout.
+ * A hook that can veto is waited on the same way — the compaction does not start until it answers
+ * — so it gets the same. The others run beside or after the turn, and get the call's ordinary
+ * timeout.
  */
 export const INJECT_TIMEOUT_MS = 3000;
 
@@ -162,9 +170,9 @@ const positive = (value: unknown) =>
  * What is wrong with a row's hooks, for the form that saves them.
  *
  * Everything that can be known without a connection: an event that does not exist, a placeholder
- * the event does not offer, `inject` where nothing would read it, an id used twice. Whether the
- * tool exists is not checked — the server may not be connected, and a row saved before its server
- * is up is ordinary.
+ * the event does not offer, `inject` where nothing would read it, `veto` where nothing can be
+ * called off, an id used twice. Whether the tool exists is not checked — the server may not be
+ * connected, and a row saved before its server is up is ordinary.
  *
  * Takes `unknown` and checks the shape before the rules, since what a form holds is not yet a
  * `ToolHook[]` — a hook with no `on`, or `inject: "yes"`, is reported rather than read as one.
@@ -191,7 +199,7 @@ export function validateHooks(hooks: unknown): string[] {
     ids.add(id);
 
     if (typeof hook.tool !== "string" || !hook.tool.trim()) errors.push(`${name}: needs a tool`);
-    for (const flag of ["inject", "enabled"] as const) {
+    for (const flag of ["inject", "enabled", "veto"] as const) {
       if (hook[flag] != null && typeof hook[flag] !== "boolean") {
         errors.push(`${name}: ${flag} must be true or false`);
       }
@@ -203,6 +211,9 @@ export function validateHooks(hooks: unknown): string[] {
     const on = hook.on as HookEvent;
     if (hook.inject && !INJECT_EVENTS.has(on)) {
       errors.push(`${name}: only sessionStart and beforeTurn can inject; ${on} runs too late`);
+    }
+    if (hook.veto && !VETO_EVENTS.has(on)) {
+      errors.push(`${name}: only beforeCompact can veto; nothing about ${on} can be called off`);
     }
     if (hook.maxTokens != null && !positive(hook.maxTokens)) {
       errors.push(`${name}: maxTokens must be a positive whole number`);
@@ -217,6 +228,37 @@ export function validateHooks(hooks: unknown): string[] {
     }
   }
   return errors;
+}
+
+/**
+ * Whether a hook's answer asked for a veto, and why.
+ *
+ * MCP gives a tool one channel back — its result — so the ask is in the output: text that parses
+ * as a JSON object whose `veto` is `true`. Prose, a number, a list, a `veto` that is only truthy:
+ * none of them is a veto, so a tool that has never heard of this cannot stop a compaction by
+ * accident, and neither can one whose output happens to start with a brace.
+ *
+ * Only read for a hook whose row says `veto` — this is the half that says what the tool sent, not
+ * the half that says whether it was allowed to send it.
+ *
+ * @param text What the tool returned. Absent is no veto.
+ * @returns `reason` is the object's `reason` when it is a non-empty string, which becomes the
+ *   outcome's `text` so a host's note can say why rather than quote the JSON.
+ */
+export function readVeto(text: string | undefined): { veto: boolean; reason?: string } {
+  if (!text) return { veto: false };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { veto: false };
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+    return { veto: false };
+  const answer = parsed as { veto?: unknown; reason?: unknown };
+  if (answer.veto !== true) return { veto: false };
+  const reason = typeof answer.reason === "string" ? answer.reason.trim() : "";
+  return reason ? { veto: true, reason } : { veto: true };
 }
 
 /**

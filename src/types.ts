@@ -113,8 +113,9 @@ export interface HookMessage {
 /**
  * One tool call a row wants made at a point in a session.
  *
- * Only reads and adds: a hook cannot stop a turn or change what the user said. What one returns
+ * Reads and adds: a hook cannot stop a turn or change what the user said. What one returns
  * reaches the model only when `inject` is set, and only on the events that run before a request.
+ * The one thing it can decline is a compaction, and only where its row says `veto`.
  */
 export interface ToolHook {
   /** Stable within its row; what a failure notice and a UI name it by. */
@@ -129,9 +130,21 @@ export interface ToolHook {
   args?: unknown;
   /** Hand what the tool returns to the model. `sessionStart` and `beforeTurn` only. */
   inject?: boolean;
+  /**
+   * Let this hook decline what its event announces. `beforeCompact` only — see `readVeto` for how
+   * the tool asks, and `HookOutcome.veto` for what the host does with it.
+   *
+   * Set on the row, the way `inject` is, rather than taken from whatever the tool returned: which
+   * servers may stall a compaction is the operator's choice, not the choice of whoever wrote the
+   * tool. Without it, a tool answering `{"veto": true}` is an ordinary answer.
+   */
+  veto?: boolean;
   /** The most of this hook's output that is injected, in estimated tokens. 1000 if not set. */
   maxTokens?: number;
-  /** How long the call gets. 3000 on the events that inject; the call's own timeout otherwise. */
+  /**
+   * How long the call gets. 3000 when something waits on the hook — the events that inject, and a
+   * hook that can veto — and the call's own timeout otherwise.
+   */
   timeoutMs?: number;
   /** `false` keeps the hook on the row without running it. */
   enabled?: boolean;
@@ -176,8 +189,20 @@ export interface HookOutcome {
   event: HookEvent;
   /** The call ran and the tool did not report an error. */
   ok: boolean;
-  /** What the tool returned. Absent when it returned nothing, and when the call failed. */
+  /**
+   * What the tool returned. Absent when it returned nothing, and when the call failed. On a veto
+   * it is the reason the tool gave, if it gave one, rather than the JSON it asked with.
+   */
   text?: string;
+  /**
+   * The hook asked that what its event announced not happen. Only ever set on a `beforeCompact`
+   * hook whose row says `veto`, and only alongside `ok: true` — a server that is down has not
+   * asked for anything, so a failure is no opinion rather than a refusal.
+   *
+   * Absent rather than `false` when there is no veto, matching agent-core's `consult`, which
+   * reads it off an outcome and holds off the compaction.
+   */
+  veto?: boolean;
   /** Why it failed or was skipped. */
   error?: string;
   /** Set when the hook never ran — a placeholder with no value, or a signal already aborted. */
