@@ -1,3 +1,10 @@
+# [3.4.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.3.0...v3.4.0) (2026-09-17)
+
+
+### Features
+
+* let a beforeCompact hook veto a compaction ([2318f5c](https://github.com/cubicecho/agent-mcp-pool/commit/2318f5ce29a1dfc788f3f81251f752c67ef88a44))
+
 # [3.3.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.2.0...v3.3.0) (2026-09-15)
 
 
