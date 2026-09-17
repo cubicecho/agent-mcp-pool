@@ -780,9 +780,9 @@ test("a server that dies on startup is reported with what it wrote to stderr", a
 
 /**
  * `qualify` truncates at 64 characters for OpenAI's function-name limit, so a server whose slug
- * is long enough gives several of its tools the same name and the later one silently replaces the
- * earlier in the index. Pinned rather than fixed: the fix is a short hash suffix, which changes
- * wire names for every existing server and deserves to be its own change.
+ * is long enough used to give several of its tools the same name, and the later one silently
+ * replaced the earlier in the index — the model was offered a name that dispatched to the wrong
+ * tool. The tail of an over-long name is a hash of the whole of it instead.
  */
 test("tool names too long for the limit stay distinct instead of collapsing", async () => {
   const slug = "e".repeat(62); // 62 + "__" is already the whole budget
@@ -800,6 +800,94 @@ test("tool names too long for the limit stay distinct instead of collapsing", as
   // And each one reaches its own tool rather than whichever survived the overwrite.
   const called = await Promise.all(names.map((name) => pool.call(name, { a: 1, b: 2 })));
   expect(called.map((result) => result.split("(")[0]).toSorted()).toEqual(["add", "echo", "ping"]);
+});
+
+/** A pool that keeps what it logged at `error`, which is where a name clash is reported. */
+function loudPool(options: ConstructorParameters<typeof McpPool>[0] = {}) {
+  const logged: string[] = [];
+  const made = new McpPool({
+    clientName: "mcp-pool-test",
+    log: { error: (message) => logged.push(message) },
+    ...options,
+  });
+  return { pool: made, logged };
+}
+
+/**
+ * Two rows whose effective slug is the same want the same names, and the index has one slot. It
+ * used to go to whichever of them `reindex` saw last among the `ready` ones — so the tool the
+ * model had been offered moved to the other server after a reap, and moved back on the next call.
+ */
+test("two servers sharing a namespace do not shadow each other silently", async () => {
+  const loud = loudPool();
+  pool = loud.pool;
+  // Configured with the later id first, so the winner cannot be the one that happened to be
+  // reached first: the tie is broken by the rows, since entries are inserted as their handshakes
+  // finish and those run concurrently.
+  await pool.sync([
+    config({ id: "b-echo", slug: "shared" }),
+    config({ id: "a-echo", slug: "shared" }),
+  ]);
+
+  expect(toolNames(pool)).toEqual(["shared__ping", "shared__echo", "shared__add"]);
+  // And the shadowed server is not browsable either, or `load_tools` offers the model a name
+  // `call` then refuses.
+  expect(pool.catalog().map((server) => server.id)).toEqual(["a-echo"]);
+  expect(loud.logged).toEqual([
+    '[mcp] a-echo, b-echo all use the namespace "shared"; only a-echo\'s tools are offered — ' +
+      "give the others a slug of their own",
+  ]);
+});
+
+test("a namespace clash is reported once, not again on every reindex", async () => {
+  const loud = loudPool();
+  pool = loud.pool;
+  const rows = [config({ id: "a-echo", slug: "shared" }), config({ id: "b-echo", slug: "shared" })];
+  await pool.sync(rows);
+  // A reindex runs on every connect, close and reap; a standing misconfiguration would otherwise
+  // fill the log at the rate the pool churns.
+  await pool.stop("b-echo");
+  await pool.sync(rows);
+
+  expect(loud.logged).toHaveLength(1);
+});
+
+/**
+ * MCP allows a dot in a tool name and OpenAI does not, so `fs.read` reaches `function.name`
+ * unaltered and the API refuses the whole request — every other server's tools included.
+ */
+test("a tool named in a way OpenAI refuses is offered under a name it accepts", async () => {
+  const loud = loudPool();
+  pool = loud.pool;
+  await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_ODD_NAMES: "1" } })]);
+
+  for (const name of toolNames(pool)) expect(name).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+  expect(toolNames(pool)).toContain("echo__fs_read");
+  // Called back under the name the server gave it: only the wire name was substituted.
+  expect(await pool.call("echo__fs_read", {})).toBe("fs.read({})");
+
+  // `fs_read` wanted that same name, and there is no legal name left that tells the two apart.
+  // The second is left out rather than taking over the name the model was already given.
+  expect(toolNames(pool).filter((name) => name === "echo__fs_read")).toHaveLength(1);
+  expect(loud.logged).toEqual([
+    '[mcp] echo-1/"fs_read" is not offered: it answers to "echo__fs_read", which ' +
+      'echo-1/"fs.read" already has',
+  ]);
+});
+
+test("maxDescriptionChars caps what the model is sent, not what the pool reports", async () => {
+  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, maxDescriptionChars: 20 });
+  await pool.sync([config()]);
+
+  const sent = pool
+    .tools()
+    .flatMap((tool) => (tool.type === "function" ? [tool.function.description ?? ""] : []));
+  for (const description of sent) expect(description.length).toBeLessThanOrEqual(20);
+  // Not vacuous: `[Echo] echoes the text back` is 27 characters before the cap. A budget this
+  // small has no room for the marker, so it is cut plainly.
+  expect(sent).toContain("[Echo] echoes the te");
+  // A wire limit, not an opinion about what a tool should say for itself.
+  expect(pool.describe("echo__echo")?.description).toBe("echoes the text back");
 });
 
 /**

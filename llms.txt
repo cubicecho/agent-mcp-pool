@@ -84,6 +84,7 @@ Questions about server rows that need neither a connection nor Node — for the 
 - `sameConnection` — Whether two rows describe the same live connection.
 - `serversWith` — The connected servers that offer a capability — the filter every host wrote for itself.
 - `validateServerConfig` — What is wrong with a row, for the form that saves it — before `sync()` is handed it.
+- `validateServers` — What is wrong with a whole list of rows, for the form that saves one into it.
 
 ### transport
 
@@ -153,6 +154,7 @@ Importable in a browser as `@cubicecho/agent-mcp-pool/servers`: nothing here, an
 - `McpServersJsonOptions` (type) — What `fromMcpServersJson` needs besides the JSON.
 - `fromMcpServersJson` — Rows from the `mcpServers` JSON that Claude Desktop, Claude Code, Cursor and most server READMEs describe a server with.
 - `validateServerConfig` — What is wrong with a row, for the form that saves it — before `sync()` is handed it.
+- `validateServers` — What is wrong with a whole list of rows, for the form that saves one into it.
 - `HttpServerConfig` (type)
 - `McpServerConfig` (type)
 - `McpServerState` (type)

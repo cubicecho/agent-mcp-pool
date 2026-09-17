@@ -59,6 +59,17 @@ const tools = [
   },
 ];
 
+// Names MCP allows and OpenAI does not: a dot is legal in an MCP tool name and illegal in a
+// `function.name`. The pair is deliberate — they are one name once the dot has been substituted,
+// which is the collision no amount of care in the pool can name its way out of.
+if (process.env.MCP_ECHO_ODD_NAMES) {
+  const schema = { type: "object", properties: {} };
+  tools.push(
+    { name: "fs.read", description: "reads a file", inputSchema: schema },
+    { name: "fs_read", description: "reads it again", inputSchema: schema },
+  );
+}
+
 const server = new Server(
   { name: "echo", version: "0.0.1" },
   {

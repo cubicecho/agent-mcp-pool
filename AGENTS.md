@@ -56,6 +56,23 @@ with an empty array — indistinguishable from a run scoped to servers that offe
 **A qualified name is resolved whole, never split on `__`.** Names past 64 characters keep 57 of
 them plus a hash of the whole, so the split of a shortened name is a tool its server never had.
 
+**A wire name is what OpenAI accepts, not what MCP allows.** `[A-Za-z0-9_-]` only — a dot is legal
+in an MCP tool name and illegal in a `function.name`, and the API refuses the request rather than
+the tool, so one server's `fs.read` costs the model every other server's tools. The hash on a
+truncated name is of the name *before* the substitution, or `a.b` and `a_b` stop being distinguishable
+exactly when the hash is the only thing left distinguishing them.
+
+**Nothing is silently overwritten in the index.** Two rows with the same slug, or two tool names
+that substitute alike, get a deterministic winner — the lower id, the earlier listing — and the
+loser is left out of `tools()`, `catalog()` and `call()` alike, and logged once. Decided over
+every entry, not just the `ready` ones: a tie broken among those is a tie broken by the idle
+clock, so the name moves after a reap and moves back on the next call.
+
+**A bad list is refused at save time, not by `sync()`.** `validateServers` exists because a
+duplicate id or a shared slug is invisible to `validateServerConfig` — one row cannot see it. It
+is not wired into `sync()` on purpose: rows are edited from a UI, and throwing on one bad row
+takes down every other server in the pool.
+
 **`tools()` and `catalog()` never connect a server. `call()` and `client()` do.** A cold server
 offers nothing until something has used it; listing its tools without spawning it would need a
 cached last-known list, which does not exist yet.

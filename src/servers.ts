@@ -290,6 +290,52 @@ export function validateServerConfig(row: unknown): string[] {
   return errors;
 }
 
+/**
+ * What is wrong with a whole list of rows, for the form that saves one into it.
+ *
+ * `validateServerConfig` sees one row and so cannot see the two problems that are properties of
+ * the set: an `id` used twice, which the pool keys its entries on, and two rows whose effective
+ * slug agrees, which namespaces both servers' tools identically. Neither is refused by `sync()` —
+ * a pool that dropped every server over one duplicate row would punish the servers that were
+ * fine — so a shadowed row instead offers the model nothing, and this is where an operator is
+ * told before it gets that far.
+ *
+ * @param rows The candidate list, of any shape.
+ * @returns Each row's own problems, prefixed with which row they are on, then the set's. Empty
+ *   means the list is fine.
+ */
+export function validateServers(rows: unknown): string[] {
+  if (!Array.isArray(rows)) return ["servers must be a list"];
+  const errors: string[] = [];
+  for (const [index, row] of rows.entries()) {
+    const id = isRecord(row) && typeof row.id === "string" && row.id.trim() ? row.id : "";
+    const name = id ? `server "${id}"` : `server ${index + 1}`;
+    errors.push(...validateServerConfig(row).map((error) => `${name}: ${error}`));
+  }
+
+  // Only rows that named themselves can be reported as clashing; one with no usable id already
+  // has an error of its own, and a second message about it would say nothing new.
+  const ids = new Map<string, number>();
+  const slugs = new Map<string, string>();
+  for (const row of rows) {
+    if (!isRecord(row) || typeof row.id !== "string" || !row.id.trim()) continue;
+    ids.set(row.id, (ids.get(row.id) ?? 0) + 1);
+    const slug = (typeof row.slug === "string" && row.slug) || row.id;
+    const first = slugs.get(slug);
+    if (first === undefined) slugs.set(slug, row.id);
+    else if (first !== row.id) {
+      errors.push(
+        `servers "${first}" and "${row.id}" share the namespace "${slug}": ` +
+          `their tools would answer to the same names (set a slug)`,
+      );
+    }
+  }
+  for (const [id, count] of ids) {
+    if (count > 1) errors.push(`server "${id}": another server has that id`);
+  }
+  return errors;
+}
+
 const isString = (value: unknown) => typeof value === "string";
 
 const isStringRecord = (value: unknown) => isRecord(value) && Object.values(value).every(isString);
