@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { truncateText } from "./results.ts";
 import type { McpServerConfig, ToolDefinition } from "./types.ts";
 
 /** Between a server's namespace and its tool's own name, in every name the model sees. */
@@ -66,18 +67,32 @@ export function labelOf(config: Pick<McpServerConfig, "id" | "slug" | "label">) 
 }
 
 /**
+ * Every character OpenAI's `^[a-zA-Z0-9_-]{1,64}$` rejects, which is a wider set than MCP's own
+ * rule for a tool name: a server is free to call a tool `fs.read`, and the dot reaches
+ * `function.name` unaltered.
+ */
+const DISALLOWED = /[^A-Za-z0-9_-]/g;
+
+/**
  * The one place a tool's wire name is built, so `call` and `tools` agree.
  *
- * Plain truncation at OpenAI's 64-character limit made two tools sharing a 64-character prefix
- * collapse onto one key, and the second silently replaced the first in the index — so the model
- * was offered a name that dispatched to the wrong tool. An over-long name now gives up its tail
- * to a hash of the whole name, which is what tells the two apart. Names that already fit are
- * untouched.
+ * Two rules, in this order. Anything outside OpenAI's character set becomes `_`, since a name the
+ * API refuses is not a name — the whole tool array is rejected, so one server naming a tool
+ * `fs.read` takes down every other server's tools with it. Then the 64-character limit: plain
+ * truncation made two tools sharing a 64-character prefix collapse onto one key, and the second
+ * silently replaced the first in the index, so the model was offered a name that dispatched to the
+ * wrong tool. An over-long name gives up its tail to a hash instead.
+ *
+ * The hash is of the name as the server gave it, before the substitution, so `a.b` and `a_b` stay
+ * distinct when they are truncated. Under the limit they do not, which is what `reindex` reports;
+ * there is no shorter name that is both legal and unique, and a mangled name the model can call is
+ * worth more than a legal one nobody can read.
  */
 export function qualify(slug: string, tool: string) {
-  const full = `${slug}${SEPARATOR}${tool}`;
+  const built = `${slug}${SEPARATOR}${tool}`;
+  const full = built.replace(DISALLOWED, "_");
   if (full.length <= NAME_LIMIT) return full;
-  const digest = createHash("sha256").update(full).digest("hex").slice(0, HASH_LENGTH);
+  const digest = createHash("sha256").update(built).digest("hex").slice(0, HASH_LENGTH);
   return `${full.slice(0, NAME_LIMIT - HASH_LENGTH - 1)}_${digest}`;
 }
 
@@ -95,9 +110,14 @@ const TRUNCATED_TAIL = new RegExp(`_[0-9a-f]{${HASH_LENGTH}}$`);
  * A name that was not truncated still carries its whole slug, so the prefix settles it. A
  * truncated name is `NAME_LIMIT` characters ending in its hash, and a slug long enough to be cut
  * into lost its own tail as well — so only its head is there to compare.
+ *
+ * The prefix is substituted the same way `qualify` builds it. A slug is meant to have passed
+ * `validateServerConfig`, which allows no character this touches, but the pool does not enforce
+ * that — and a `wake` comparing a raw prefix against a substituted name would never match, so a
+ * cold server with an unusual slug could never be woken by one of its own tool names.
  */
 export function couldQualify(slug: string, qualified: string) {
-  const prefix = `${slug}${SEPARATOR}`;
+  const prefix = `${slug}${SEPARATOR}`.replace(DISALLOWED, "_");
   if (qualified.startsWith(prefix)) return true;
   if (qualified.length !== NAME_LIMIT || !TRUNCATED_TAIL.test(qualified)) return false;
   return prefix.startsWith(qualified.slice(0, NAME_LIMIT - HASH_LENGTH - 1));
@@ -108,10 +128,15 @@ export function couldQualify(slug: string, qualified: string) {
  *
  * One place, because `connect` builds these and `relabel` rebuilds them; when the two drift, the
  * model calls a name the pool no longer indexes.
+ *
+ * @param maxDescriptionChars A cap on the description in `definition`, prefix included — see
+ *   `McpPoolOptions.maxDescriptionChars`. `PooledTool.description` keeps the server's own text
+ *   either way, the way `name` keeps the server's own name.
  */
 export function pooledTool(
   config: McpServerConfig,
   tool: Omit<PooledTool, "qualified" | "definition">,
+  maxDescriptionChars?: number,
 ): PooledTool {
   const slug = slugOf(config);
   const qualified = qualify(slug, tool.name);
@@ -137,7 +162,10 @@ export function pooledTool(
       type: "function",
       function: Object.freeze({
         name: qualified,
-        description: `[${labelOf(config)}] ${tool.description}`.trim(),
+        description: truncateText(
+          `[${labelOf(config)}] ${tool.description}`.trim(),
+          maxDescriptionChars,
+        ),
         parameters: tool.parameters,
       }),
     }),

@@ -19,6 +19,7 @@ import {
   sameConnection,
   serversWith,
   validateServerConfig,
+  validateServers,
 } from "../../src/servers.ts";
 
 const hook: ToolHook = { id: "recall", on: "beforeTurn", tool: "recall", inject: true };
@@ -32,6 +33,7 @@ export const checked = [
   readVeto('{"veto":true}').veto,
   validateHooks([hook]),
   rows.map(validateServerConfig),
+  validateServers(rows),
   rows.length > 1 && sameConnection(rows[0], rows[1]),
   serversWith([], "prompts"),
 ];

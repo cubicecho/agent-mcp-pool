@@ -60,6 +60,36 @@ test("names that share a truncated prefix stay distinct", () => {
   for (const name of names) expect(name.length).toBeLessThanOrEqual(64);
 });
 
+/**
+ * MCP allows `[A-Za-z0-9_.-]` in a tool name; OpenAI allows `^[a-zA-Z0-9_-]{1,64}$`. A server
+ * calling its tool `fs.read` therefore sends a `function.name` the API refuses — and it refuses
+ * the request, which is every other server's tools along with it.
+ */
+test("a name carries no character OpenAI would refuse", () => {
+  expect(qualify("echo", "fs.read")).toBe("echo__fs_read");
+  expect(qualify("echo", "read:file/now")).toBe("echo__read_file_now");
+  // The slug half as well. `validateServerConfig` allows none of this, but nothing makes the pool
+  // reject a row that never went through it.
+  expect(qualify("my server", "ping")).toBe("my_server__ping");
+});
+
+test("two names that only a refused character told apart stay apart once truncated", () => {
+  const slug = "e".repeat(60);
+  const dotted = qualify(slug, "a.b");
+  const scored = qualify(slug, "a_b");
+
+  // Both are over the limit, so both are cut — and the hash is of the name as the server gave it,
+  // which by then is the only thing left that still distinguishes them.
+  expect(dotted).toHaveLength(64);
+  expect(dotted).not.toBe(scored);
+});
+
+test("couldQualify claims a name built from a slug it had to substitute", () => {
+  // `wake` compares a raw slug against a name that has already been through `qualify`. Without
+  // the same substitution here, a cold server with an unusual slug is never woken by its own tool.
+  expect(couldQualify("my server", qualify("my server", "ping"))).toBe(true);
+});
+
 test("the same name is built the same way every time", () => {
   // `connect` builds these and `relabel` rebuilds them; a hash that drifted between the two would
   // leave the model calling a name the index no longer holds.
@@ -107,6 +137,33 @@ test("a tool with no description of its own is still introduced by its server", 
 
   // Trimmed rather than left as `[Echo] `, which reads to a model as a truncated sentence.
   expect(description).toBe("[Echo]");
+});
+
+/**
+ * OpenAI refuses a function description past 1024 characters, and refuses the request rather than
+ * the tool — so one server's usage guide costs the model every other server's tools.
+ */
+test("a description is capped over the whole of what the model is sent, prefix included", () => {
+  const written = "x".repeat(2000);
+  const pooled = pooledTool(config(), tool({ description: written }), 120);
+  const sent =
+    (pooled.definition.type === "function" ? pooled.definition.function.description : "") ?? "";
+
+  expect(sent.length).toBeLessThanOrEqual(120);
+  // The prefix counts against the budget, because it is what the API measures.
+  expect(sent.startsWith("[Echo] ")).toBe(true);
+  // What the server actually said is still on the tool, the way its own name is.
+  expect(pooled.description).toBe(written);
+});
+
+test("a description that fits is untouched, and no cap leaves even a long one alone", () => {
+  const sent = (description: string, max?: number) => {
+    const { definition } = pooledTool(config(), tool({ description }), max);
+    return (definition.type === "function" ? definition.function.description : "") ?? "";
+  };
+
+  expect(sent("x".repeat(2000))).toHaveLength(2007);
+  expect(sent("Answers.", 1024)).toBe("[Echo] Answers.");
 });
 
 test("the server's schema is passed through untouched, not rebuilt", () => {

@@ -824,11 +824,50 @@ nothing else to put in a slug column, and a second name beside such an id only g
 a way to make the two disagree. `state()` reports the effective value, so a consumer that never
 set one still sees what its tools are called.
 
-A name that does not fit keeps its first 57 characters and spends the rest on `_` plus six hex
-digits of a SHA-256 of the *whole* name. Truncating alone made two tools sharing a 64-character
-prefix collapse onto one key, so the second silently replaced the first and the model was offered
-a name that dispatched to the wrong tool. Names that already fit are returned byte-for-byte, so
-nothing that was unambiguous before changes on the wire.
+Every character outside `[A-Za-z0-9_-]` becomes `_` first. MCP allows a dot in a tool name and
+OpenAI does not, so a server calling its tool `fs.read` sends a `function.name` the API refuses —
+and it refuses the *request*, so one such tool costs the model every other server's tools too.
+
+A name that then does not fit keeps its first 57 characters and spends the rest on `_` plus six
+hex digits of a SHA-256 of the *whole* name, as the server gave it. Truncating alone made two
+tools sharing a 64-character prefix collapse onto one key, so the second silently replaced the
+first and the model was offered a name that dispatched to the wrong tool. Hashing the name before
+the substitution keeps `a.b` and `a_b` apart when they are cut. Names that already fit and already
+qualify are returned byte-for-byte, so nothing that was unambiguous before changes on the wire.
+
+### When two tools want the same name
+
+Two rows with the same effective slug, or one server's `fs.read` and `fs_read`, want a single slot
+in the index. Nothing is silently overwritten: a namespace goes to the lower of the two ids, the
+other server's tools are left out of `tools()`, `catalog()` and `call()` entirely, and the clash is
+logged at `error` once — not again on each reindex, which runs on every connect, close and reap.
+The tie is broken by the rows rather than by which child was up, or the name would move to the
+other server after a reap and move back on the next call.
+
+Catch it at save time instead. `validateServers(rows)` checks a whole list the way
+`validateServerConfig` checks one, and only a list can see a duplicate id or a shared slug:
+
+```ts
+const errors = validateServers(rows);
+if (errors.length > 0) return { ok: false, errors };
+```
+
+`sync()` deliberately does not refuse a clashing list. Rows are edited from a UI, and a pool that
+threw on one bad row would take every other server down with it.
+
+### Descriptions too long for the API
+
+OpenAI also caps a function description at 1024 characters, and a server is free to send a usage
+guide several times that. `maxDescriptionChars` caps what `tools()` sends:
+
+```ts
+new McpPool({ load, maxDescriptionChars: 1024 }); // unset is no cap
+```
+
+Counted over the whole of what the model is sent, `[Label] ` prefix included, since that is what
+the API measures, and cut like a result — head, marker, tail. `state()`, `catalog()` and
+`describe()` still report the server's own text in full: this is a wire limit, not an opinion
+about what a tool should say for itself.
 
 `mcp-router` has a namespacing scheme that looks identical and is not: it splits names a *foreign*
 MCP client invented, longest-prefix-first, and applies the same scheme to resource URIs and prompt

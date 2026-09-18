@@ -176,6 +176,19 @@ export interface McpPoolOptions {
    */
   maxResultChars?: number;
   /**
+   * The most characters a tool's description may take in `tools()`. Unset is no cap.
+   *
+   * OpenAI refuses a function description past 1024 characters, and a server is free to send
+   * several thousand — a whole usage guide, sometimes the tool's own examples. The refusal is of
+   * the request rather than of that one tool, so one verbose server costs the model every other
+   * server's tools as well.
+   *
+   * Counted over the description the model is sent, `[Label] ` prefix included, since that is what
+   * the API measures. `state()`, `catalog()` and `describe()` still report the server's own text
+   * in full: this is a wire limit, not an opinion about what a tool should say for itself.
+   */
+  maxDescriptionChars?: number;
+  /**
    * Answers a server that asks the user for input mid-call: MCP's `elicitation/create`.
    *
    * Absent, the pool declares no elicitation capability, so a well-behaved server does not ask and
@@ -425,6 +438,9 @@ export class McpPool {
    */
   private index = new Map<string, { client: Client; tool: PooledTool; serverId: string }>();
 
+  /** The name clashes the last `reindex` found, so a standing one is reported once, not per pass. */
+  private clashes = new Set<string>();
+
   /** Everything currently subscribed to server→client notifications, across every server. */
   private listeners = new Set<(id: string, notification: Notification) => void>();
   private eventListeners = new Set<(event: PoolEvent) => void>();
@@ -443,6 +459,7 @@ export class McpPool {
   private readonly callTimeoutMs?: number;
   private readonly coerceArguments: boolean;
   private readonly maxResultChars?: number;
+  private readonly maxDescriptionChars?: number;
   private readonly onElicit?: McpPoolOptions["onElicit"];
   private readonly elicitationModes: ("form" | "url")[];
   private readonly createTransport: TransportFactory;
@@ -463,6 +480,7 @@ export class McpPool {
     callTimeoutMs,
     coerceArguments = true,
     maxResultChars,
+    maxDescriptionChars,
     onElicit,
     elicitationModes = ["form"],
     lazy = false,
@@ -480,6 +498,7 @@ export class McpPool {
     this.callTimeoutMs = callTimeoutMs;
     this.coerceArguments = coerceArguments;
     this.maxResultChars = maxResultChars;
+    this.maxDescriptionChars = maxDescriptionChars;
     this.onElicit = onElicit;
     this.elicitationModes = elicitationModes;
     this.lazy = lazy;
@@ -756,7 +775,7 @@ export class McpPool {
     // running the old one, so re-arm rather than let it fire on a stale duration.
     if (reclocked) this.touch(entry);
     if (!renamed) return;
-    entry.tools = entry.tools.map((tool) => pooledTool(config, tool));
+    entry.tools = entry.tools.map((tool) => pooledTool(config, tool, this.maxDescriptionChars));
   }
 
   /** Whether a failed server is enabled, down, and has waited out its backoff. */
@@ -806,16 +825,90 @@ export class McpPool {
     });
   }
 
-  /** Rebuilt whenever the pool changes, so `call` resolves a name without scanning for it. */
+  /**
+   * Rebuilt whenever the pool changes, so `call` resolves a name without scanning for it.
+   *
+   * Two servers can want the same name, and the index has one slot. The loser is left out and
+   * said out loud rather than quietly overwritten: an overwrite gives the model a name that
+   * dispatches to whichever server was `ready` at the time, so a reap moves it to the other
+   * server and the next call moves it back.
+   */
   private reindex() {
     this.index.clear();
+    // Which of two rows sharing a namespace owns it, settled over every entry and broken by id.
+    // Over every entry because only `ready` ones reach the index, so a tie broken among those is
+    // a tie broken by the idle clock. By id because that is in the rows: entries are inserted as
+    // their handshakes finish, concurrently, so their order is not the configured order.
+    const owner = new Map<string, string>();
+    const reported = new Set<string>();
+    const shadows = new Map<string, string[]>();
+    for (const entry of this.entries.values()) {
+      const slug = slugOf(entry.config);
+      const first = owner.get(slug);
+      if (first === undefined) owner.set(slug, entry.config.id);
+      else {
+        const [kept, lost] =
+          first < entry.config.id ? [first, entry.config.id] : [entry.config.id, first];
+        owner.set(slug, kept);
+        shadows.set(slug, [...(shadows.get(slug) ?? []), lost]);
+      }
+    }
+    for (const [slug, lost] of shadows) {
+      const kept = owner.get(slug);
+      const all = [kept, ...lost].sort();
+      this.warnOnce(reported, `ns:${slug}:${all.join(",")}`, () =>
+        this.log.error?.(
+          `[mcp] ${all.join(", ")} all use the namespace "${slug}"; only ${kept}'s tools are ` +
+            `offered — give the others a slug of their own`,
+        ),
+      );
+    }
+
     for (const entry of this.entries.values()) {
       const { client } = entry;
       if (entry.status !== "ready" || !client) continue;
+      if (owner.get(slugOf(entry.config)) !== entry.config.id) continue;
       for (const tool of entry.tools) {
+        // One server's own two tools can still land on one name: `qualify` substitutes every
+        // character OpenAI refuses, so `fs.read` and `fs_read` become the same name once they are
+        // legal. Listing order wins, since nothing else distinguishes them.
+        const held = this.index.get(tool.qualified);
+        if (held) {
+          this.warnOnce(reported, `name:${entry.config.id}:${tool.qualified}`, () =>
+            this.log.error?.(
+              `[mcp] ${entry.config.id}/"${tool.name}" is not offered: it answers to ` +
+                `"${tool.qualified}", which ${held.serverId}/"${held.tool.name}" already has`,
+            ),
+          );
+          continue;
+        }
         this.index.set(tool.qualified, { client, tool, serverId: entry.config.id });
       }
     }
+    this.clashes = reported;
+  }
+
+  /**
+   * Whether this entry is the one the index credits with a tool.
+   *
+   * `catalog` lists a ready server's tools straight off the entry, so without this a shadowed
+   * server is browsed under names `call` refuses — the model picks a tool out of `load_tools`
+   * and is told it does not exist.
+   */
+  private offers(entry: Entry, tool: PooledTool) {
+    return this.index.get(tool.qualified)?.serverId === entry.config.id;
+  }
+
+  /**
+   * Logs a clash the first reindex that finds it, and not again while it stands.
+   *
+   * A reindex runs on every connect, close and reap, so a misconfiguration nobody has fixed yet
+   * would otherwise fill the log at the rate the pool churns. `clashes` is replaced each pass, so
+   * one that is fixed and then made again is reported again.
+   */
+  private warnOnce(reported: Set<string>, key: string, warn: () => void) {
+    reported.add(key);
+    if (!this.clashes.has(key)) warn();
   }
 
   /**
@@ -903,17 +996,21 @@ export class McpPool {
       entry.pid = typeof pid === "number" ? pid : undefined;
       entry.startedAt = Date.now();
       entry.tools = tools.map((tool) =>
-        pooledTool(config, {
-          name: tool.name,
-          description: tool.description ?? "",
-          parameters: (tool.inputSchema ?? { type: "object" }) as Record<string, unknown>,
-          // Kept, not interpreted: the pool has no use for them, and a host deciding whether a
-          // call needs a person's approval has no other way to see them.
-          title: tool.title,
-          annotations: tool.annotations,
-          outputSchema: tool.outputSchema as Record<string, unknown> | undefined,
-          meta: tool._meta,
-        }),
+        pooledTool(
+          config,
+          {
+            name: tool.name,
+            description: tool.description ?? "",
+            parameters: (tool.inputSchema ?? { type: "object" }) as Record<string, unknown>,
+            // Kept, not interpreted: the pool has no use for them, and a host deciding whether a
+            // call needs a person's approval has no other way to see them.
+            title: tool.title,
+            annotations: tool.annotations,
+            outputSchema: tool.outputSchema as Record<string, unknown> | undefined,
+            meta: tool._meta,
+          },
+          this.maxDescriptionChars,
+        ),
       );
       // Installed only once the server is up: a child that dies mid-handshake is reported by
       // `connect` rejecting, and `onClose` firing then would race the success path below.
@@ -1241,9 +1338,11 @@ export class McpPool {
     for (const entry of this.entries.values()) {
       if (entry.status !== "ready") continue;
       if (allowed && !allowed.has(entry.config.id)) continue;
-      // Before the emptiness check, so a server whose every tool is hidden drops out like one
-      // that offers none.
-      const offered = entry.tools.filter(({ name }) => !isHidden(entry.config, name));
+      // Before the emptiness check, so a server whose every tool is hidden — or whose names all
+      // belong to another server — drops out like one that offers none.
+      const offered = entry.tools.filter(
+        (tool) => !isHidden(entry.config, tool.name) && this.offers(entry, tool),
+      );
       if (offered.length === 0) continue;
       out.push({
         id: entry.config.id,

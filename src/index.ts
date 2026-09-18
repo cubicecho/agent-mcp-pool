@@ -59,6 +59,7 @@ export {
   sameConnection,
   serversWith,
   validateServerConfig,
+  validateServers,
 } from "./servers.ts";
 export {
   createTransport,

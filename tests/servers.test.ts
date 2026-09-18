@@ -5,6 +5,7 @@ import {
   sameConnection,
   serversWith,
   validateServerConfig,
+  validateServers,
 } from "../src/servers.ts";
 import type { McpServerState } from "../src/types.ts";
 
@@ -268,4 +269,52 @@ test("sameConnection is exported for a host that decides for itself whether an e
   const row = { id: "a", label: "A", enabled: true, transport: "http", url: "https://x" } as const;
   expect(sameConnection(row, { ...row, label: "renamed" })).toBe(true);
   expect(sameConnection(row, { ...row, headers: { A: "1" } })).toBe(false);
+});
+
+// --- validating a list ---------------------------------------------------------------------------
+
+/** A row with nothing wrong with it, so a list's own problems are the only ones reported. */
+const row = (over: Record<string, unknown> = {}) => ({
+  id: "fs",
+  label: "Files",
+  enabled: true,
+  transport: "stdio",
+  command: "npx",
+  ...over,
+});
+
+test("a list of well-formed rows that do not clash has nothing wrong with it", () => {
+  expect(validateServers([row(), row({ id: "notes" })])).toEqual([]);
+  expect(validateServers([])).toEqual([]);
+  expect(validateServers("fs")).toEqual(["servers must be a list"]);
+});
+
+test("each row's own problems are reported against the row they are on", () => {
+  expect(validateServers([row({ command: "" }), { id: "" }])).toEqual([
+    'server "fs": needs a command',
+    "server 2: needs an id",
+    "server 2: label must be a string",
+    "server 2: enabled must be true or false",
+    expect.stringMatching(/^server 2: transport must be/),
+  ]);
+});
+
+/**
+ * The defect this exists for: both rows are individually fine, and nothing below this would say
+ * so — the pool indexes one server's tools over the other's and the model is offered one of them.
+ */
+test("two rows that namespace their tools the same way are reported, naming both", () => {
+  expect(validateServers([row(), row({ id: "fs-2", slug: "fs" })])).toEqual([
+    expect.stringMatching(/^servers "fs" and "fs-2" share the namespace "fs"/),
+  ]);
+  // A slug matching another row's id collides just as hard, since a row with no slug uses its id.
+  expect(validateServers([row(), row({ id: "other", slug: "fs" })])).toHaveLength(1);
+  // A slug of its own is what takes a row out of the clash.
+  expect(validateServers([row(), row({ id: "fs-2", slug: "notes" })])).toEqual([]);
+});
+
+test("an id used twice is reported once, whatever the rows say", () => {
+  expect(validateServers([row(), row({ label: "Files again" })])).toEqual([
+    'server "fs": another server has that id',
+  ]);
 });
