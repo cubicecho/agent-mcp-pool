@@ -1,3 +1,10 @@
+## [3.4.1](https://github.com/cubicecho/agent-mcp-pool/compare/v3.4.0...v3.4.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* stop slug collisions shadowing silently and tool names OpenAI refuses ([e2656ac](https://github.com/cubicecho/agent-mcp-pool/commit/e2656acea867da44d232edcdc5d4549257ba7fb4)), closes [#84](https://github.com/cubicecho/agent-mcp-pool/issues/84)
+
 # [3.4.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.3.0...v3.4.0) (2026-09-17)
 
 
