@@ -34,8 +34,9 @@ export interface ProbeOptions extends TransportOptions {
  * @param config The server to dial. Nothing is stored, so it need not be saved first.
  * @param client How this process introduces itself; `-probe` is appended to the name. A bare
  *   string is the name alone, and reports this package's own version beside it.
- * @param options `childEnv` narrows a stdio child's inheritance, `timeoutMs` bounds the wait —
- *   and where it is unset, the row's own `connectTimeoutMs` does.
+ * @param options `childEnv` narrows a stdio child's inheritance, `fetch` is what an http server
+ *   is reached with, and `timeoutMs` bounds the wait — where it is unset, the row's own
+ *   `connectTimeoutMs` does.
  * @returns Never throws — a failure is `{ ok: false }` carrying the child's stderr where there is
  *   any, since that is usually the only real explanation. A success carries the server's tools and
  *   its own `instructions`, both off the handshake it just made.

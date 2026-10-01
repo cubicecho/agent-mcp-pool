@@ -63,6 +63,8 @@ export {
 } from "./servers.ts";
 export {
   createTransport,
+  DEFAULT_KEEP_ALIVE_TIMEOUT_MS,
+  keepAliveFetch,
   MINIMAL_CHILD_ENV,
   readStderrTail,
   type TransportFactory,

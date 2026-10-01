@@ -76,5 +76,8 @@
     "openai": "^7.8.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "undici": "^7.30.0"
   }
 }

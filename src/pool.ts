@@ -1,4 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   type CallToolResult,
   type ElicitRequestParams,
@@ -121,6 +122,14 @@ export interface McpPoolOptions {
    * them; `MINIMAL_CHILD_ENV` is a sensible allowlist to narrow to.
    */
   childEnv?: readonly string[];
+  /**
+   * What every http server is reached with. Defaults to `keepAliveFetch()`, which keeps an idle
+   * connection for 30s so a tool call after a pause does not open a new one.
+   *
+   * Pass `keepAliveFetch(ms)` for another idle time, or a `fetch` of your own for a proxy.
+   * `probe()` uses it too.
+   */
+  fetch?: FetchLike;
   /**
    * How long a server gets to connect: `initialize` and every page of `tools/list` together.
    *
@@ -454,6 +463,7 @@ export class McpPool {
   private readonly log: PoolLog;
   private readonly crashBackoffMs: number;
   private readonly childEnv?: readonly string[];
+  private readonly fetch?: FetchLike;
   private readonly connectTimeoutMs?: number;
   private readonly probeTimeoutMs?: number;
   private readonly callTimeoutMs?: number;
@@ -475,6 +485,7 @@ export class McpPool {
     log,
     crashBackoffMs = CRASH_BACKOFF_MS,
     childEnv,
+    fetch,
     connectTimeoutMs,
     probeTimeoutMs,
     callTimeoutMs,
@@ -493,6 +504,7 @@ export class McpPool {
     this.clientVersion = clientVersion;
     this.crashBackoffMs = crashBackoffMs;
     this.childEnv = childEnv;
+    this.fetch = fetch;
     this.connectTimeoutMs = connectTimeoutMs;
     this.probeTimeoutMs = probeTimeoutMs;
     this.callTimeoutMs = callTimeoutMs;
@@ -969,7 +981,10 @@ export class McpPool {
       client.fallbackNotificationHandler = async (notification) => {
         this.notify(config.id, notification);
       };
-      const transport = this.createTransport(config, { childEnv: this.childEnv });
+      const transport = this.createTransport(config, {
+        childEnv: this.childEnv,
+        fetch: this.fetch,
+      });
       // Listening before the connect, because a server that dies during startup says whatever it
       // has to say then, and the connect only reports that the pipe closed.
       entry.stderrTail = readStderrTail(transport);
@@ -1797,6 +1812,7 @@ export class McpPool {
       { name: this.clientName, version: this.clientVersion },
       {
         childEnv: this.childEnv,
+        fetch: this.fetch,
         createTransport: this.createTransport,
         // The row outranks both pool-wide numbers, `probeTimeoutMs` included: a server whose own
         // row says it needs two minutes to start needs them behind the button too, and a probe

@@ -2,7 +2,8 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, expect, test } from "vitest";
-import { createTransport, readStderrTail } from "../src/transport.ts";
+import { McpPool } from "../src/pool.ts";
+import { createTransport, keepAliveFetch, readStderrTail } from "../src/transport.ts";
 import type { HttpServerConfig, McpConnection } from "../src/types.ts";
 
 /**
@@ -86,6 +87,80 @@ test("a row with no headers sends none of its own", async () => {
   expect(seen.headers?.authorization).toBeUndefined();
   // It still sent a request, which is what says the null was handled rather than swallowed.
   expect(seen.headers?.["content-type"]).toContain("application/json");
+});
+
+/**
+ * A server that counts the connections opened to it and says nothing about how long it keeps one,
+ * so the client's own idle timeout is the only thing deciding. Node's default would advertise
+ * `timeout=5` and be believed.
+ */
+const counting = async (seen: { connections: number }) => {
+  const server = http.createServer((request, response) => {
+    request.resume();
+    response.writeHead(500).end();
+  });
+  server.keepAliveTimeout = 0;
+  server.on("connection", () => {
+    seen.connections += 1;
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+};
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The reason the option exists. Node's `fetch` drops an idle connection after 4s, so this waits
+ * past that: a second connection here means the transport went back to the global `fetch`.
+ */
+test("an http transport reuses its connection after a pause longer than fetch's own 4s", async () => {
+  const seen = { connections: 0 };
+  const transport = createTransport(config({ url: await counting(seen) }));
+
+  await expect(transport.send(ping)).rejects.toThrow();
+  await pause(4500);
+  await expect(transport.send(ping)).rejects.toThrow();
+
+  expect(seen.connections).toBe(1);
+}, 10_000);
+
+test("a fetch passed in is the one an http transport dials with", async () => {
+  const seen = { connections: 0 };
+  const transport = createTransport(config({ url: await counting(seen) }), {
+    fetch: keepAliveFetch(50),
+  });
+
+  await expect(transport.send(ping)).rejects.toThrow();
+  // Past the 50ms this fetch keeps a connection, and far inside the 30s the default would.
+  await pause(400);
+  await expect(transport.send(ping)).rejects.toThrow();
+
+  expect(seen.connections).toBe(2);
+});
+
+/**
+ * The pool's half: the option is no use if only a hand-built transport honours it. Both of the
+ * pool's dials are checked, since `probe()` builds its transport on a path of its own.
+ */
+test("a pool's fetch is what its connects and its probes dial with", async () => {
+  const dialled: string[] = [];
+  const pool = new McpPool({
+    log: {},
+    fetch: async (url) => {
+      dialled.push(String(url));
+      return new Response(null, { status: 500 });
+    },
+  });
+
+  await pool.sync([
+    { id: "a", slug: "a", label: "a", enabled: true, ...config({ url: "http://a.test/mcp" }) },
+  ]);
+  await pool.probe(config({ url: "http://b.test/mcp" }));
+  await pool.shutdown();
+
+  expect(dialled).toContain("http://a.test/mcp");
+  expect(dialled).toContain("http://b.test/mcp");
 });
 
 /**

@@ -813,6 +813,33 @@ The permissive default is kept deliberately: narrowing breaks any server that qu
 a variable the allowlist does not name, and the stderr tail above is what makes that diagnosable
 when it happens.
 
+## Connections to http servers
+
+An http server is reached with `fetch`, and Node's keeps an idle connection for 4s. An agent
+thinks for longer than that between two tool calls, so each call after a pause opened a new
+connection first: a TCP handshake, and against a remote server a TLS one, which measured 300ms
+where a kept connection took 30. The pool dials with `keepAliveFetch()` instead, which keeps an
+idle connection for 30s.
+
+```ts
+import { keepAliveFetch, McpPool } from "@cubicecho/agent-mcp-pool";
+
+new McpPool({ load, fetch: keepAliveFetch(120_000) }); // another idle time
+new McpPool({ load, fetch: viaProxy });                // or a fetch of your own
+```
+
+The number is what the pool does where a server is silent. One that answers with
+`Keep-Alive: timeout=N` is taken at its word, and Node's own http server says `timeout=5` unless
+its `keepAliveTimeout` is raised, so a server you run needs that raised for the pool to have
+anything to keep. Thirty seconds rather than more because the far end decides too: a connection
+held past what a load balancer allows is closed under the client, and the next request finds out.
+
+`fetch` is also on `createTransport` and the free `probe()`, and `pool.probe()` uses the pool's.
+A transport built without one shares a single `keepAliveFetch()`, so a probe of a server the pool
+already holds reuses its connection. This is why `undici` is a dependency: Node exposes no way to
+set the idle time of its own `fetch`, and a global dispatcher would change every request the
+consumer makes rather than the pool's.
+
 ## Naming
 
 Tools are `<slug>__<tool name>`, capped at 64 characters for OpenAI's function-name limit, and
