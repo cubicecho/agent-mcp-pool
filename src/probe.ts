@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { requestBudget } from "./budget.ts";
 import { errorMessage } from "./errors.ts";
 import { listAllTools } from "./listing.ts";
+import { defined } from "./shape.ts";
 import type { TransportFactory, TransportOptions } from "./transport.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type { ClientIdentity, McpConnection, McpProbe } from "./types.ts";
@@ -77,11 +78,10 @@ export async function probe(
     return {
       ok: true,
       error: "",
-      tools: tools.map((tool) => ({
-        name: tool.name,
-        description: tool.description ?? "",
-        ...(tool.title !== undefined ? { title: tool.title } : {}),
-        ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
+      tools: tools.map(({ name, description = "", title, annotations }) => ({
+        name,
+        description,
+        ...defined({ title, annotations }),
       })),
       // A cached read of the handshake this probe already made. What a row offers is not only its
       // tool list: a server's instructions are what its tools are for.

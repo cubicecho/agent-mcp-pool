@@ -51,5 +51,5 @@ test("nothing a browser entry imports at runtime is Node or the SDK", () => {
 
 test("the runtime graph walk does see a value import", () => {
   // Without this, a regex that matched nothing would pass the test above for every module.
-  expect(runtimeImports("servers").get("servers")).toEqual(["./hooks.ts"]);
+  expect(runtimeImports("servers").get("servers")).toEqual(["./hooks.ts", "./shape.ts"]);
 });

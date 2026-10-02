@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { truncateText } from "./results.ts";
+import { defined } from "./shape.ts";
 import type { McpServerConfig, ToolDefinition } from "./types.ts";
 
 /** Between a server's namespace and its tool's own name, in every name the model sees. */
@@ -147,10 +148,7 @@ export function pooledTool(
     name,
     description,
     parameters,
-    ...(title !== undefined ? { title } : {}),
-    ...(annotations !== undefined ? { annotations } : {}),
-    ...(outputSchema !== undefined ? { outputSchema } : {}),
-    ...(meta !== undefined ? { meta } : {}),
+    ...defined({ title, annotations, outputSchema, meta }),
     qualified,
     // Frozen because `tools()` hands this very object out rather than a copy — the agent loop
     // rebuilds its tool array every iteration, and copying every schema each time to guard

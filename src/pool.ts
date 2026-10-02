@@ -26,6 +26,7 @@ import { couldQualify, labelOf, type PooledTool, pooledTool, qualify, slugOf } f
 import { probe as probeConfig } from "./probe.ts";
 import { resultText, truncateText } from "./results.ts";
 import { sameConnection } from "./servers.ts";
+import { defined } from "./shape.ts";
 import {
   createTransport,
   readStderrTail,
@@ -1375,8 +1376,7 @@ export class McpPool {
         tools: offered.map(({ qualified, description, title, annotations }) => ({
           name: qualified,
           description,
-          ...(title !== undefined ? { title } : {}),
-          ...(annotations !== undefined ? { annotations } : {}),
+          ...defined({ title, annotations }),
         })),
       });
     }
@@ -1419,10 +1419,7 @@ export class McpPool {
       qualified,
       description,
       inputSchema: parameters,
-      ...(title !== undefined ? { title } : {}),
-      ...(annotations !== undefined ? { annotations } : {}),
-      ...(outputSchema !== undefined ? { outputSchema } : {}),
-      ...(meta !== undefined ? { meta } : {}),
+      ...defined({ title, annotations, outputSchema, meta }),
       hidden: isHiddenTool,
     };
   }
@@ -1970,8 +1967,7 @@ export class McpPool {
         name,
         qualified,
         description,
-        ...(title !== undefined ? { title } : {}),
-        ...(annotations !== undefined ? { annotations } : {}),
+        ...defined({ title, annotations }),
         hidden: isHidden(entry.config, name),
       })),
       pid: entry.pid,
