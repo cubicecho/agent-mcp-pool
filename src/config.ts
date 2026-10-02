@@ -73,3 +73,16 @@ export function reportedConfig(config: McpServerConfig, secrets: boolean): McpSe
 export function scope(servers?: Iterable<string>): ReadonlySet<string> | undefined {
   return servers === undefined ? undefined : new Set(servers);
 }
+
+/**
+ * Whether a run scoped to `allowed` may reach this server.
+ *
+ * The one reading of what `scope` returns. Written out per site it was `allowed && !allowed.has`,
+ * which is right — an empty set is truthy — and one `allowed?.size` away from handing a run
+ * scoped to nothing the whole pool.
+ *
+ * @param allowed What `scope` made of the run's servers; `undefined` is every server.
+ */
+export function inScope(allowed: ReadonlySet<string> | undefined, id: string) {
+  return allowed === undefined || allowed.has(id);
+}

@@ -10,7 +10,7 @@ import {
   type Notification,
 } from "@modelcontextprotocol/sdk/types.js";
 import { coerceArguments } from "./arguments.ts";
-import { copyConfig, reportedConfig, scope } from "./config.ts";
+import { copyConfig, inScope, reportedConfig, scope } from "./config.ts";
 import { dial } from "./dial.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
 import {
@@ -838,7 +838,7 @@ export class McpPool {
       // this one waited, and dialling one twice is the orphaned child the queue exists to prevent.
       const candidates = [...this.entries.values()].filter(
         (entry) =>
-          (allowed === undefined || allowed.has(entry.config.id)) &&
+          inScope(allowed, entry.config.id) &&
           couldQualify(slugOf(entry.config), qualifiedName) &&
           this.dialDue(entry),
       );
@@ -1170,7 +1170,7 @@ export class McpPool {
         if (!this.expected(name)) this.log.info?.(`[mcp] no tool named ${name} is offered`);
         continue;
       }
-      if (allowed && !allowed.has(found.serverId)) continue;
+      if (!inScope(allowed, found.serverId)) continue;
       // Skipped silently even when asked for by name: to the model a hidden tool does not exist,
       // and "no tool named …" in the log would read as a rename that never happened.
       const owner = this.entries.get(found.serverId);
@@ -1372,7 +1372,7 @@ export class McpPool {
     const out: CatalogServer[] = [];
     for (const entry of this.entries.values()) {
       if (entry.status !== "ready") continue;
-      if (allowed && !allowed.has(entry.config.id)) continue;
+      if (!inScope(allowed, entry.config.id)) continue;
       // Before the emptiness check, so a server whose every tool is hidden — or whose names all
       // belong to another server — drops out like one that offers none.
       const offered = entry.tools.filter(
@@ -1416,7 +1416,7 @@ export class McpPool {
     const found = this.index.get(qualifiedName);
     if (!found) return undefined;
     const allowed = scope(servers);
-    if (allowed && !allowed.has(found.serverId)) return undefined;
+    if (!inScope(allowed, found.serverId)) return undefined;
     const entry = this.entries.get(found.serverId);
     const isHiddenTool = entry !== undefined && isHidden(entry.config, found.tool.name);
     if (isHiddenTool && !hidden) return undefined;
@@ -1707,7 +1707,7 @@ export class McpPool {
     }
     // A tool outside this run's scope is answered as one that does not exist, because to this run
     // it does not: "that server is not yours" would teach the model to ask again.
-    const outOfScope = found !== undefined && allowed !== undefined && !allowed.has(found.serverId);
+    const outOfScope = found !== undefined && !inScope(allowed, found.serverId);
     const entry = found && this.entries.get(found.serverId);
     // A hidden tool is one the model was never offered, so a call to it is answered the way a
     // call to a tool that does not exist is — the model is not to learn it is there.
@@ -1856,7 +1856,7 @@ export class McpPool {
     const running: Promise<HookOutcome>[] = [];
     for (const entry of this.entries.values()) {
       const row = entry.config;
-      if (!row.enabled || (allowed && !allowed.has(row.id))) continue;
+      if (!row.enabled || !inScope(allowed, row.id)) continue;
       for (const hook of row.hooks ?? []) {
         if (hook.on !== event || hook.enabled === false) continue;
         running.push(this.runHook(row, hook, full, options));
