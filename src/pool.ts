@@ -11,16 +11,9 @@ import { coerceArguments } from "./arguments.ts";
 import { copyConfig, inScope, reportedConfig, scope } from "./config.ts";
 import { dial } from "./dial.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
-import {
-  DEFAULT_HOOK_MAX_TOKENS,
-  expandArgs,
-  INJECT_EVENTS,
-  INJECT_TIMEOUT_MS,
-  readVeto,
-  VETO_EVENTS,
-} from "./hooks.ts";
+import { runHooks } from "./hook-runner.ts";
 import { labelOf, namespaceOwners, slugOf } from "./namespace.ts";
-import { couldQualify, type PooledTool, pooledTool, qualify } from "./naming.ts";
+import { couldQualify, type PooledTool, pooledTool } from "./naming.ts";
 import type {
   CallOptions,
   DescribeOptions,
@@ -53,7 +46,6 @@ import type {
   PoolCloseReason,
   PoolEvent,
   ToolDefinition,
-  ToolHook,
   ToolInfo,
 } from "./types.ts";
 import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
@@ -119,40 +111,6 @@ function callOptions(options?: Iterable<string> | CallOptions): CallOptions {
     return { servers: options as Iterable<string> };
   }
   return options as CallOptions;
-}
-
-/**
- * `work`, or a rejection when the time or the signal runs out first.
- *
- * The request's own timeout and signal are passed to the SDK as well, which is what stops the
- * server's work; this is what bounds everything before the request — waking a server that is down
- * — which the SDK's timer never sees.
- */
-function bounded<T>(work: Promise<T>, ms?: number, signal?: AbortSignal): Promise<T> {
-  if (ms === undefined && !signal) return work;
-  return new Promise<T>((resolve, reject) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const onAbort = () => finish(() => reject(new Error("aborted")));
-    const finish = (settle: () => void) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      settle();
-    };
-    if (ms !== undefined) {
-      timer = setTimeout(
-        () =>
-          finish(() =>
-            reject(new McpPoolError("timeout", `timed out after ${ms}ms`, { timeoutMs: ms })),
-          ),
-        ms,
-      );
-    }
-    signal?.addEventListener("abort", onAbort, { once: true });
-    work.then(
-      (value) => finish(() => resolve(value)),
-      (error) => finish(() => reject(error)),
-    );
-  });
 }
 
 /**
@@ -1567,98 +1525,28 @@ export class McpPool {
    * @returns One outcome per hook that was considered, in configuration order. Pair it with
    *   `contextBlocks` to get what the injecting ones returned into a request.
    */
-  async runHooks(
+  runHooks(
     event: HookEvent,
     context: HookContext,
     options: RunHooksOptions = {},
   ): Promise<HookOutcome[]> {
-    const allowed = scope(options.servers);
-    const full: HookContext = { ...context, now: context.now ?? new Date().toISOString() };
-    const running: Promise<HookOutcome>[] = [];
-    for (const entry of this.entries.values()) {
-      const row = entry.config;
-      if (!row.enabled || !inScope(allowed, row.id)) continue;
-      for (const hook of row.hooks ?? []) {
-        if (hook.on !== event || hook.enabled === false) continue;
-        running.push(this.runHook(row, hook, full, options));
-      }
-    }
-    return Promise.all(running);
-  }
-
-  /** One hook, start to outcome. Resolves on every path; `runHooks` relies on that. */
-  private async runHook(
-    row: McpServerConfig,
-    hook: ToolHook,
-    context: HookContext,
-    { servers, signal, onNotice }: RunHooksOptions,
-  ): Promise<HookOutcome> {
-    const started = Date.now();
-    const base = {
-      serverId: row.id,
-      label: labelOf(row),
-      hookId: hook.id,
-      event: hook.on,
-      // Held to the events that can use it here as well as in `validateHooks`, since a row need
-      // not have been through that: an `afterTurn` hook marked inject would otherwise be handed
-      // to `contextBlocks` as though it had run in time.
-      inject: Boolean(hook.inject) && INJECT_EVENTS.has(hook.on),
-      maxTokens: hook.maxTokens ?? DEFAULT_HOOK_MAX_TOKENS,
-    };
-    // Held to its events for the same reason as `inject`, and the stakes are higher: a row that
-    // never went through `validateHooks` must not be able to stall a compaction from `afterTurn`.
-    const mayVeto = Boolean(hook.veto) && VETO_EVENTS.has(hook.on);
-    const settle = (result: Pick<HookOutcome, "ok" | "text" | "error" | "skipped" | "veto">) => {
-      const outcome: HookOutcome = { ...base, ...result, ms: Date.now() - started };
-      if (!outcome.ok) {
-        const notice = `${base.label}: ${hook.on} hook "${hook.id}" ${
-          outcome.skipped ? "skipped" : "failed"
-        }: ${outcome.error}`;
-        this.log.info?.(`[mcp] ${notice}`);
-        onNotice?.(notice, outcome);
-      }
-      return outcome;
-    };
-
-    if (signal?.aborted)
-      return settle({ ok: false, skipped: true, error: "aborted before it ran" });
-    const { args, missing } = expandArgs(hook.args, context);
-    if (missing.length > 0) {
-      const paths = missing.map((path) => `{{${path}}}`).join(", ");
-      return settle({ ok: false, skipped: true, error: `no value for ${paths}` });
-    }
-
-    // By the event rather than by `inject`: a `beforeTurn` hook that injects nothing still holds
-    // up the turn it runs in front of. A hook that can veto is waited on the same way — the
-    // compaction does not start until it answers — so it gets that patience too.
-    const waitedOn = INJECT_EVENTS.has(hook.on) || mayVeto;
-    const timeoutMs = hook.timeoutMs ?? (waitedOn ? INJECT_TIMEOUT_MS : undefined);
-    try {
-      const trace: CallTrace = {};
-      // Not `raw`, so what comes back is the text.
-      const text = (await bounded(
-        this.traced(
-          qualify(slugOf(row), hook.tool),
-          args,
-          { servers, signal, timeoutMs, hidden: true },
-          trace,
-        ),
-        timeoutMs,
-        signal,
-      )) as string;
-      // Only a call that came back can veto. A failure is no opinion — agent-core reads `ok:
-      // false` as such — so a memory server that is down cannot stall every compaction.
-      if (mayVeto) {
-        const { veto, reason } = readVeto(text);
-        if (veto) return settle({ ok: true, veto: true, text: reason });
-      }
-      // The pool's own placeholder for an empty result is for a model, which must be told
-      // something; for a hook it is nothing to inject. Asked of the trace rather than of the
-      // text: a tool is free to answer with the placeholder's own words.
-      return settle({ ok: true, text: trace.chars === 0 ? undefined : text });
-    } catch (error) {
-      return settle({ ok: false, error: errorMessage(error) });
-    }
+    return runHooks(
+      {
+        rows: Array.from(this.entries.values(), (entry) => entry.config),
+        log: this.log,
+        call: async (qualifiedName, args, how) => {
+          const trace: CallTrace = {};
+          // Not `raw`, so what comes back is the text.
+          const text = (await this.traced(qualifiedName, args, how, trace)) as string;
+          // Asked of the trace rather than of the text: a tool is free to answer with the words
+          // `call()` puts where there were none.
+          return { text, empty: trace.chars === 0 };
+        },
+      },
+      event,
+      context,
+      options,
+    );
   }
 
   /**
