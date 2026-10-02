@@ -89,6 +89,8 @@ Questions about server rows that need neither a connection nor Node — for the 
 ### transport
 
 - `createTransport` — The transport a config asks for, stdio or streamable HTTP, ready to connect.
+- `DEFAULT_KEEP_ALIVE_TIMEOUT_MS` — How long an idle connection to an http server is kept, in ms, where the server does not say.
+- `keepAliveFetch` — A `fetch` that keeps its idle connections for longer than Node's 4s.
 - `MINIMAL_CHILD_ENV` — A short allowlist of variables a stdio child usually cannot start without.
 - `readStderrTail` — Starts collecting a stdio child's stderr, and returns a reader for the last of it.
 - `TransportFactory` (type) — What builds the transport for one connection, where the pool's own construction is not wanted.

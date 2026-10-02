@@ -1,6 +1,7 @@
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { FetchLike, Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { Agent } from "undici";
 import type { McpConnection } from "./types.ts";
 
 /** How much of a child's stderr is kept. Enough for a stack trace, bounded for a chatty server. */
@@ -22,6 +23,38 @@ export const MINIMAL_CHILD_ENV: readonly string[] = [
   "UV_PYTHON_INSTALL_DIR",
 ];
 
+/**
+ * How long an idle connection to an http server is kept, in ms, where the server does not say.
+ *
+ * Node's own `fetch` gives up on one after 4s, and an agent thinks for longer than that between
+ * two tool calls: every call after a pause then pays a TCP and TLS handshake first, which against
+ * a remote server was 300ms measured where a kept connection took 30.
+ */
+export const DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 30_000;
+
+/**
+ * A `fetch` that keeps its idle connections for longer than Node's 4s.
+ *
+ * What `createTransport` dials an http server with unless it is handed another, and exported for a
+ * consumer that wants a different number — or the same connections under requests of its own.
+ * Each call makes its own set of connections, so make one and share it.
+ *
+ * A server that answers with a `Keep-Alive: timeout=N` header is taken at its word instead, and
+ * Node's own http server sends `timeout=5` unless told otherwise. The number here is for the ones
+ * that say nothing, which a server behind nginx or a load balancer usually does.
+ *
+ * @param timeoutMs How long a connection may sit idle before it is closed.
+ * @returns A `fetch` for `TransportOptions.fetch`. Its idle sockets do not hold the process open.
+ */
+export function keepAliveFetch(timeoutMs: number = DEFAULT_KEEP_ALIVE_TIMEOUT_MS): FetchLike {
+  const dispatcher = new Agent({ keepAliveTimeout: timeoutMs });
+  // Node's `fetch` takes a dispatcher its DOM-shaped `RequestInit` does not declare.
+  return (url, init) => fetch(url, { ...init, dispatcher } as RequestInit);
+}
+
+/** The `fetch` every transport shares by default. Made on first use: a stdio-only pool has none. */
+let sharedFetch: FetchLike | undefined;
+
 /** Whichever transport a config asks for. */
 export type PoolTransport = ReturnType<typeof createTransport>;
 
@@ -35,6 +68,14 @@ export interface TransportOptions {
    * applied on top either way.
    */
   childEnv?: readonly string[];
+  /**
+   * What an http transport makes its requests with. Defaults to `keepAliveFetch()`, shared by
+   * every transport built without one.
+   *
+   * The seam for a proxy, a recorded response or a longer keep-alive, without replacing the whole
+   * transport through `createTransport`. Ignored over stdio.
+   */
+  fetch?: FetchLike;
 }
 
 /**
@@ -45,7 +86,8 @@ export interface TransportOptions {
  * not know, such as a socket or a worker. `createTransport` is the default.
  *
  * @param config The row being dialled, as the pool holds it.
- * @param options The pool's environment policy, for a factory that still spawns.
+ * @param options The pool's environment policy and its `fetch`, for a factory that still spawns
+ *   or still dials.
  * @returns An unconnected transport. A factory that throws fails the connect like a child that
  *   would not start.
  */
@@ -62,7 +104,8 @@ export type TransportFactory = (config: McpConnection, options: TransportOptions
  *   — `command` or `url` — must be set, or this throws. The type requires it, so a TypeScript
  *   consumer cannot reach these throws; they are for a JavaScript one, and for a row that came
  *   out of a database column that allows null.
- * @param options `childEnv`, which narrows what a stdio child inherits. Ignored over http.
+ * @param options `childEnv`, which narrows what a stdio child inherits, and `fetch`, which an
+ *   http transport makes its requests with. Each is ignored by the other arm.
  * @returns An unconnected transport. Over stdio the child is not spawned until `connect`.
  */
 export function createTransport(config: McpConnection, options: TransportOptions = {}) {
@@ -81,8 +124,10 @@ export function createTransport(config: McpConnection, options: TransportOptions
     });
   }
   if (!config.url) throw new Error("an http server needs a url");
+  sharedFetch ??= keepAliveFetch();
   return new StreamableHTTPClientTransport(new URL(config.url), {
     requestInit: { headers: config.headers ?? {} },
+    fetch: options.fetch ?? sharedFetch,
   });
 }
 
