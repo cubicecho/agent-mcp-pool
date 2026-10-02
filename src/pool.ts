@@ -653,18 +653,7 @@ export class McpPool {
     return this.queue(async () => {
       const entry = this.entries.get(id);
       if (!entry) return;
-      // Settled before the close rather than after, so a listener told the server closed reads
-      // `state()` as the close left it.
-      // A disabled server is already off, for a reason `idle` would lose. Everything else lands
-      // where a reap leaves it, with the failure it may have been stopped over cleared.
-      if (entry.status !== "disabled") entry.status = "idle";
-      await this.close(entry, "stop");
-      entry.error = undefined;
-      entry.failedAt = undefined;
-      // Cleared with the connection that listed them, as `onClose` and `reap` do: a stopped
-      // server with tools still on it reads as one that could answer a call.
-      entry.tools = [];
-      this.reindex();
+      await this.park(entry, "stop");
       this.log.info?.(`[mcp] ${slugOf(entry.config)}: stopped`);
     });
   }
@@ -1099,6 +1088,28 @@ export class McpPool {
   }
 
   /**
+   * Closes a server that is not wanted for now, leaving it where the next use can start it.
+   *
+   * What a reap and a `stop` share. Everything is settled before the close rather than after it:
+   * the close is awaited, and for its length an entry still holding its tools is one `tools()`
+   * offers and a warm `call` dispatches to — on the client being closed. It is also what a
+   * listener told the server closed reads from `state()`.
+   *
+   * @param entry Left `idle` with no `error` and no `failedAt`, so no backoff stands between it
+   *   and the next use. A disabled one stays `disabled`: it is already off, for a reason `idle`
+   *   would lose.
+   * @param reason Why, for the `close` event.
+   */
+  private async park(entry: Entry, reason: "idle" | "stop") {
+    if (entry.status !== "disabled") entry.status = "idle";
+    entry.error = undefined;
+    entry.failedAt = undefined;
+    entry.tools = [];
+    this.reindex();
+    await this.close(entry, reason);
+  }
+
+  /**
    * Closes a server's client and stops its idle clock, without touching its status.
    *
    * @param entry Marked `closing` first, so the close does not read as a crash to `onClose`.
@@ -1340,11 +1351,7 @@ export class McpPool {
       const current = this.entries.get(entry.config.id);
       if (!current || current !== entry || current.idleTimer !== timer) return;
       if (current.status !== "ready") return;
-      // Settled before the close, as `stop` does, for a listener reading `state()`.
-      current.status = "idle";
-      current.tools = [];
-      this.reindex();
-      await this.close(current, "idle");
+      await this.park(current, "idle");
       this.log.info?.(`[mcp] ${slugOf(current.config)}: idle, closed`);
     });
   }
