@@ -1,5 +1,6 @@
 import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import { validateHooks } from "./hooks.ts";
+import { NAME_CHARS } from "./namespace.ts";
 import { isPlainObject, parseJson, wholeNumber } from "./shape.ts";
 import type {
   HttpServerConfig,
@@ -227,8 +228,15 @@ function runtimeEnv(): Record<string, string | undefined> {
   return host.process?.env ?? {};
 }
 
-/** The characters OpenAI allows in a function name, which every qualified tool name is. */
-const NAMESPACE = /^[A-Za-z0-9_-]+$/;
+/** A namespace made only of what a qualified tool name may hold — see `NAME_CHARS`. */
+const NAMESPACE = new RegExp(`^[${NAME_CHARS}]+$`);
+
+/**
+ * `slugOf` for a row not yet known to be one: a `slug` that is not a string is no slug, and what
+ * comes back is whatever the row had for an `id`.
+ */
+const namespaceOf = <Id>({ slug, id }: { slug: unknown; id: Id }) =>
+  (typeof slug === "string" && slug) || id;
 
 /**
  * What is wrong with a row, for the form that saves it — before `sync()` is handed it.
@@ -250,7 +258,7 @@ export function validateServerConfig(row: unknown): string[] {
 
   if (typeof row.id !== "string" || !row.id.trim()) errors.push("needs an id");
   optional("slug", (value) => typeof value === "string", "a string");
-  const namespace = (typeof row.slug === "string" && row.slug) || row.id;
+  const namespace = namespaceOf({ slug: row.slug, id: row.id });
   if (typeof namespace === "string" && namespace.trim() && !NAMESPACE.test(namespace)) {
     errors.push(
       `"${namespace}" cannot namespace tool names: use letters, digits, _ and - (set a slug)`,
@@ -316,7 +324,7 @@ export function validateServers(rows: unknown): string[] {
   for (const row of rows) {
     if (!isPlainObject(row) || typeof row.id !== "string" || !row.id.trim()) continue;
     ids.set(row.id, (ids.get(row.id) ?? 0) + 1);
-    const slug = (typeof row.slug === "string" && row.slug) || row.id;
+    const slug = namespaceOf({ slug: row.slug, id: row.id });
     const first = slugs.get(slug);
     if (first === undefined) slugs.set(slug, row.id);
     else if (first !== row.id) {

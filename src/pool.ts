@@ -22,7 +22,8 @@ import {
   VETO_EVENTS,
 } from "./hooks.ts";
 import { listAllTools } from "./listing.ts";
-import { couldQualify, labelOf, type PooledTool, pooledTool, qualify, slugOf } from "./naming.ts";
+import { labelOf, namespaceOwners, slugOf } from "./namespace.ts";
+import { couldQualify, type PooledTool, pooledTool, qualify } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { resultText, truncateText } from "./results.ts";
 import { sameConnection } from "./servers.ts";
@@ -858,25 +859,13 @@ export class McpPool {
    */
   private reindex() {
     this.index.clear();
-    // Which of two rows sharing a namespace owns it, settled over every entry and broken by id.
-    // Over every entry because only `ready` ones reach the index, so a tie broken among those is
-    // a tie broken by the idle clock. By id because that is in the rows: entries are inserted as
-    // their handshakes finish, concurrently, so their order is not the configured order.
-    const owner = new Map<string, string>();
+    // Which of two rows sharing a namespace owns it, settled over every entry rather than the
+    // `ready` ones that reach the index — see `namespaceOwners`.
+    const { owner, shadowed } = namespaceOwners(
+      Array.from(this.entries.values(), (entry) => entry.config),
+    );
     const reported = new Set<string>();
-    const shadows = new Map<string, string[]>();
-    for (const entry of this.entries.values()) {
-      const slug = slugOf(entry.config);
-      const first = owner.get(slug);
-      if (first === undefined) owner.set(slug, entry.config.id);
-      else {
-        const [kept, lost] =
-          first < entry.config.id ? [first, entry.config.id] : [entry.config.id, first];
-        owner.set(slug, kept);
-        shadows.set(slug, [...(shadows.get(slug) ?? []), lost]);
-      }
-    }
-    for (const [slug, lost] of shadows) {
+    for (const [slug, lost] of shadowed) {
       const kept = owner.get(slug);
       const all = [kept, ...lost].sort();
       this.warnOnce(reported, `ns:${slug}:${all.join(",")}`, () =>
