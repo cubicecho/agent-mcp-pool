@@ -54,16 +54,21 @@ MCP tools as lifecycle hooks — the half that needs no connection.
 
 - `listAllTools` — Every tool a server offers, following `tools/list`'s cursor to the end.
 
-### pool
+### options
+
+What a pool and its methods are told: the constructor's options and each call's.
 
 - `CallOptions` (type) — How one `call()` is made, beyond its name and arguments.
 - `DescribeOptions` (type) — What `describe()` takes beside the name.
-- `McpPool` — One MCP client per configured server, exposing their tools to an agent loop as `<slug>__<tool name>`.
 - `McpPoolOptions` (type) — How a pool is built: where its rows come from, how patient it is, and what it may spawn.
 - `PoolLog` (type) — Where the pool's own progress goes.
 - `RunHooksOptions` (type) — What `runHooks` takes beyond the event and its context.
 - `StateOptions` (type) — What `state()` takes: whether the rows it reports come back with their credentials.
 - `ToolsOptions` (type) — What `tools()` takes: which tools to send, and which servers this run may reach.
+
+### pool
+
+- `McpPool` — One MCP client per configured server, exposing their tools to an agent loop as `<slug>__<tool name>`.
 
 ### probe
 
