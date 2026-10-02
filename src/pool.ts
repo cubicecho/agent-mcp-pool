@@ -376,6 +376,7 @@ export interface RunHooksOptions {
 interface CallTrace {
   serverId?: string;
   toolName?: string;
+  /** How much the tool said, before any cap and before `NO_OUTPUT` stood in for nothing. */
   chars?: number;
   truncated?: boolean;
 }
@@ -1624,12 +1625,25 @@ export class McpPool {
     input: unknown,
     options?: Iterable<string> | CallOptions,
   ): Promise<string | CallToolResult> {
+    return this.traced(qualifiedName, input, callOptions(options), {});
+  }
+
+  /**
+   * `call()` with its options read and its trace in the caller's hands.
+   *
+   * @param trace Filled in as the call learns things. `call()` hands in one it never reads; a hook
+   *   reads `chars` to tell a tool that said nothing from one that said something.
+   */
+  private async traced(
+    qualifiedName: string,
+    input: unknown,
+    parsed: CallOptions,
+    trace: CallTrace,
+  ): Promise<string | CallToolResult> {
     // Nobody listening is the ordinary case, and it should cost a call nothing.
-    const parsed = callOptions(options);
-    if (this.eventListeners.size === 0) return this.invoke(qualifiedName, input, parsed, {});
+    if (this.eventListeners.size === 0) return this.invoke(qualifiedName, input, parsed, trace);
     const started = performance.now();
     const { hidden = false, raw = false } = parsed;
-    const trace: CallTrace = {};
     const base = { type: "call" as const, qualified: qualifiedName, hidden, raw };
     try {
       const out = await this.invoke(qualifiedName, input, parsed, trace);
@@ -1899,16 +1913,18 @@ export class McpPool {
     const waitedOn = INJECT_EVENTS.has(hook.on) || mayVeto;
     const timeoutMs = hook.timeoutMs ?? (waitedOn ? INJECT_TIMEOUT_MS : undefined);
     try {
-      const text = await bounded(
-        this.call(qualify(slugOf(row), hook.tool), args, {
-          servers,
-          signal,
-          timeoutMs,
-          hidden: true,
-        }),
+      const trace: CallTrace = {};
+      // Not `raw`, so what comes back is the text.
+      const text = (await bounded(
+        this.traced(
+          qualify(slugOf(row), hook.tool),
+          args,
+          { servers, signal, timeoutMs, hidden: true },
+          trace,
+        ),
         timeoutMs,
         signal,
-      );
+      )) as string;
       // Only a call that came back can veto. A failure is no opinion — agent-core reads `ok:
       // false` as such — so a memory server that is down cannot stall every compaction.
       if (mayVeto) {
@@ -1916,8 +1932,9 @@ export class McpPool {
         if (veto) return settle({ ok: true, veto: true, text: reason });
       }
       // The pool's own placeholder for an empty result is for a model, which must be told
-      // something; for a hook it is nothing to inject.
-      return settle({ ok: true, text: text === NO_OUTPUT ? undefined : text });
+      // something; for a hook it is nothing to inject. Asked of the trace rather than of the
+      // text: a tool is free to answer with the placeholder's own words.
+      return settle({ ok: true, text: trace.chars === 0 ? undefined : text });
     } catch (error) {
       return settle({ ok: false, error: errorMessage(error) });
     }

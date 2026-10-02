@@ -358,6 +358,18 @@ test("an empty result is a success with nothing to inject", async () => {
   expect(contextBlocks([result]).text).toBe("");
 });
 
+/**
+ * "Empty" was read off the answer: the hook compared what `call()` handed back against the
+ * placeholder `call()` substitutes for nothing. A tool whose real answer was those same characters
+ * was indistinguishable from one that sent none, and what it said was dropped.
+ */
+test("a tool that answers with the pool's own placeholder text is still heard", async () => {
+  await withHooks([hook({ inject: true, args: { raw: "(no output)" } })]);
+  const [result] = await pool.runHooks("beforeTurn", context);
+  expect(result.ok).toBe(true);
+  expect(result.text).toBe("(no output)");
+});
+
 test("inject is ignored on an event that runs too late, even on an unvalidated row", async () => {
   await withHooks([hook({ on: "afterTurn", inject: true })]);
   const [result] = await pool.runHooks("afterTurn", context);
