@@ -1,3 +1,10 @@
+# [3.5.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.4.1...v3.5.0) (2026-10-02)
+
+
+### Features
+
+* keep idle connections to http servers open between tool calls ([5bc27de](https://github.com/cubicecho/agent-mcp-pool/commit/5bc27de2234826166075412fe4bf6ed8629aa5a1))
+
 ## [3.4.1](https://github.com/cubicecho/agent-mcp-pool/compare/v3.4.0...v3.4.1) (2026-09-18)
 
 
