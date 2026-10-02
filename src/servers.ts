@@ -311,29 +311,30 @@ export function validateServerConfig(row: unknown): string[] {
 export function validateServers(rows: unknown): string[] {
   if (!Array.isArray(rows)) return ["servers must be a list"];
   const errors: string[] = [];
+  const clashes: string[] = [];
+  const ids = new Map<string, number>();
+  const slugs = new Map<string, string>();
   for (const [index, row] of rows.entries()) {
     const id = isPlainObject(row) && typeof row.id === "string" && row.id.trim() ? row.id : "";
     const name = id ? `server "${id}"` : `server ${index + 1}`;
     errors.push(...validateServerConfig(row).map((error) => `${name}: ${error}`));
-  }
 
-  // Only rows that named themselves can be reported as clashing; one with no usable id already
-  // has an error of its own, and a second message about it would say nothing new.
-  const ids = new Map<string, number>();
-  const slugs = new Map<string, string>();
-  for (const row of rows) {
-    if (!isPlainObject(row) || typeof row.id !== "string" || !row.id.trim()) continue;
-    ids.set(row.id, (ids.get(row.id) ?? 0) + 1);
-    const slug = namespaceOf({ slug: row.slug, id: row.id });
+    // Only rows that named themselves can be reported as clashing; one with no usable id already
+    // has an error of its own, and a second message about it would say nothing new.
+    if (!id || !isPlainObject(row)) continue;
+    ids.set(id, (ids.get(id) ?? 0) + 1);
+    const slug = namespaceOf({ slug: row.slug, id });
     const first = slugs.get(slug);
-    if (first === undefined) slugs.set(slug, row.id);
-    else if (first !== row.id) {
-      errors.push(
-        `servers "${first}" and "${row.id}" share the namespace "${slug}": ` +
+    if (first === undefined) slugs.set(slug, id);
+    else if (first !== id) {
+      clashes.push(
+        `servers "${first}" and "${id}" share the namespace "${slug}": ` +
           `their tools would answer to the same names (set a slug)`,
       );
     }
   }
+  // Kept apart until here so the set's problems still follow every row's own.
+  errors.push(...clashes);
   for (const [id, count] of ids) {
     if (count > 1) errors.push(`server "${id}": another server has that id`);
   }
