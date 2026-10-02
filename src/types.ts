@@ -319,6 +319,21 @@ type PublicRow<T> = T extends unknown
   ? Omit<T, "env" | "headers"> & Partial<Pick<T, Extract<keyof T, "env" | "headers">>>
   : never;
 
+/**
+ * A tool without its schemas: what every list of them carries, whoever is reading.
+ *
+ * Which name `name` is depends on the list — the server's own in `state()` and a probe, the
+ * qualified one in a catalogue — and each says so where it uses this.
+ */
+export interface ToolSummary {
+  name: string;
+  description: string;
+  /** The server's display name for the tool, where it sent one. */
+  title?: string;
+  /** The server's own hints about the tool. Untrusted: see `McpPool.describe`. */
+  annotations?: ToolAnnotations;
+}
+
 /** One connected server as an operator sees it. */
 export interface McpServerState {
   id: string;
@@ -350,16 +365,7 @@ export interface McpServerState {
    * `hidden` is whether the row's `hiddenTools` keeps it from the model. Reported rather than
    * filtered out: the operator is the one who hid it, and the form they unhide it from needs it.
    */
-  tools: {
-    name: string;
-    qualified: string;
-    description: string;
-    /** The server's display name for the tool, where it sent one. */
-    title?: string;
-    /** The server's own hints about the tool. Untrusted: see `McpPool.describe`. */
-    annotations?: ToolAnnotations;
-    hidden: boolean;
-  }[];
+  tools: (ToolSummary & { qualified: string; hidden: boolean })[];
   /**
    * The stdio child's pid. Absent over http, and while the server is not connected.
    *
@@ -403,7 +409,7 @@ export interface McpProbe {
   error: string;
   /** With `title` and `annotations` where the server sent them, so a UI can badge a row's
    * destructive tools before it is saved. */
-  tools: { name: string; description: string; title?: string; annotations?: ToolAnnotations }[];
+  tools: ToolSummary[];
   /**
    * The server's own `instructions` from the handshake, empty where it sent none or never got
    * that far.
@@ -430,7 +436,7 @@ export interface CatalogServer {
    * point of a catalogue is a list a model picks from. `McpServerState.tools[].name` is the
    * server's own, with the qualified one beside it; the two lists look alike and are not.
    */
-  tools: { name: string; description: string; title?: string; annotations?: ToolAnnotations }[];
+  tools: ToolSummary[];
 }
 
 /**

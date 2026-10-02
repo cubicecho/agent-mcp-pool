@@ -10,8 +10,8 @@ import {
   type Notification,
 } from "@modelcontextprotocol/sdk/types.js";
 import { coerceArguments } from "./arguments.ts";
-import { requestBudget } from "./budget.ts";
-import { copyConfig, scope } from "./config.ts";
+import { copyConfig, reportedConfig, scope } from "./config.ts";
+import { dial } from "./dial.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
 import {
   DEFAULT_HOOK_MAX_TOKENS,
@@ -21,7 +21,6 @@ import {
   readVeto,
   VETO_EVENTS,
 } from "./hooks.ts";
-import { listAllTools } from "./listing.ts";
 import { labelOf, namespaceOwners, slugOf } from "./namespace.ts";
 import { couldQualify, type PooledTool, pooledTool, qualify } from "./naming.ts";
 import { probe as probeConfig } from "./probe.ts";
@@ -42,7 +41,6 @@ import type {
   McpConnection,
   McpProbe,
   McpServerConfig,
-  McpServerPublicConfig,
   McpServerState,
   McpStatus,
   PoolCloseReason,
@@ -388,6 +386,9 @@ const elapsed = (started: number) => Math.round(performance.now() - started);
 /** Whether a row keeps one of its tools from the model. */
 const isHidden = (config: McpServerConfig, name: string) =>
   config.hiddenTools?.includes(name) ?? false;
+
+/** What `call()` answers when a tool returned nothing: a model must be told something. */
+const NO_OUTPUT = "(no output)";
 
 /** `call()`'s third argument in either of the shapes it accepts. */
 function callOptions(options?: Iterable<string> | CallOptions): CallOptions {
@@ -736,23 +737,19 @@ export class McpPool {
     await Promise.all(
       wanted.map(async (config) => {
         const existing = this.entries.get(config.id);
-        if (existing && sameConnection(existing.config, config)) {
+        // Read once, before `relabel` swaps the row in: it is the same answer afterwards, since a
+        // relabel only happens where nothing about the connection moved.
+        const same = existing !== undefined && sameConnection(existing.config, config);
+        if (existing && same) {
           // Nothing about how to reach it moved, so the child stays up and a new name is applied
           // in place.
           this.relabel(existing, config);
-          // Restarting a healthy server costs a process spawn for nothing. A failed one is what a
-          // later sync should pick up — but not faster than the backoff.
-          if (existing.status === "ready" || existing.status === "disabled") return;
-          // Nothing is wrong with an idle server; not reconnecting it is what lazy is for.
-          if (existing.status === "idle") return;
+          // Restarting a healthy server costs a process spawn for nothing, and nothing is wrong
+          // with an idle one — not reconnecting it is what lazy is for. A failed one is what a
+          // later sync should pick up, but not faster than the backoff.
           if (!this.retryDue(existing)) return;
         }
-        if (existing) {
-          await this.close(
-            existing,
-            sameConnection(existing.config, config) ? "redial" : "changed",
-          );
-        }
+        if (existing) await this.close(existing, same ? "redial" : "changed");
         await this.connect(config, config.id === dial);
       }),
     );
@@ -808,6 +805,20 @@ export class McpPool {
     return entry.failedAt === undefined || Date.now() - entry.failedAt >= this.crashBackoffMs;
   }
 
+  /** Whether a use should dial this server: it is cold, or failed and past its backoff. */
+  private dialDue(entry: Entry) {
+    return entry.status === "idle" || this.retryDue(entry);
+  }
+
+  /**
+   * Dials a server a use is waiting on, `lazy` or not, closing whatever was left of its last
+   * connection first. Only ever from inside the queue — see `ensure`.
+   */
+  private async redial(entry: Entry) {
+    await this.close(entry, "redial");
+    await this.connect(entry.config, true);
+  }
+
   /**
    * Connects whatever might answer a name the index does not know: the cold servers whose slug
    * could have produced it, and the failed ones that are due another attempt.
@@ -839,12 +850,9 @@ export class McpPool {
         (entry) =>
           (allowed === undefined || allowed.has(entry.config.id)) &&
           couldQualify(slugOf(entry.config), qualifiedName) &&
-          (entry.status === "idle" || this.retryDue(entry)),
+          this.dialDue(entry),
       );
-      for (const entry of candidates) {
-        await this.close(entry, "redial");
-        await this.connect(entry.config, true);
-      }
+      for (const entry of candidates) await this.redial(entry);
       if (candidates.length > 0) this.reindex();
     });
   }
@@ -993,15 +1001,11 @@ export class McpPool {
       // number without the fast one losing its bound. Read here rather than held on the entry, so
       // an edit reaches the next connect without a restart.
       const timeoutMs = config.connectTimeoutMs ?? this.connectTimeoutMs;
-      // One budget across the whole connect rather than one per request. The number a consumer
-      // picks is what its boot can afford to stall for, and `initialize` plus a `tools/list` per
-      // page spends it several times over otherwise — see `requestBudget`.
-      const remaining = requestBudget(timeoutMs);
-      await client.connect(transport, remaining());
-      // Every page: a tool that landed on page two is missing from the index, and `call()` then
-      // refuses it as a tool that does not exist. Skipped entirely when nothing is going to read
-      // the index — see `indexTools`, where the walk is a round trip per page for nobody.
-      const tools = this.indexTools ? await listAllTools(client, remaining()) : [];
+      // One budget across the whole connect rather than one per request: the number a consumer
+      // picks is what its boot can afford to stall for. The list is skipped entirely when nothing
+      // is going to read the index — see `indexTools`, where the walk is a round trip per page
+      // for nobody.
+      const tools = await dial(client, transport, { timeoutMs, listTools: this.indexTools });
 
       entry.client = client;
       entry.status = "ready";
@@ -1048,17 +1052,13 @@ export class McpPool {
       // The handshake got far enough to start a child and not far enough to hand it over. Nothing
       // else holds this client, so `close()` and `shutdown()` would never reach the process.
       await client?.close().catch(() => {});
-      entry.status = "error";
-      // What the child said on the way out: "ModuleNotFoundError: no module named mcp_server_git"
-      // beats "MCP error -32000: Connection closed".
-      entry.error = entry.stderrTail?.() || errorMessage(error);
-      entry.failedAt = Date.now();
-      this.log.error?.(`[mcp] ${slugOf(config)}: ${entry.error}`);
+      const reason = this.fail(entry, errorMessage(error));
+      this.log.error?.(`[mcp] ${slugOf(config)}: ${reason}`);
       this.emit({
         type: "connect-failed",
         serverId: config.id,
         ms: elapsed(started),
-        error: entry.error,
+        error: reason,
       });
     }
   }
@@ -1074,15 +1074,28 @@ export class McpPool {
     if (entry.closing) return;
     this.disarm(entry);
     this.forget(entry);
-    entry.status = "error";
-    entry.error = entry.stderrTail?.() || "the server closed the connection";
-    entry.failedAt = Date.now();
+    const reason = this.fail(entry, "the server closed the connection");
     // Cleared rather than kept as a last-known list, so `state()` cannot read as a server that is
     // down but still has tools to offer.
     entry.tools = [];
     this.reindex();
-    this.log.error?.(`[mcp] ${slugOf(entry.config)}: ${entry.error}`);
-    this.emit({ type: "close", serverId: entry.config.id, reason: "crash", error: entry.error });
+    this.log.error?.(`[mcp] ${slugOf(entry.config)}: ${reason}`);
+    this.emit({ type: "close", serverId: entry.config.id, reason: "crash", error: reason });
+  }
+
+  /**
+   * Marks a server failed and starts its backoff.
+   *
+   * @param fallback What went wrong as the pool saw it, used where the child said nothing.
+   * @returns The reason recorded: what the child wrote to stderr on the way out, where it wrote
+   *   anything — "ModuleNotFoundError: no module named mcp_server_git" beats "MCP error -32000:
+   *   Connection closed".
+   */
+  private fail(entry: Entry, fallback: string) {
+    entry.status = "error";
+    entry.error = entry.stderrTail?.() || fallback;
+    entry.failedAt = Date.now();
+    return entry.error;
   }
 
   /**
@@ -1272,14 +1285,13 @@ export class McpPool {
    *   object, so this is not always the one passed in.
    */
   private async ensure(entry: Entry): Promise<Entry> {
-    if (entry.status === "idle" || this.retryDue(entry)) {
+    if (this.dialDue(entry)) {
       await this.queue(async () => {
         // Re-read inside the queue: another caller may have connected this server while this one
         // waited, and dialling it twice is the orphaned child the queue exists to prevent.
         const current = this.entries.get(entry.config.id);
-        if (!current || (current.status !== "idle" && !this.retryDue(current))) return;
-        await this.close(current, "redial");
-        await this.connect(current.config, true);
+        if (!current || !this.dialDue(current)) return;
+        await this.redial(current);
         this.reindex();
       });
     }
@@ -1445,7 +1457,7 @@ export class McpPool {
     // Read before the dial, because afterwards the two are indistinguishable: a connect that
     // failed just now leaves exactly the state a backoff this call refused to break was already
     // in, and a caller in front of an HTTP API answers 502 to one and 503 to the other.
-    const dialling = entry.status === "idle" || this.retryDue(entry);
+    const dialling = this.dialDue(entry);
     // The whole lazy path for a consumer that knows which server it wants: a cold entry is
     // dialled here, and a warm one has its idle clock restarted.
     const current = await this.ensure(entry);
@@ -1606,13 +1618,14 @@ export class McpPool {
     options?: Iterable<string> | CallOptions,
   ): Promise<string | CallToolResult> {
     // Nobody listening is the ordinary case, and it should cost a call nothing.
-    if (this.eventListeners.size === 0) return this.invoke(qualifiedName, input, options, {});
+    const parsed = callOptions(options);
+    if (this.eventListeners.size === 0) return this.invoke(qualifiedName, input, parsed, {});
     const started = performance.now();
-    const { hidden = false, raw = false } = callOptions(options);
+    const { hidden = false, raw = false } = parsed;
     const trace: CallTrace = {};
     const base = { type: "call" as const, qualified: qualifiedName, hidden, raw };
     try {
-      const out = await this.invoke(qualifiedName, input, options, trace);
+      const out = await this.invoke(qualifiedName, input, parsed, trace);
       const failed = typeof out !== "string" && out.isError === true;
       this.emit({
         ...base,
@@ -1637,11 +1650,14 @@ export class McpPool {
 
   /**
    * `call()`'s work, recording what the `call` event reports into `trace` as it learns it.
+   *
+   * @param options Already read by `callOptions`, so the two shapes `call()` accepts are told
+   *   apart in one place.
    */
   private async invoke(
     qualifiedName: string,
     input: unknown,
-    options: Iterable<string> | CallOptions | undefined,
+    options: CallOptions,
     trace: CallTrace,
   ): Promise<string | CallToolResult> {
     const {
@@ -1652,7 +1668,7 @@ export class McpPool {
       coerce: ownCoerce,
       maxResultChars: ownMaxResultChars,
       raw = false,
-    } = callOptions(options);
+    } = options;
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
     // past 64 characters, and the split of a shortened name is a tool its server never had.
@@ -1768,20 +1784,20 @@ export class McpPool {
 
     const cap = ownMaxResultChars ?? entry?.config.maxResultChars ?? this.maxResultChars;
     const text = resultText(result);
+    trace.chars = text.length;
     // The server ran the tool and the tool failed — not one of the pool's refusals, which is why
     // this was a plain `Error`. It carries a code anyway because a caller sorting failures cares
     // most about this line: nothing about retrying a rejected argument resembles retrying a
     // backoff. The message is what it always was.
     if (result.isError) {
-      trace.chars = text.length;
       throw new McpPoolError("tool-error", truncateText(text || "tool call failed", cap), {
         toolName: qualifiedName,
         serverId: found.serverId,
       });
     }
-    const out = truncateText(text || "(no output)", cap);
-    trace.chars = text.length;
-    trace.truncated = out.length < (text || "(no output)").length;
+    const shown = text || NO_OUTPUT;
+    const out = truncateText(shown, cap);
+    trace.truncated = out.length < shown.length;
     return out;
   }
 
@@ -1894,7 +1910,7 @@ export class McpPool {
       }
       // The pool's own placeholder for an empty result is for a model, which must be told
       // something; for a hook it is nothing to inject.
-      return settle({ ok: true, text: text === "(no output)" ? undefined : text });
+      return settle({ ok: true, text: text === NO_OUTPUT ? undefined : text });
     } catch (error) {
       return settle({ ok: false, error: errorMessage(error) });
     }
@@ -1949,7 +1965,7 @@ export class McpPool {
       id: entry.config.id,
       slug: slugOf(entry.config),
       label: labelOf(entry.config),
-      config: this.reportedConfig(entry.config, secrets),
+      config: reportedConfig(entry.config, secrets),
       status: entry.status,
       error: entry.error ?? "",
       tools: entry.tools.map(({ name, qualified, description, title, annotations }) => ({
@@ -1970,29 +1986,6 @@ export class McpPool {
       instructions: entry.client?.getInstructions(),
       capabilities: entry.client?.getServerCapabilities(),
     }));
-  }
-
-  /**
-   * A row as it goes out of `state()`: a copy, and without the credentials unless asked for.
-   *
-   * A copy because the pool's record of what it dialled is not the caller's to edit, and without
-   * `env`/`headers` because the documented use for the row — a UI drawing the edit form beside
-   * the connection state — is a browser, and those two fields are an API key and a bearer token.
-   *
-   * @param config The entry's own row.
-   * @param secrets Whether the caller asked for the credentials back.
-   */
-  private reportedConfig(config: McpServerConfig, secrets: boolean): McpServerPublicConfig {
-    const copy = copyConfig(config);
-    if (secrets) return copy;
-    // One credential field per arm, stripped by arm: a row carries only its own transport's
-    // fields now, so there is no single destructure that names both.
-    if (copy.transport === "stdio") {
-      const { env, ...rest } = copy;
-      return rest;
-    }
-    const { headers, ...rest } = copy;
-    return rest;
   }
 
   /**
