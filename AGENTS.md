@@ -74,8 +74,19 @@ is not wired into `sync()` on purpose: rows are edited from a UI, and throwing o
 takes down every other server in the pool.
 
 **`tools()` and `catalog()` never connect a server. `call()` and `client()` do.** A cold server
-offers nothing until something has used it; listing its tools without spawning it would need a
-cached last-known list, which does not exist yet.
+is listed off its last-known tools — what it had when it was reaped or stopped, or what
+`toolsCache` held — marked `stale`. The index holds those with no `client`, and a call wakes the
+one server that owns the name, after the scope and hidden refusals rather than before them.
+
+**A reap keeps the list and a crash drops it.** `park` leaves `tools` in place and `onClose`
+clears them: an `error` row that still listed tools would read as a server that is down and
+offering them. And the index reads `ready` off the status, never off `entry.client`, because a
+parked entry is `idle` for the length of the close its client is still going through.
+
+**The tools cache is written behind the connect, never in front of it.** `remember` is not
+awaited and its failure is a log line; a store that is slow or down costs the next cold start's
+catalogue and nothing on this one. It is stamped with `connectionFingerprint` — a hash, since two
+of the fields are `env` and `headers`.
 
 **Every connect goes through `ensure()` or `wake()`, and both are queued.** A warm `call` touches
 the idle clock directly rather than taking a queue hop it does not need; what must not have two

@@ -1,7 +1,7 @@
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ElicitRequestParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import type { TransportFactory } from "./transport.ts";
-import type { HookOutcome, McpServerConfig } from "./types.ts";
+import type { HookOutcome, McpServerConfig, ToolsCache } from "./types.ts";
 
 /**
  * What a pool and its methods are told: the constructor's options and each call's.
@@ -188,6 +188,15 @@ export interface McpPoolOptions {
    * probe exists to report what a config offers.
    */
   indexTools?: boolean;
+  /**
+   * Where each server's tool list is kept between processes, so a lazy pool can offer a server's
+   * tools before anything has connected it — see `ToolsCache`.
+   *
+   * Read when a row is registered without being dialled, and written after a connect or a re-list
+   * whose tools differ from what is cached. Within one process nothing needs it: a reaped or
+   * stopped server keeps its last-known list either way.
+   */
+  toolsCache?: ToolsCache;
   /**
    * Builds each connection's transport instead of `createTransport`.
    *

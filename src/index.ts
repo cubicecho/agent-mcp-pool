@@ -16,6 +16,7 @@ export type {
   ElicitResult,
   Notification,
   ServerCapabilities,
+  Tool,
   ToolAnnotations,
 } from "@modelcontextprotocol/sdk/types.js";
 export { type CoercedArguments, coerceArguments } from "./arguments.ts";
@@ -73,6 +74,7 @@ export {
   type TransportOptions,
 } from "./transport.ts";
 export type {
+  CachedTools,
   CatalogServer,
   ClientIdentity,
   HookContext,
@@ -92,4 +94,5 @@ export type {
   ToolDefinition,
   ToolHook,
   ToolInfo,
+  ToolsCache,
 } from "./types.ts";

@@ -118,9 +118,9 @@ test("an idle reap closes with reason idle, and state() already reads idle", asy
  * the close the server was `idle` and still indexed: a listener was shown tools on a server that
  * was down, and a call arriving then was dispatched to the client being closed.
  */
-test("a stop has dropped the server's tools by the time its close is reported", async () => {
+test("a stop has marked the server's tools stale by the time its close is reported", async () => {
   const { pool } = recorded();
-  let seen: { offered: number; listed: number; status?: string } | undefined;
+  let seen: { offered: number; listed: number; status?: string; stale?: boolean } | undefined;
   pool.onEvent((event) => {
     if (event.type !== "close") return;
     const [server] = pool.state();
@@ -128,14 +128,17 @@ test("a stop has dropped the server's tools by the time its close is reported", 
       offered: pool.tools().length,
       listed: server?.tools.length ?? -1,
       status: server?.status,
+      stale: server?.stale,
     };
   });
   await pool.sync([memoryRow("echo")]);
-  expect(pool.tools().length).toBeGreaterThan(0);
+  const offered = pool.tools().length;
+  expect(offered).toBeGreaterThan(0);
 
   await pool.stop("echo");
 
-  expect(seen).toEqual({ offered: 0, listed: 0, status: "idle" });
+  // Still offered, and already known to be a last-known list rather than a connected server's.
+  expect(seen).toEqual({ offered, listed: offered, status: "idle", stale: true });
 });
 
 test("a listener that throws is logged and does not break the call", async () => {

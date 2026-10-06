@@ -11,7 +11,7 @@ import { coerceArguments } from "./arguments.ts";
 import { copyConfig, inScope, reportedConfig, scope } from "./config.ts";
 import { dial } from "./dial.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
-import { toolsFingerprint } from "./fingerprint.ts";
+import { connectionFingerprint, toolsFingerprint } from "./fingerprint.ts";
 import { runHooks } from "./hook-runner.ts";
 import { type ListedTool, listAllTools } from "./listing.ts";
 import { labelOf, namespaceOwners, slugOf } from "./namespace.ts";
@@ -36,6 +36,7 @@ import {
   type TransportFactory,
 } from "./transport.ts";
 import type {
+  CachedTools,
   CatalogServer,
   HookContext,
   HookEvent,
@@ -71,6 +72,11 @@ interface Entry {
   tools: PooledTool[];
   /** `toolsFingerprint` of the list `tools` was built from. Cleared with it. */
   fingerprint?: string;
+  /**
+   * `tools` is a last-known list: what an earlier connection listed, or what `toolsCache` held.
+   * Only ever beside `idle` — a server that failed has no list at all.
+   */
+  stale?: boolean;
   /** A `tools/list_changed` has arrived that no re-list has started for yet. See `relist`. */
   relistOwed?: boolean;
   /**
@@ -136,13 +142,17 @@ function callOptions(options?: Iterable<string> | CallOptions): CallOptions {
 export class McpPool {
   private entries = new Map<string, Entry>();
   /**
-   * Qualified name -> the client that answers it. Only ever holds callable tools.
+   * Qualified name -> the tool, and the client that answers it where one is connected.
    *
-   * `serverId` rides along so a run scoped to a few servers can be held to them by name: a caller
+   * `client` is absent for a cold server's last-known tool: it is offered, and a call to it has to
+   * wake the server first. `serverId` rides along so a run scoped to a few servers can be held to them by name: a caller
    * narrows what is offered, and `call` refuses the rest, since a model that remembers a tool
    * from a wider run would otherwise still reach it.
    */
-  private index = new Map<string, { client: Client; tool: PooledTool; serverId: string }>();
+  private index = new Map<string, { client?: Client; tool: PooledTool; serverId: string }>();
+
+  /** What `toolsCache` holds for each server, as far as this pool knows. See `remember`. */
+  private cached = new Map<string, string>();
 
   /** The name clashes the last `reindex` found, so a standing one is reported once, not per pass. */
   private clashes = new Set<string>();
@@ -175,6 +185,7 @@ export class McpPool {
   private readonly onElicit?: McpPoolOptions["onElicit"];
   private readonly elicitationModes: ("form" | "url")[];
   private readonly createTransport: TransportFactory;
+  private readonly toolsCache?: McpPoolOptions["toolsCache"];
 
   /**
    * @param options See `McpPoolOptions`. All optional: a pool with no `load` is one driven by
@@ -200,6 +211,7 @@ export class McpPool {
     idleTimeoutMs,
     indexTools = true,
     createTransport: transportFactory = createTransport,
+    toolsCache,
   }: McpPoolOptions = {}) {
     this.load = load;
     this.clientName = clientName;
@@ -219,6 +231,7 @@ export class McpPool {
     this.idleTimeoutMs = idleTimeoutMs;
     this.indexTools = indexTools;
     this.createTransport = transportFactory;
+    this.toolsCache = toolsCache;
     this.log = log ?? {
       info: (message) => console.log(message),
       error: (message) => console.error(message),
@@ -409,6 +422,9 @@ export class McpPool {
       if (!keep.has(id)) {
         // Deleted first, so a listener told it closed does not find it still in `state()`.
         this.entries.delete(id);
+        // The consumer deletes a row's cached list with the row, so a row that comes back under
+        // the same id starts with nothing known to be saved.
+        this.cached.delete(id);
         await this.close(entry, "removed");
       }
     }
@@ -563,8 +579,11 @@ export class McpPool {
     }
 
     for (const entry of this.entries.values()) {
-      const { client } = entry;
-      if (entry.status !== "ready" || !client) continue;
+      // A connected server's tools, and a cold one's last-known list. Read off the status rather
+      // than off `entry.client`: a server being parked is `idle` before its client is closed, and
+      // a call must not be dispatched to a client on its way out.
+      const client = entry.status === "ready" ? entry.client : undefined;
+      if (!client && entry.status !== "idle") continue;
       if (owner.get(slugOf(entry.config)) !== entry.config.id) continue;
       for (const tool of entry.tools) {
         // One server's own two tools can still land on one name: `qualify` substitutes every
@@ -650,9 +669,14 @@ export class McpPool {
     const config = copyConfig(row);
     const status = !config.enabled ? "disabled" : this.lazy && !force ? "idle" : "connecting";
     const entry: Entry = { config, status, tools: [] };
+    // What this server was last known to offer, where this connect replaces an entry that reaches
+    // the same server: the list a redial of a cold server is compared against.
+    const prior = this.entries.get(config.id);
+    const known = prior && sameConnection(prior.config, config) ? prior : undefined;
     this.entries.set(config.id, entry);
     // Registered but not dialled: a lazy pool still reconciles the entry set on `sync`, so
     // `state()` is complete and a later use has something to connect. Only the child is deferred.
+    if (status === "idle") await this.recall(entry);
     if (status !== "connecting") return;
 
     // Held outside the try so the catch can close it. Between `connect` resolving and
@@ -695,6 +719,7 @@ export class McpPool {
       entry.pid = typeof pid === "number" ? pid : undefined;
       entry.startedAt = Date.now();
       this.adopt(entry, tools);
+      this.remember(entry, tools);
       // Installed only once the server is up: a child that dies mid-handshake is reported by
       // `connect` rejecting, and `onClose` firing then would race the success path below.
       client.onclose = () => this.onClose(entry);
@@ -712,6 +737,9 @@ export class McpPool {
         ms: elapsed(started),
         tools: entry.tools.length,
       });
+      // A cold server's last-known list was being offered until now. Where the server came back
+      // offering something else, that is a change like any other.
+      if (known?.fingerprint !== undefined) this.announce(entry, known.fingerprint, known.tools);
     } catch (error) {
       // The handshake got far enough to start a child and not far enough to hand it over. Nothing
       // else holds this client, so `close()` and `shutdown()` would never reach the process.
@@ -756,6 +784,82 @@ export class McpPool {
       ),
     );
     entry.fingerprint = this.indexTools ? toolsFingerprint(listed) : undefined;
+    entry.stale = false;
+  }
+
+  /**
+   * Gives a row that was registered without being dialled the tools `toolsCache` holds for it.
+   *
+   * A list fetched over another connection is not this row's, so it is left where it is: the
+   * next connect overwrites it.
+   */
+  private async recall(entry: Entry) {
+    if (!this.toolsCache || !this.indexTools) return;
+    const { id } = entry.config;
+    try {
+      const held = await this.toolsCache.load(id);
+      if (!held || held.connection !== connectionFingerprint(entry.config)) return;
+      this.adopt(entry, held.tools as ListedTool[]);
+      entry.stale = true;
+      this.cached.set(id, `${held.connection}:${entry.fingerprint}`);
+    } catch (error) {
+      this.log.error?.(`[mcp] ${slugOf(entry.config)}: tools cache: ${errorMessage(error)}`);
+    }
+  }
+
+  /**
+   * Hands a fresh list to `toolsCache`, unless it is the one the cache already holds.
+   *
+   * Not awaited: a store that is slow must not hold a connect open, and one that fails has cost
+   * nothing but the next cold start's catalogue.
+   */
+  private remember(entry: Entry, listed: ListedTool[]) {
+    if (!this.toolsCache || !this.indexTools) return;
+    const { id } = entry.config;
+    const connection = connectionFingerprint(entry.config);
+    const key = `${connection}:${entry.fingerprint}`;
+    if (this.cached.get(id) === key) return;
+    this.cached.set(id, key);
+    const failed = (error: unknown) => {
+      // Forgotten, so the next connect tries again rather than believing this one landed.
+      if (this.cached.get(id) === key) this.cached.delete(id);
+      this.log.error?.(`[mcp] ${slugOf(entry.config)}: tools cache: ${errorMessage(error)}`);
+    };
+    try {
+      Promise.resolve(
+        this.toolsCache.save(id, { connection, tools: listed as CachedTools["tools"] }),
+      ).catch(failed);
+    } catch (error) {
+      failed(error);
+    }
+  }
+
+  /**
+   * Reports a server's tools having moved, if they did.
+   *
+   * @param entry The server, already holding its new list. The caller has reindexed.
+   * @param before The fingerprint of the list it replaced.
+   * @param had The tools of the list it replaced.
+   * @returns Whether anything moved.
+   */
+  private announce(entry: Entry, before: string, had: readonly PooledTool[]) {
+    const after = entry.fingerprint ?? "";
+    if (after === before) return false;
+    const was = new Set(had.map((tool) => tool.name));
+    const now = new Set(entry.tools.map((tool) => tool.name));
+    this.log.info?.(
+      `[mcp] ${slugOf(entry.config)}: its tools changed, ${entry.tools.length} tool(s) now`,
+    );
+    this.emit({
+      type: "tools-changed",
+      serverId: entry.config.id,
+      before,
+      after,
+      tools: entry.tools.length,
+      added: [...now].filter((name) => !was.has(name)),
+      removed: [...was].filter((name) => !now.has(name)),
+    });
+    return true;
   }
 
   /**
@@ -798,24 +902,14 @@ export class McpPool {
       // The server can have crashed while it was answering: `onClose` is not queued.
       if (!current()) return;
       const before = entry.fingerprint ?? "";
-      const had = new Set(entry.tools.map((tool) => tool.name));
+      const had = entry.tools;
       this.adopt(entry, listed);
-      const after = entry.fingerprint ?? "";
       // A server may announce a change that changed nothing the pool reads, and some announce one
-      // on every start. Nothing moved, so there is nothing to reindex or tell anyone.
-      if (after === before) return;
+      // on every start. Nothing moved, so there is nothing to reindex, save or tell anyone.
+      if (entry.fingerprint === before) return;
+      this.remember(entry, listed);
       this.reindex();
-      const has = new Set(entry.tools.map((tool) => tool.name));
-      this.log.info?.(`[mcp] ${slug}: its tools changed, ${entry.tools.length} tool(s) now`);
-      this.emit({
-        type: "tools-changed",
-        serverId: entry.config.id,
-        before,
-        after,
-        tools: entry.tools.length,
-        added: [...has].filter((name) => !had.has(name)),
-        removed: [...had].filter((name) => !has.has(name)),
-      });
+      this.announce(entry, before, had);
     });
   }
 
@@ -831,8 +925,8 @@ export class McpPool {
     this.disarm(entry);
     this.forget(entry);
     const reason = this.fail(entry, "the server closed the connection");
-    // Cleared rather than kept as a last-known list, so `state()` cannot read as a server that is
-    // down but still has tools to offer.
+    // Cleared rather than kept as a last-known list, unlike a reap: `state()` must not read as a
+    // server that is down but still has tools to offer.
     this.unlist(entry);
     this.reindex();
     this.log.error?.(`[mcp] ${slugOf(entry.config)}: ${reason}`);
@@ -843,6 +937,7 @@ export class McpPool {
   private unlist(entry: Entry) {
     entry.tools = [];
     entry.fingerprint = undefined;
+    entry.stale = false;
   }
 
   /**
@@ -864,9 +959,13 @@ export class McpPool {
    * Closes a server that is not wanted for now, leaving it where the next use can start it.
    *
    * What a reap and a `stop` share. Everything is settled before the close rather than after it:
-   * the close is awaited, and for its length an entry still holding its tools is one `tools()`
-   * offers and a warm `call` dispatches to — on the client being closed. It is also what a
-   * listener told the server closed reads from `state()`.
+   * the close is awaited, and for its length an entry the index still credits with a client is
+   * one a warm `call` dispatches to — on the client being closed. It is also what a listener told
+   * the server closed reads from `state()`.
+   *
+   * The tools stay, marked `stale`: nothing went wrong, so what the server offered a moment ago is
+   * the best account of what it will offer when a call brings it back. Dropping them is what made
+   * a reaped server vanish from a catalogue until something happened to call it by name.
    *
    * @param entry Left `idle` with no `error` and no `failedAt`, so no backoff stands between it
    *   and the next use. A disabled one stays `disabled`: it is already off, for a reason `idle`
@@ -877,7 +976,9 @@ export class McpPool {
     if (entry.status !== "disabled") entry.status = "idle";
     entry.error = undefined;
     entry.failedAt = undefined;
-    this.unlist(entry);
+    // A disabled server offers nothing, cold or otherwise.
+    if (entry.status === "idle" && entry.tools.length > 0) entry.stale = true;
+    else this.unlist(entry);
     this.reindex();
     await this.close(entry, reason);
   }
@@ -957,8 +1058,8 @@ export class McpPool {
   /**
    * Whether a name that missed the index might still turn up.
    *
-   * A lazy pool's cold server has no tools indexed and `tools()` deliberately does not connect
-   * one, so a name that server could own is early rather than missing; same for one still
+   * A lazy pool's cold server may have no tools indexed and `tools()` deliberately does not
+   * connect one, so a name that server could own is early rather than missing; same for one still
    * shaking hands. Anything else means no server that is going to answer has this tool.
    *
    * Deliberately not `error`. The pool cannot tell a caller's stale name from a model's invented
@@ -1132,18 +1233,23 @@ export class McpPool {
   /**
    * Names and descriptions only — the cheap half, for the on-demand catalogue.
    *
-   * A ready server offering no tools is dropped rather than listed empty, or a prompt builder
-   * that short-circuits on an empty catalogue spends its preamble introducing a list of nothing.
+   * A server offering no tools is dropped rather than listed empty, or a prompt builder that
+   * short-circuits on an empty catalogue spends its preamble introducing a list of nothing.
    * `state()` still reports the server: the operator wants that row.
    *
+   * A cold server is listed off the tools it was last known to have, marked `stale` — the names a
+   * model can ask for and a call can wake. Never connects.
+   *
    * @param servers The run's scope, read the same way `tools` reads it.
-   * @returns One entry per ready server that has tools, in configuration order.
+   * @returns One entry per ready or cold server that has tools, in configuration order.
    */
   catalog(servers?: Iterable<string>): CatalogServer[] {
     const allowed = scope(servers);
     const out: CatalogServer[] = [];
     for (const entry of this.entries.values()) {
-      if (entry.status !== "ready") continue;
+      // A cold server is listed off its last-known tools: `offers` reads the index, which holds
+      // them, and a failed or disabled server's are not in it.
+      if (entry.status !== "ready" && entry.status !== "idle") continue;
       if (!inScope(allowed, entry.config.id)) continue;
       // Before the emptiness check, so a server whose every tool is hidden — or whose names all
       // belong to another server — drops out like one that offers none.
@@ -1159,6 +1265,7 @@ export class McpPool {
           description,
           ...defined({ title, annotations }),
         })),
+        ...(entry.stale ? { stale: true } : {}),
       });
     }
     return out;
@@ -1173,7 +1280,8 @@ export class McpPool {
    * calls them untrusted, and a host should honour `destructiveHint` from a server it does not
    * trust no more than it would a tool description.
    *
-   * Never connects, like `tools()`: a name on a cold server answers `undefined`. Obeys the same
+   * Never connects, like `tools()`: a cold server answers from its last-known list, and a name on
+   * one that has none answers `undefined`. Obeys the same
    * scope and the same hiding as `call()`, so it cannot confirm to a run that a tool it could not
    * call exists.
    *
@@ -1465,38 +1573,46 @@ export class McpPool {
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
     // past 64 characters, and the split of a shortened name is a tool its server never had.
-    let found = this.index.get(qualifiedName);
+    const refusal = (code: "unknown-tool" | "out-of-scope", serverId?: string) =>
+      new McpPoolError(code, `no connected MCP server offers a tool called "${qualifiedName}"`, {
+        toolName: qualifiedName,
+        serverId,
+      });
+    /** The tool as the index has it now, or the refusal a run that may not reach it is owed. */
+    const resolve = () => {
+      const held = this.index.get(qualifiedName);
+      if (!held) return undefined;
+      // A tool outside this run's scope is answered as one that does not exist, because to this
+      // run it does not: "that server is not yours" would teach the model to ask again.
+      if (!inScope(allowed, held.serverId)) throw refusal("out-of-scope", held.serverId);
+      const owner = this.entries.get(held.serverId);
+      // A hidden tool is one the model was never offered, so a call to it is answered the way a
+      // call to a tool that does not exist is — the model is not to learn it is there.
+      if (!hidden && owner && isHidden(owner.config, held.tool.name)) {
+        throw refusal("unknown-tool", held.serverId);
+      }
+      return { ...held, entry: owner };
+    };
+    // One message for every refusal, so a run cannot learn that a server it was not scoped to
+    // exists. The code separates them for a caller that wants the refusals in its own log.
+    let found = resolve();
     // Waking a server can only help if connecting one would index something, so a pool that does
     // not index refuses here rather than spawning children that cannot answer either.
-    if (!found && this.indexTools) {
-      // A crashed server took its tools out of the index, and a lazy pool never put a cold
-      // server's there at all. Telling the model a tool does not exist teaches it to stop asking,
-      // so bring back whatever is owed a connection and look once more — inside the scope, since
-      // the check below refuses a server this run may not reach and spawning it first refuses
-      // nothing.
-      await this.wake(qualifiedName, allowed);
-      found = this.index.get(qualifiedName);
+    if (!found?.client && this.indexTools) {
+      // A crashed server took its tools out of the index, a lazy pool may never have put a cold
+      // server's there, and a reaped one's are there with nothing connected to answer them.
+      // Telling the model a tool does not exist teaches it to stop asking, so bring back whatever
+      // is owed a connection and look once more. A last-known tool names its server, so that one
+      // alone is dialled — and only after the refusals above, since spawning a child first
+      // refuses nothing. A name nothing knows wakes whatever could own it, inside the scope.
+      if (found?.entry) await this.ensure(found.entry);
+      else await this.wake(qualifiedName, allowed);
+      found = resolve();
     }
-    // A tool outside this run's scope is answered as one that does not exist, because to this run
-    // it does not: "that server is not yours" would teach the model to ask again.
-    const outOfScope = found !== undefined && !inScope(allowed, found.serverId);
-    const entry = found && this.entries.get(found.serverId);
-    // A hidden tool is one the model was never offered, so a call to it is answered the way a
-    // call to a tool that does not exist is — the model is not to learn it is there.
-    const concealed =
-      !hidden &&
-      found !== undefined &&
-      entry !== undefined &&
-      isHidden(entry.config, found.tool.name);
-    if (!found || outOfScope || concealed) {
-      // One message for all of them, so a run cannot learn that a server it was not scoped to
-      // exists. The code separates them for a caller that wants the refusals in its own log.
-      throw new McpPoolError(
-        outOfScope ? "out-of-scope" : "unknown-tool",
-        `no connected MCP server offers a tool called "${qualifiedName}"`,
-        { toolName: qualifiedName, serverId: found?.serverId },
-      );
-    }
+    // Still nothing connected: the name is nobody's, or the server that had it would not start.
+    const client = found?.client;
+    if (!found || !client) throw refusal("unknown-tool", found?.serverId);
+    const { entry } = found;
 
     trace.serverId = found.serverId;
     trace.toolName = found.tool.name;
@@ -1525,17 +1641,13 @@ export class McpPool {
     const timeoutMs = ownTimeoutMs ?? entry?.config.callTimeoutMs ?? this.callTimeoutMs;
     const result = await this.attempt(
       found.serverId,
-      found.client,
+      client,
       // Read back from the index rather than through `client()`: the redial indexed the server
       // again, and a tool it no longer offers is one this call can no longer make.
       async () => {
-        const client = this.index.get(qualifiedName)?.client;
-        if (client) return client;
-        throw new McpPoolError(
-          "unknown-tool",
-          `no connected MCP server offers a tool called "${qualifiedName}"`,
-          { toolName: qualifiedName, serverId: found.serverId },
-        );
+        const redialled = this.index.get(qualifiedName)?.client;
+        if (redialled) return redialled;
+        throw refusal("unknown-tool", found.serverId);
       },
       (client) =>
         client.callTool(
@@ -1701,6 +1813,7 @@ export class McpPool {
         ...defined({ title, annotations }),
         hidden: isHidden(entry.config, name),
       })),
+      ...(entry.stale ? { stale: true } : {}),
       toolsFingerprint: entry.fingerprint,
       pid: entry.pid,
       startedAt:

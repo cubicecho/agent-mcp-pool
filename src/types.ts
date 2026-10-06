@@ -1,4 +1,4 @@
-import type { ServerCapabilities, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type { ServerCapabilities, Tool, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { McpPoolErrorCode } from "./errors.ts";
 
 /**
@@ -353,7 +353,8 @@ export interface McpServerState {
   status: McpStatus;
   error: string;
   /**
-   * What this server offers, while it is connected. Empty under `indexTools: false`, which is the
+   * What this server offers: live while it is connected, last-known while it is `idle` (see
+   * `stale`), and empty while it is down. Empty under `indexTools: false`, which is the
    * honest answer: a consumer that opted out of indexing is not the one drawing a tool list.
    *
    * `name` is the server's own, `qualified` is `<slug>__<name>` — what the model is offered and
@@ -367,9 +368,15 @@ export interface McpServerState {
    */
   tools: (ToolSummary & { qualified: string; hidden: boolean })[];
   /**
+   * Whether `tools` is a last-known list rather than a live one: the server is `idle`, and what
+   * it offered before it was reaped or stopped — or what `toolsCache` remembered — is still
+   * offered. The next `call()` to one of them connects it and lists again. Absent otherwise.
+   */
+  stale?: boolean;
+  /**
    * `toolsFingerprint` of what this server last listed: a hash of every tool's name, description,
-   * input schema and annotations. Absent while it has no list — not connected, or under
-   * `indexTools: false`.
+   * input schema and annotations. Absent while it has no list — never connected and
+   * nothing cached, failed, or under `indexTools: false`.
    *
    * For noticing a server whose tools changed after it was approved. Store it then and compare
    * later: it moves when the server's list does, whether that was a reconnect, an upgrade or a
@@ -452,6 +459,39 @@ export interface CatalogServer {
    * server's own, with the qualified one beside it; the two lists look alike and are not.
    */
   tools: ToolSummary[];
+  /** Set where the server is not connected and this is its last-known list. Absent otherwise. */
+  stale?: boolean;
+}
+
+/**
+ * A server's tool list as a `ToolsCache` keeps it between processes.
+ *
+ * JSON all the way down: `tools` is a `tools/list` result as the server sent it.
+ */
+export interface CachedTools {
+  /**
+   * A hash of the connection the list was fetched over. The pool writes it and checks it, so a
+   * list cached under another command or url is ignored — a store only has to keep it.
+   */
+  connection: string;
+  tools: Tool[];
+}
+
+/**
+ * Where a lazy pool keeps each server's tool list between processes, keyed by server id.
+ *
+ * Without one, a row that has never connected in this process offers nothing: `tools()` and
+ * `catalog()` do not spawn a child to find out. With one, a consumer that already keeps its rows
+ * in a database gets a full catalogue at startup and no child until a tool is called.
+ *
+ * Both may answer synchronously. A `load` that throws is logged and read as nothing cached; a
+ * `save` that throws is logged and tried again at the next connect.
+ */
+export interface ToolsCache {
+  /** @returns What `save` was last given for this id, or `undefined`. */
+  load(id: string): Promise<CachedTools | undefined> | CachedTools | undefined;
+  /** Called after a connect or a re-list whose tools differ from what is cached. Not awaited. */
+  save(id: string, tools: CachedTools): Promise<void> | void;
 }
 
 /**
