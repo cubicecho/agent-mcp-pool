@@ -1,3 +1,10 @@
+# [3.6.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.5.0...v3.6.0) (2026-10-06)
+
+
+### Features
+
+* redial an http server that has dropped its session ([115d8b8](https://github.com/cubicecho/agent-mcp-pool/commit/115d8b8bcbb32f675127dcabb93813859a82a7b0))
+
 # [3.5.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.4.1...v3.5.0) (2026-10-02)
 
 
