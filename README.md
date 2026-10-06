@@ -631,6 +631,39 @@ const result = await pool.call("charts__render", input, { servers, raw: true });
 Unlike `client()`, that keeps the scope and hiding checks, coercion and the timeout. Nothing is
 truncated, and an `isError` result is returned rather than thrown.
 
+### Calls a turn makes twice
+
+A local model often makes the same read twice in one turn, and each is a round trip and the same
+tokens of answer. `resultCache` answers the second from memory:
+
+```ts
+const mcp = new McpPool({ load, resultCache: { ttlMs: 30_000, maxEntries: 256 } }); // the defaults
+
+await mcp.call("notes__read", { path: "a" });                   // asks the server
+await mcp.call("notes__read", { path: "a" });                   // does not
+await mcp.call("notes__read", { path: "a" }, { cache: false }); // asks, and keeps the new answer
+```
+
+Off unless the option is given, and then only where two things hold: the tool declares
+`readOnlyHint` or `idempotentHint`, and its row sets `trustAnnotations: true`. Annotations are the
+server's claims about itself, and this is a place a false one costs something — a tool with side
+effects marked read-only has its second call swallowed. So the operator says which servers to
+believe, the same judgement as auto-approving on `destructiveHint`.
+
+- **Keyed on the tool and its arguments after coercion**, key order aside, so `{ limit: "5" }` and
+  `{ limit: 5 }` are one entry where the schema says integer.
+- **Looked up after the refusals.** A cached answer is never given to a run outside the scope, or
+  for a hidden tool, because the lookup is not reached.
+- **Never a failure.** A `tool-error` is thrown as ever and asked again next time.
+- **Kept whole, cut on the way out**, so a hit obeys the `maxResultChars` of the call that asked.
+  A `raw` call is neither answered from the cache nor stored: what is kept is text.
+- **Cleared per server** when its connection closes for any reason, when its tool list changes,
+  and when any call that is not read-only reaches it — what was read before a write is not what
+  would be read after it. An idempotent write is cached and clears the reads all the same.
+
+A hit is reported as `cached: true` on the `call` event. `ttlMs` is the bound on what the pool
+cannot see — a file edited by something else — so keep it at the length of a turn, not a session.
+
 ## Arguments
 
 Local models get argument types wrong far more often than names. They send `"5"` for a number,
@@ -882,7 +915,7 @@ const stop = pool.onEvent((event) => {
 | `connect-failed` | `serverId`, `ms`, and the `error` the row now reports |
 | `close` | `serverId` and a `reason`, plus the `error` for a crash |
 | `tools-changed` | `serverId`, the `before` and `after` fingerprints, the number of `tools` now, and the names `added` and `removed` |
-| `call` | `qualified`, `serverId` and `toolName` once resolved, `ms`, `ok`, the refusal `code` and `error`, `chars` before any cap, `truncated`, `hidden` and `raw` |
+| `call` | `qualified`, `serverId` and `toolName` once resolved, `ms`, `ok`, the refusal `code` and `error`, `chars` before any cap, `truncated`, `hidden`, `raw`, and `cached` where `resultCache` answered |
 
 A close's `reason` is one of `idle`, `stop`, `reconnect`, `removed`, `changed`, `redial`,
 `shutdown` or `crash`. It fires only for a connection that was open, and after `state()` already

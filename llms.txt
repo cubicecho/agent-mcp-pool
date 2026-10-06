@@ -82,6 +82,10 @@ What a pool and its methods are told: the constructor's options and each call's.
 - `ProbeOptions` (type) — What a probe takes from the caller: the child's environment, and its patience.
 - `probe` — Connects to a config that may not be saved yet, lists its tools, and hangs up.
 
+### result-cache
+
+- `ResultCacheOptions` (type) — How a pool's result cache is bounded — see `McpPoolOptions.resultCache`.
+
 ### results
 
 - `resultText` — What a tool call is worth as a tool message.

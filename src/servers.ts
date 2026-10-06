@@ -285,6 +285,7 @@ export function validateServerConfig(row: unknown): string[] {
   optional("callTimeoutMs", (value) => wholeNumber(value, 1), "a positive whole number");
   optional("maxResultChars", (value) => wholeNumber(value, 0), "a whole number, 0 or more");
   optional("coerceArguments", (value) => typeof value === "boolean", "true or false");
+  optional("trustAnnotations", (value) => typeof value === "boolean", "true or false");
   optional(
     "hiddenTools",
     (value) => Array.isArray(value) && value.every(isString),
