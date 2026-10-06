@@ -11,7 +11,9 @@ import { coerceArguments } from "./arguments.ts";
 import { copyConfig, inScope, reportedConfig, scope } from "./config.ts";
 import { dial } from "./dial.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
+import { toolsFingerprint } from "./fingerprint.ts";
 import { runHooks } from "./hook-runner.ts";
+import { type ListedTool, listAllTools } from "./listing.ts";
 import { labelOf, namespaceOwners, slugOf } from "./namespace.ts";
 import { couldQualify, type PooledTool, pooledTool } from "./naming.ts";
 import type {
@@ -67,6 +69,10 @@ interface Entry {
   status: McpStatus;
   error?: string;
   tools: PooledTool[];
+  /** `toolsFingerprint` of the list `tools` was built from. Cleared with it. */
+  fingerprint?: string;
+  /** A `tools/list_changed` has arrived that no re-list has started for yet. See `relist`. */
+  relistOwed?: boolean;
   /**
    * Set while this entry is being torn down on purpose, so `onClose` can tell a shutdown we asked
    * for from a child that died on its own. Without it, `shutdown()` marks every server crashed on
@@ -84,6 +90,9 @@ interface Entry {
   /** When this connection became ready, as a `Date.now()` stamp. Cleared with the client. */
   startedAt?: number;
 }
+
+/** What a server sends when the set of tools it offers has changed. */
+const TOOLS_LIST_CHANGED = "notifications/tools/list_changed";
 
 /** What `invoke` learns about a call on the way, for the `call` event. */
 interface CallTrace {
@@ -651,12 +660,14 @@ export class McpPool {
     let client: Client | undefined;
     const started = performance.now();
     try {
-      client = this.newClient(config.id);
+      const dialled = this.newClient(config.id);
+      client = dialled;
       // Before the connect, and per connection rather than once at construction: a server can
       // send `logging/message` or `tools/list_changed` during its own startup, and a handler
       // installed after `listTools` would have missed it.
       client.fallbackNotificationHandler = async (notification) => {
         this.notify(config.id, notification);
+        if (notification.method === TOOLS_LIST_CHANGED) this.relist(entry, dialled);
       };
       const transport = this.createTransport(config, {
         childEnv: this.childEnv,
@@ -683,23 +694,7 @@ export class McpPool {
       const pid = "pid" in transport ? transport.pid : undefined;
       entry.pid = typeof pid === "number" ? pid : undefined;
       entry.startedAt = Date.now();
-      entry.tools = tools.map((tool) =>
-        pooledTool(
-          config,
-          {
-            name: tool.name,
-            description: tool.description ?? "",
-            parameters: (tool.inputSchema ?? { type: "object" }) as Record<string, unknown>,
-            // Kept, not interpreted: the pool has no use for them, and a host deciding whether a
-            // call needs a person's approval has no other way to see them.
-            title: tool.title,
-            annotations: tool.annotations,
-            outputSchema: tool.outputSchema as Record<string, unknown> | undefined,
-            meta: tool._meta,
-          },
-          this.maxDescriptionChars,
-        ),
-      );
+      this.adopt(entry, tools);
       // Installed only once the server is up: a child that dies mid-handshake is reported by
       // `connect` rejecting, and `onClose` firing then would race the success path below.
       client.onclose = () => this.onClose(entry);
@@ -733,6 +728,98 @@ export class McpPool {
   }
 
   /**
+   * Takes a `tools/list` result as what this server offers, and fingerprints it.
+   *
+   * What a connect and a re-list share, so the two cannot build a tool differently. Under
+   * `indexTools: false` nothing was listed, and an entry with no list has no fingerprint either:
+   * the hash of an empty list would read as a server that offers nothing.
+   *
+   * @param entry Mutated in place. The caller reindexes.
+   * @param listed Every page of the server's tools, in the server's order.
+   */
+  private adopt(entry: Entry, listed: ListedTool[]) {
+    entry.tools = listed.map((tool) =>
+      pooledTool(
+        entry.config,
+        {
+          name: tool.name,
+          description: tool.description ?? "",
+          parameters: (tool.inputSchema ?? { type: "object" }) as Record<string, unknown>,
+          // Kept, not interpreted: the pool has no use for them, and a host deciding whether a
+          // call needs a person's approval has no other way to see them.
+          title: tool.title,
+          annotations: tool.annotations,
+          outputSchema: tool.outputSchema as Record<string, unknown> | undefined,
+          meta: tool._meta,
+        },
+        this.maxDescriptionChars,
+      ),
+    );
+    entry.fingerprint = this.indexTools ? toolsFingerprint(listed) : undefined;
+  }
+
+  /**
+   * Lists a connected server's tools again, because it said they changed.
+   *
+   * The pool used to forward `tools/list_changed` and do nothing else, so the index stayed at
+   * whatever the connect saw: `call()` refused a tool that now existed and offered one that was
+   * gone, and the only way to catch up was a `reconnect()` that restarted the child.
+   *
+   * Queued, like everything that changes what an entry holds, and the entry keeps its place: the
+   * list is swapped on the entry where it stands, so `tools()` still answers in configuration
+   * order and then the server's own. An append would move every later definition and cost a
+   * prompt cache its prefix on each change.
+   *
+   * A burst of notifications is one walk — `relistOwed` is cleared as the walk starts, so one
+   * arriving during it still gets its own. A walk that fails leaves the list as it was: a server
+   * that cannot answer `tools/list` just now has not stopped offering what it offered.
+   *
+   * @param entry The server that sent the notification.
+   * @param client The connection it came in on. A re-list for one that has since been replaced is
+   *   dropped — the connect that replaced it listed the tools itself.
+   */
+  private relist(entry: Entry, client: Client) {
+    if (!this.indexTools || entry.relistOwed) return;
+    entry.relistOwed = true;
+    void this.queue(async () => {
+      entry.relistOwed = false;
+      const current = () => this.entries.get(entry.config.id) === entry && entry.client === client;
+      if (!current()) return;
+      const slug = slugOf(entry.config);
+      // The same budget a connect gets, since it is the same walk against the same server.
+      const timeoutMs = entry.config.connectTimeoutMs ?? this.connectTimeoutMs;
+      let listed: ListedTool[];
+      try {
+        listed = await listAllTools(client, timeoutMs == null ? undefined : { timeout: timeoutMs });
+      } catch (error) {
+        this.log.error?.(`[mcp] ${slug}: could not list its changed tools: ${errorMessage(error)}`);
+        return;
+      }
+      // The server can have crashed while it was answering: `onClose` is not queued.
+      if (!current()) return;
+      const before = entry.fingerprint ?? "";
+      const had = new Set(entry.tools.map((tool) => tool.name));
+      this.adopt(entry, listed);
+      const after = entry.fingerprint ?? "";
+      // A server may announce a change that changed nothing the pool reads, and some announce one
+      // on every start. Nothing moved, so there is nothing to reindex or tell anyone.
+      if (after === before) return;
+      this.reindex();
+      const has = new Set(entry.tools.map((tool) => tool.name));
+      this.log.info?.(`[mcp] ${slug}: its tools changed, ${entry.tools.length} tool(s) now`);
+      this.emit({
+        type: "tools-changed",
+        serverId: entry.config.id,
+        before,
+        after,
+        tools: entry.tools.length,
+        added: [...has].filter((name) => !had.has(name)),
+        removed: [...had].filter((name) => !has.has(name)),
+      });
+    });
+  }
+
+  /**
    * A connected server dropped its connection without being asked to.
    *
    * The pool used to have no idea: the entry stayed `ready`, `index` kept handing out its tools,
@@ -746,10 +833,16 @@ export class McpPool {
     const reason = this.fail(entry, "the server closed the connection");
     // Cleared rather than kept as a last-known list, so `state()` cannot read as a server that is
     // down but still has tools to offer.
-    entry.tools = [];
+    this.unlist(entry);
     this.reindex();
     this.log.error?.(`[mcp] ${slugOf(entry.config)}: ${reason}`);
     this.emit({ type: "close", serverId: entry.config.id, reason: "crash", error: reason });
+  }
+
+  /** Forgets what a server offered, list and fingerprint together. The caller reindexes. */
+  private unlist(entry: Entry) {
+    entry.tools = [];
+    entry.fingerprint = undefined;
   }
 
   /**
@@ -784,7 +877,7 @@ export class McpPool {
     if (entry.status !== "disabled") entry.status = "idle";
     entry.error = undefined;
     entry.failedAt = undefined;
-    entry.tools = [];
+    this.unlist(entry);
     this.reindex();
     await this.close(entry, reason);
   }
@@ -1608,6 +1701,7 @@ export class McpPool {
         ...defined({ title, annotations }),
         hidden: isHidden(entry.config, name),
       })),
+      toolsFingerprint: entry.fingerprint,
       pid: entry.pid,
       startedAt:
         entry.startedAt === undefined ? undefined : new Date(entry.startedAt).toISOString(),

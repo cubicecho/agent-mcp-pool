@@ -367,6 +367,16 @@ export interface McpServerState {
    */
   tools: (ToolSummary & { qualified: string; hidden: boolean })[];
   /**
+   * `toolsFingerprint` of what this server last listed: a hash of every tool's name, description,
+   * input schema and annotations. Absent while it has no list — not connected, or under
+   * `indexTools: false`.
+   *
+   * For noticing a server whose tools changed after it was approved. Store it then and compare
+   * later: it moves when the server's list does, whether that was a reconnect, an upgrade or a
+   * `tools/list_changed`, and not when the row is renamed or the tools arrive in another order.
+   */
+  toolsFingerprint?: string;
+  /**
    * The stdio child's pid. Absent over http, and while the server is not connected.
    *
    * What an operator reaches for to find a wedged child in `ps` or to `kill -9` it, and not
@@ -410,6 +420,11 @@ export interface McpProbe {
   /** With `title` and `annotations` where the server sent them, so a UI can badge a row's
    * destructive tools before it is saved. */
   tools: ToolSummary[];
+  /**
+   * `toolsFingerprint` of the tools listed, empty where the probe failed. The same hash `state()`
+   * reports once the row is saved and connected, so what was approved here can be compared there.
+   */
+  toolsFingerprint: string;
   /**
    * The server's own `instructions` from the handshake, empty where it sent none or never got
    * that far.
@@ -506,11 +521,24 @@ export type PoolCloseReason =
  * resolved to nothing; `chars` is the text's length before any cap, and `truncated` whether the
  * cap cut it; `raw` calls carry neither. A refusal carries its `McpPoolError` code, a `tool-error`
  * included, and the message as `error`.
+ *
+ * `tools-changed` is a server's list moving under a live connection, after `tools/list_changed`:
+ * `before` and `after` are `toolsFingerprint`s, and `added` and `removed` the server's own names.
+ * A tool whose description or schema changed is in neither — only the fingerprints say so.
  */
 export type PoolEvent =
   | { type: "connect"; serverId: string; ms: number; tools: number }
   | { type: "connect-failed"; serverId: string; ms: number; error: string }
   | { type: "close"; serverId: string; reason: PoolCloseReason; error?: string }
+  | {
+      type: "tools-changed";
+      serverId: string;
+      before: string;
+      after: string;
+      tools: number;
+      added: string[];
+      removed: string[];
+    }
   | {
       type: "call";
       qualified: string;

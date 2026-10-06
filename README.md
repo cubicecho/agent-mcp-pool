@@ -140,6 +140,26 @@ choice is an error round trip per server per surface, or not offering the surfac
 reported under `indexTools: false` as well, unlike `tools` — they were already in hand, and the
 consumer that turned indexing off is the one proxying the protocol.
 
+`toolsFingerprint` is a hash of what the server last listed — every tool's name, description,
+input schema and annotations — and is absent while it has no list. A server whose descriptions
+change after an operator approved them is the "rug pull" of the MCP security write-ups, and it can
+only be noticed against something stored:
+
+```ts
+const { toolsFingerprint } = await mcp.probe(row); // what the operator approved
+await save({ ...row, approved: toolsFingerprint });
+
+for (const { id, toolsFingerprint } of mcp.state()) {
+  if (toolsFingerprint && toolsFingerprint !== approvedFor(id)) warn(id);
+}
+```
+
+It moves when the list does — a reconnect to an upgraded server, or a `tools/list_changed` — and
+not when the row is renamed or the same tools arrive in another order. Annotations are in it
+because a tool that keeps its description and flips `destructiveHint` is the same attack on a host
+that auto-approves by the hint. `toolsFingerprint(tools)` is exported for a consumer hashing a
+`tools/list` it fetched itself.
+
 `serversWith(state, capability)` is that check written once — the connected servers whose
 handshake offered it, which every host had spelled out for itself:
 
@@ -691,7 +711,7 @@ A config is easy to get subtly wrong, and finding out at 3am when the task runs 
 `probe()` connects a config that may not be saved yet, lists its tools, and hangs up:
 
 ```ts
-const { ok, error, tools, instructions } = await mcp.probe(row); // { ok: false, error: "no module named …" }
+const { ok, error, tools, toolsFingerprint, instructions } = await mcp.probe(row); // { ok: false, error: "no module named …" }
 ```
 
 `instructions` is there for the same reason `tools` is: "Test connection" is where an operator
@@ -755,8 +775,17 @@ const stop = pool.onNotification((id, notification) => {
 The server id comes first because a listener hears from every server at once and the notification
 does not say where it came from. The handler is installed before each connect and reinstalled on
 a respawn, so a `logging/message` sent during a server's own startup is not missed. An agent loop
-can ignore all of this — the index is rebuilt on `sync()` — but a consumer relaying the protocol
-onward cannot.
+can ignore all of this, but a consumer relaying the protocol onward cannot.
+
+`tools/list_changed` is the one the pool acts on as well as forwards. It lists that server's tools
+again — every page, on the same budget as a connect — and reindexes, so `tools()`, `catalog()` and
+`call()` follow the server without a `reconnect()` restarting the child. A walk that fails leaves
+the list as it was, and a pool with `indexTools: false` does not list at all.
+
+**The order of `tools()` is a guarantee:** configuration order, then each server's own order, and
+a re-list keeps the server's slot. Prompt caching on every local runtime — llama.cpp's prefix
+cache, Ollama, vLLM's automatic prefix caching — depends on the tool array being byte-identical
+from turn to turn, and a changed server appended to the end would move every definition after it.
 
 ## Events
 
@@ -775,11 +804,16 @@ const stop = pool.onEvent((event) => {
 | `connect` | `serverId`, `ms`, and the number of `tools` it listed |
 | `connect-failed` | `serverId`, `ms`, and the `error` the row now reports |
 | `close` | `serverId` and a `reason`, plus the `error` for a crash |
+| `tools-changed` | `serverId`, the `before` and `after` fingerprints, the number of `tools` now, and the names `added` and `removed` |
 | `call` | `qualified`, `serverId` and `toolName` once resolved, `ms`, `ok`, the refusal `code` and `error`, `chars` before any cap, `truncated`, `hidden` and `raw` |
 
 A close's `reason` is one of `idle`, `stop`, `reconnect`, `removed`, `changed`, `redial`,
 `shutdown` or `crash`. It fires only for a connection that was open, and after `state()` already
 shows where the close left the server.
+
+`tools-changed` follows a `tools/list_changed` that moved the fingerprint; one that changed
+nothing is not reported. A tool whose description or schema changed is in neither `added` nor
+`removed`, so the fingerprints are what say a change happened.
 
 Listeners run synchronously as each thing happens. One that throws is logged and skipped, since a
 tracer's bug must not fail a tool call. With no listener subscribed, a call does no extra work.
