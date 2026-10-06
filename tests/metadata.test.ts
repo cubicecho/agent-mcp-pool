@@ -23,6 +23,7 @@ test("state() and catalog() carry a tool's title and annotations", async () => {
     title: "Read a note",
     annotations: READ_ANNOTATIONS,
     hidden: false,
+    tokens: expect.any(Number),
   });
   // A tool with neither gains no undefined keys, so an existing deep-equal still holds.
   expect(pool.state()[0]?.tools.find((tool) => tool.name === "ping")).toEqual({
@@ -30,12 +31,14 @@ test("state() and catalog() carry a tool's title and annotations", async () => {
     qualified: "echo__ping",
     description: "replies pong",
     hidden: false,
+    tokens: expect.any(Number),
   });
   expect(pool.catalog()[0]?.tools.find((tool) => tool.name === "echo__read")).toEqual({
     name: "echo__read",
     description: "reads a note by path",
     title: "Read a note",
     annotations: READ_ANNOTATIONS,
+    tokens: expect.any(Number),
   });
 });
 

@@ -49,12 +49,14 @@ export type {
   McpPoolOptions,
   PoolLog,
   RunHooksOptions,
+  SearchOptions,
   StateOptions,
   ToolsOptions,
 } from "./options.ts";
 export { McpPool } from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
 export { resultText, truncateText } from "./results.ts";
+export { rankTools, type SearchableTool } from "./search.ts";
 export {
   fromMcpServersJson,
   type McpServersJsonOptions,

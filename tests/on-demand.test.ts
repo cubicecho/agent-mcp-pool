@@ -2,6 +2,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionFingerprint } from "../src/fingerprint.ts";
 import type { McpPool } from "../src/pool.ts";
+import { rankTools, searchWords } from "../src/search.ts";
 import { ECHO_TOOLS, echoServer, makePool, memoryRow } from "../src/testing/index.ts";
 import type { CachedTools, PoolEvent, ToolsCache } from "../src/types.ts";
 
@@ -229,4 +230,155 @@ test("a pool that does not index neither reads nor writes the cache", async () =
 
   expect(pool.state()).toMatchObject([{ status: "ready", tools: [] }]);
   expect(saves).toEqual([]);
+});
+
+const FILES: Tool[] = [
+  tool("list_directory", "lists the entries of a directory"),
+  tool("readFile", "returns the contents of a file at a path"),
+  tool("write_file", "writes text to a file, replacing what was there"),
+  { ...tool("stat", "size and times of a path"), title: "Read file metadata" },
+];
+
+test("search ranks a tool the query names above one it does not", async () => {
+  const { servers } = counted({ echo: ECHO_TOOLS, files: FILES });
+  pool = makePool({ servers });
+  await pool.sync([memoryRow("echo"), memoryRow("files")]);
+
+  const found = pool.search("read file");
+
+  // `files` first although it is configured second: a server lands where its best tool ranked.
+  expect(found.map((server) => server.id)).toEqual(["files", "echo"]);
+  // The last on the server's name alone, which every tool of `files` has and so ranks none.
+  expect(found[0]?.tools.map((entry) => entry.name)).toEqual([
+    "files__readFile",
+    "files__stat",
+    "files__write_file",
+    "files__list_directory",
+  ]);
+  // `ping` shares no word with the query, so it is not there to be ranked below anything.
+  expect(found[1]?.tools.map((entry) => entry.name)).toEqual(["echo__read"]);
+  expect(found[0]?.tools[0]).toEqual({
+    name: "files__readFile",
+    description: "returns the contents of a file at a path",
+    tokens: expect.any(Number),
+  });
+});
+
+test("search obeys the scope, the hiding and the limit a catalogue does", async () => {
+  const { servers, started } = counted({ echo: ECHO_TOOLS, files: FILES });
+  const { cache } = memoryCache({ files: cachedFor("files", FILES) });
+  pool = makePool({ servers, lazy: true, toolsCache: cache });
+  await pool.sync([memoryRow("echo"), memoryRow("files", { hiddenTools: ["readFile"] })]);
+
+  // A cold server is searched off its last-known list, and searching it starts nothing.
+  expect(pool.search("file")).toMatchObject([
+    {
+      id: "files",
+      stale: true,
+      tools: [
+        { name: "files__write_file" },
+        { name: "files__stat" },
+        { name: "files__list_directory" },
+      ],
+    },
+  ]);
+  expect(pool.search("file", { limit: 1 })[0]?.tools).toHaveLength(1);
+  expect(pool.search("file", { limit: 0 })).toEqual([]);
+  expect(pool.search("file", { servers: ["echo"] })).toEqual([]);
+  expect(pool.search("file", { servers: [] })).toEqual([]);
+  expect(pool.search("  ?! ")).toEqual([]);
+  expect(started).toEqual({});
+});
+
+test("a query's words are found however a tool's name was spelled", () => {
+  expect(searchWords("readFile")).toEqual(["read", "file"]);
+  expect(searchWords("fs.read_text-File2")).toEqual(["fs", "read", "text", "file2"]);
+
+  const ranked = rankTools("reading files", [
+    { name: "a__ping", description: "replies pong" },
+    { name: "a__notes", description: "reads a note" },
+    { name: "a__read_file", description: "" },
+  ]);
+  // A name outranks a description, and a tool that shares nothing is not ranked at all.
+  expect(ranked.map((entry) => entry.name)).toEqual(["a__read_file", "a__notes"]);
+  // Two letters in common is not a match: `re` begins half the verbs there are.
+  expect(rankTools("re", [{ name: "a__read", description: "" }])).toEqual([]);
+});
+
+test("alwaysLoaded names the tools a row says to send first, and only ones on offer", async () => {
+  const { servers, started } = counted({ echo: ECHO_TOOLS, files: FILES });
+  const { cache } = memoryCache({ files: cachedFor("files", FILES) });
+  pool = makePool({ servers, lazy: true, toolsCache: cache });
+  await pool.sync([
+    memoryRow("echo", { alwaysLoad: ["ping"] }),
+    memoryRow("files", {
+      alwaysLoad: ["stat", "readFile", "no_such_tool", "stat"],
+      hiddenTools: ["readFile"],
+    }),
+  ]);
+
+  // `echo` has never connected and has nothing cached, so it has nothing to name yet.
+  expect(pool.alwaysLoaded()).toEqual(["files__stat"]);
+  expect(pool.alwaysLoaded(["echo"])).toEqual([]);
+  expect(pool.alwaysLoaded([])).toEqual([]);
+  expect(started).toEqual({});
+
+  await pool.client("echo");
+  expect(pool.alwaysLoaded()).toEqual(["echo__ping", "files__stat"]);
+  expect(names(pool)).toEqual(expect.arrayContaining(pool.alwaysLoaded()));
+  expect(pool.tools({ names: pool.alwaysLoaded() })).toHaveLength(2);
+});
+
+test("each tool reports roughly what its definition costs to send", async () => {
+  const { servers } = counted({ echo: ECHO_TOOLS });
+  pool = makePool({ servers });
+  await pool.sync([memoryRow("echo")]);
+
+  const [definition] = pool.tools({ names: ["echo__read"] });
+  const expected = Math.ceil(JSON.stringify(definition).length / 4);
+
+  expect(pool.catalog()[0]?.tools.find((entry) => entry.name === "echo__read")?.tokens).toBe(
+    expected,
+  );
+  expect(pool.state()[0]?.tools.find((entry) => entry.name === "read")?.tokens).toBe(expected);
+});
+
+test("a tool set past the token warning is reported once, and again only when it grows", async () => {
+  const long = "a description long enough to cost something. ".repeat(20);
+  const { servers } = counted({ big: [tool("one", long), tool("two", long), tool("six", long)] });
+  const info: string[] = [];
+  const warnings = () => info.filter((message) => message.includes("toolsTokenWarning"));
+  pool = makePool({ servers, toolsTokenWarning: 400, log: { info: (m) => info.push(m) } });
+  await pool.sync([memoryRow("big")]);
+
+  // One tool fits; nothing to say.
+  pool.tools({ names: ["big__one"] });
+  expect(warnings()).toEqual([]);
+
+  pool.tools({ names: ["big__one", "big__two"] });
+  pool.tools({ names: ["big__one", "big__two"] });
+  pool.tools({ names: ["big__two", "big__six"] });
+  expect(warnings()).toHaveLength(1);
+  expect(warnings()[0]).toMatch(/2 tool definition\(s\) come to about \d+ tokens, past the 400/);
+
+  pool.tools();
+  pool.tools();
+  expect(warnings()).toHaveLength(2);
+});
+
+test("a token warning of 0 says nothing, and the default is 3000", async () => {
+  const long = "x".repeat(13_000);
+  const { servers } = counted({ big: [tool("one", long)] });
+  const quiet: string[] = [];
+  pool = makePool({ servers, toolsTokenWarning: 0, log: { info: (m) => quiet.push(m) } });
+  await pool.sync([memoryRow("big")]);
+  pool.tools();
+  expect(quiet.filter((message) => message.includes("toolsTokenWarning"))).toEqual([]);
+  await pool.shutdown();
+
+  const loud: string[] = [];
+  pool = makePool({ servers, log: { info: (m) => loud.push(m) } });
+  await pool.sync([memoryRow("big")]);
+  pool.tools();
+  expect(loud.filter((message) => message.includes("past the 3000"))).toHaveLength(1);
 });

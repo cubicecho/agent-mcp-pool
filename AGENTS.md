@@ -83,6 +83,14 @@ clears them: an `error` row that still listed tools would read as a server that 
 offering them. And the index reads `ready` off the status, never off `entry.client`, because a
 parked entry is `idle` for the length of the close its client is still going through.
 
+**`search()` ranks a tool by its own name, not its qualified one.** The qualified name carries the
+slug, and a slug scored as a name puts every tool of a server called `files` level with
+`read_file`. The server's slug and label are searched as their own, lightest field.
+
+**`alwaysLoaded()` answers only names `tools()` would hand back.** `alwaysLoad` is an operator's
+list written against a server that can change under it; a name passed on unfiltered is one
+`tools()` skips and logs every turn.
+
 **The tools cache is written behind the connect, never in front of it.** `remember` is not
 awaited and its failure is a log line; a store that is slow or down costs the next cold start's
 catalogue and nothing on this one. It is stamped with `connectionFingerprint` — a hash, since two

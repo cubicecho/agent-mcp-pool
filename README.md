@@ -467,6 +467,45 @@ The index is then empty for ever, so `tools()`, `catalog()` and `state().tools` 
 it either. `client()` is the surface that remains, and `probe()` is unaffected: a probe exists to
 report what a config offers.
 
+## Loading tools on demand
+
+Thirty MCP tools with real schemas are past a small model's context before the system prompt, so
+an agent loop sends a catalogue and a handful of schemas and lets the model ask for the rest. The
+pool's half of that is four things:
+
+```ts
+const servers = agent.serverIds;
+
+mcp.catalog(servers);                                   // every name and description, no schemas
+mcp.tools({ names: mcp.alwaysLoaded(servers), servers }); // the schemas sent before it asks
+mcp.search("read the config file", { servers, limit: 8 }); // the catalogue, cut to this turn
+mcp.tools({ names: asked, servers });                   // what `load_tools` came back with
+```
+
+None of them connects a server; a cold one answers from [its last-known
+list](#what-a-cold-server-offers).
+
+**`alwaysLoad`** is on the row, the mirror of `hiddenTools`: the tools an operator wants in front
+of the model from the first turn, by the server's own names. The row is where it is said so each
+consumer does not keep that list somewhere else. `alwaysLoaded()` answers with qualified names and
+only ones `tools()` would hand back — a name the server does not offer, or a hidden one, is left
+out rather than sent on to be skipped and logged.
+
+**`search()`** returns `catalog()`'s shape holding only what matched, servers ordered by their best
+tool and tools best first. The ranking is word overlap — a query word scores once, by the best
+place it turned up: the tool's name, then its title, then its description, then its server's slug
+and label. Names are split on punctuation and camelCase, and `reads`, `reading` and `read` are one
+word. No embedding and no dependency: it is a shortlist, where roughly right about which thirty of
+a hundred and forty is the whole job. `rankTools` is exported for ranking a list of your own.
+
+**`tokens`** is on every tool in `catalog()`, `search()` and `state()`: an estimate of what its
+whole definition costs to send, at four characters a token over the JSON `tools()` hands out —
+label prefix and schema included, and the same rough count agent-core budgets with. And `tools()`
+says so in `log.info` when the set it was asked for comes to more than `toolsTokenWarning` (default
+3000, `0` to silence). Ollama's default `num_ctx` is 4096 and a runtime that is overrun truncates
+without a word, so this is the only place the problem is ever stated. It is said once, and again
+only for a larger set than the last one reported — an agent loop asks every iteration.
+
 ## Past the agent surface
 
 `tools()` returns OpenAI definitions and `call()` returns a string, because a string is what goes
@@ -850,7 +889,8 @@ A close's `reason` is one of `idle`, `stop`, `reconnect`, `removed`, `changed`, 
 shows where the close left the server.
 
 `tools-changed` follows a `tools/list_changed` that moved the fingerprint; one that changed
-nothing is not reported. A tool whose description or schema changed is in neither `added` nor
+nothing is not reported. So does a cold server that comes back offering other tools than its
+last-known list. A tool whose description or schema changed is in neither `added` nor
 `removed`, so the fingerprints are what say a change happened.
 
 Listeners run synchronously as each thing happens. One that throws is logged and skipped, since a

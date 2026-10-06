@@ -198,6 +198,17 @@ export interface McpPoolOptions {
    */
   toolsCache?: ToolsCache;
   /**
+   * How many estimated tokens of tool definitions `tools()` hands out before it says so in
+   * `log.info`. Default 3000; `0` never says anything.
+   *
+   * A local runtime's default context is a few thousand tokens — Ollama's `num_ctx` is 4096 — and
+   * one that is overrun truncates without a word, so thirty real schemas are gone before the
+   * system prompt and nothing anywhere reports it. Said once, and again only for a larger set
+   * than the last one reported. `CatalogServer.tools[].tokens` is the number per tool, for a
+   * consumer that wants to be strict rather than told.
+   */
+  toolsTokenWarning?: number;
+  /**
    * Builds each connection's transport instead of `createTransport`.
    *
    * For a test that wants a server without a child — `memoryTransport` from
@@ -227,6 +238,14 @@ export interface ToolsOptions {
    * "no servers linked" is a real state.
    */
   servers?: Iterable<string>;
+}
+
+/** What `search()` takes besides the query. */
+export interface SearchOptions {
+  /** The run's scope, read the way `catalog` reads it: absent is every server, empty is none. */
+  servers?: Iterable<string>;
+  /** The most tools to return, across every server. Default 10. */
+  limit?: number;
 }
 
 /** What `state()` takes: whether the rows it reports come back with their credentials. */

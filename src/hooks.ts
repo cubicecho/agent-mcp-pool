@@ -1,4 +1,4 @@
-import { isPlainObject, parseJson, wholeNumber } from "./shape.ts";
+import { estimateTokens, isPlainObject, parseJson, wholeNumber } from "./shape.ts";
 import type { HookContext, HookEvent, HookMessage, HookOutcome, ToolHook } from "./types.ts";
 
 /**
@@ -258,14 +258,6 @@ export function readVeto(text: string | undefined): { veto: boolean; reason?: st
   const reason = typeof answer.reason === "string" ? answer.reason.trim() : "";
   return reason ? { veto: true, reason } : { veto: true };
 }
-
-/**
- * Tokens in a string, as agent-core's `estimateTokens` counts them.
- *
- * Four characters a token, which is rough and deliberately the same rough: a cap measured one way
- * here and another in the request budget would let the two disagree about whether it fit.
- */
-const estimateTokens = (text: string) => Math.ceil(text.length / 4);
 
 const attribute = (text: string) =>
   text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");

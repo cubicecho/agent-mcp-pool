@@ -69,6 +69,7 @@ What a pool and its methods are told: the constructor's options and each call's.
 - `McpPoolOptions` (type) — How a pool is built: where its rows come from, how patient it is, and what it may spawn.
 - `PoolLog` (type) — Where the pool's own progress goes.
 - `RunHooksOptions` (type) — What `runHooks` takes beyond the event and its context.
+- `SearchOptions` (type) — What `search()` takes besides the query.
 - `StateOptions` (type) — What `state()` takes: whether the rows it reports come back with their credentials.
 - `ToolsOptions` (type) — What `tools()` takes: which tools to send, and which servers this run may reach.
 
@@ -85,6 +86,11 @@ What a pool and its methods are told: the constructor's options and each call's.
 
 - `resultText` — What a tool call is worth as a tool message.
 - `truncateText` — Text cut to fit a character budget, keeping its head and its tail.
+
+### search
+
+- `rankTools` — Ranks tools against a query by the words they share.
+- `SearchableTool` (type) — What of a tool `rankTools` reads.
 
 ### servers
 

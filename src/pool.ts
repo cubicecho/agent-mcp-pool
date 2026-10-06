@@ -22,11 +22,13 @@ import type {
   McpPoolOptions,
   PoolLog,
   RunHooksOptions,
+  SearchOptions,
   StateOptions,
   ToolsOptions,
 } from "./options.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { resultText, truncateText } from "./results.ts";
+import { rankTools } from "./search.ts";
 import { sameConnection } from "./servers.ts";
 import { defined } from "./shape.ts";
 import {
@@ -182,6 +184,9 @@ export class McpPool {
   private readonly coerceArguments: boolean;
   private readonly maxResultChars?: number;
   private readonly maxDescriptionChars?: number;
+  private readonly toolsTokenWarning: number;
+  /** The largest over-limit tool set `tools()` has reported. See `weigh`. */
+  private weighed = 0;
   private readonly onElicit?: McpPoolOptions["onElicit"];
   private readonly elicitationModes: ("form" | "url")[];
   private readonly createTransport: TransportFactory;
@@ -205,6 +210,7 @@ export class McpPool {
     coerceArguments = true,
     maxResultChars,
     maxDescriptionChars,
+    toolsTokenWarning = 3000,
     onElicit,
     elicitationModes = ["form"],
     lazy = false,
@@ -225,6 +231,7 @@ export class McpPool {
     this.coerceArguments = coerceArguments;
     this.maxResultChars = maxResultChars;
     this.maxDescriptionChars = maxDescriptionChars;
+    this.toolsTokenWarning = toolsTokenWarning;
     this.onElicit = onElicit;
     this.elicitationModes = elicitationModes;
     this.lazy = lazy;
@@ -1029,6 +1036,7 @@ export class McpPool {
   tools({ names, servers }: ToolsOptions = {}): ToolDefinition[] {
     const allowed = scope(servers);
     const definitions: ToolDefinition[] = [];
+    let tokens = 0;
     // A model asking for the same tool twice would otherwise be sent two definitions under one
     // function name, which OpenAI rejects — a bad request rather than a bad answer, and one that
     // reads as the caller's bug. Caller order is kept; the first mention wins.
@@ -1051,8 +1059,54 @@ export class McpPool {
       if (seen.has(found.tool.qualified)) continue;
       seen.add(found.tool.qualified);
       definitions.push(found.tool.definition);
+      tokens += found.tool.tokens;
     }
+    this.weigh(definitions.length, tokens);
     return definitions;
+  }
+
+  /**
+   * Says so when a tool set is bigger than a small context window can hold.
+   *
+   * Once, and again only for a set larger than the last one reported: an agent loop asks for its
+   * tools every iteration, and on-demand loading asks for a different handful each time, so
+   * anything keyed on the set itself would say it on every turn.
+   */
+  private weigh(count: number, tokens: number) {
+    const limit = this.toolsTokenWarning;
+    if (!limit || tokens <= limit || tokens <= this.weighed) return;
+    this.weighed = tokens;
+    this.log.info?.(
+      `[mcp] ${count} tool definition(s) come to about ${tokens} tokens, past the ${limit} ` +
+        `toolsTokenWarning is set to — a small context window truncates them silently`,
+    );
+  }
+
+  /**
+   * The tools each row's `alwaysLoad` names, as the names a model calls them by.
+   *
+   * What on-demand loading sends before the model has asked for anything:
+   * `tools({ names: pool.alwaysLoaded(servers), servers })`. Only what `tools()` would hand back —
+   * a name the server does not offer, a hidden one, or one another server holds is left out — so
+   * the answer is never a name the model is then told does not exist. A cold server answers from
+   * its last-known list. Never connects.
+   *
+   * @param servers The run's scope, read the same way `tools` reads it.
+   * @returns Qualified names, servers in configuration order and each row's names in its own.
+   */
+  alwaysLoaded(servers?: Iterable<string>): string[] {
+    const allowed = scope(servers);
+    const out: string[] = [];
+    for (const entry of this.entries.values()) {
+      const wanted = entry.config.alwaysLoad;
+      if (!wanted?.length || !inScope(allowed, entry.config.id)) continue;
+      for (const name of new Set(wanted)) {
+        const tool = entry.tools.find((candidate) => candidate.name === name);
+        if (!tool || isHidden(entry.config, name) || !this.offers(entry, tool)) continue;
+        out.push(tool.qualified);
+      }
+    }
+    return out;
   }
 
   /**
@@ -1244,8 +1298,13 @@ export class McpPool {
    * @returns One entry per ready or cold server that has tools, in configuration order.
    */
   catalog(servers?: Iterable<string>): CatalogServer[] {
+    return this.browsable(servers).map(({ entry, offered }) => this.listing(entry, offered));
+  }
+
+  /** Each server a catalogue lists, with the tools of it a model may be shown. */
+  private browsable(servers?: Iterable<string>) {
     const allowed = scope(servers);
-    const out: CatalogServer[] = [];
+    const out: { entry: Entry; offered: PooledTool[] }[] = [];
     for (const entry of this.entries.values()) {
       // A cold server is listed off its last-known tools: `offers` reads the index, which holds
       // them, and a failed or disabled server's are not in it.
@@ -1256,19 +1315,59 @@ export class McpPool {
       const offered = entry.tools.filter(
         (tool) => !isHidden(entry.config, tool.name) && this.offers(entry, tool),
       );
-      if (offered.length === 0) continue;
-      out.push({
-        id: entry.config.id,
-        label: labelOf(entry.config),
-        tools: offered.map(({ qualified, description, title, annotations }) => ({
-          name: qualified,
-          description,
-          ...defined({ title, annotations }),
-        })),
-        ...(entry.stale ? { stale: true } : {}),
-      });
+      if (offered.length > 0) out.push({ entry, offered });
     }
     return out;
+  }
+
+  /** One server's catalogue entry, over the tools given. */
+  private listing(entry: Entry, tools: readonly PooledTool[]): CatalogServer {
+    return {
+      id: entry.config.id,
+      label: labelOf(entry.config),
+      tools: tools.map(({ qualified, description, title, annotations, tokens }) => ({
+        name: qualified,
+        description,
+        ...defined({ title, annotations }),
+        tokens,
+      })),
+      ...(entry.stale ? { stale: true } : {}),
+    };
+  }
+
+  /**
+   * The catalogue, cut down to the tools a query is about — a prompt-time shortlist.
+   *
+   * "Which of these 140 tools might this turn need" is a ranking every consumer would write the
+   * same way, so it is written once: `rankTools`, word overlap over each tool's name, title and
+   * description, and its server's slug and label. Everything `catalog()` says about scope, hiding
+   * and cold servers holds, because this ranks the same tools. Never connects.
+   *
+   * @param query What the turn is about. One with no words in it matches nothing.
+   * @param options `servers` is the run's scope; `limit` caps the tools returned, default 10.
+   * @returns The servers holding a match, ordered by their best one, each with its matching tools
+   *   best first. Empty when nothing shares a word with the query.
+   */
+  search(query: string, { servers, limit = 10 }: SearchOptions = {}): CatalogServer[] {
+    const candidates = this.browsable(servers).flatMap(({ entry, offered }) => {
+      const server = `${slugOf(entry.config)} ${labelOf(entry.config)}`;
+      // By the server's own name for the tool: the qualified one carries the slug, and a slug
+      // scored as a name puts every tool of a server called `files` level with `read_file`.
+      return offered.map((tool) => ({
+        name: tool.name,
+        title: tool.title,
+        description: tool.description,
+        server,
+        entry,
+        tool,
+      }));
+    });
+    // A Map keeps insertion order, so a server lands where its best tool ranked.
+    const found = new Map<Entry, PooledTool[]>();
+    for (const { entry, tool } of rankTools(query, candidates).slice(0, Math.max(0, limit))) {
+      found.set(entry, [...(found.get(entry) ?? []), tool]);
+    }
+    return Array.from(found, ([entry, tools]) => this.listing(entry, tools));
   }
 
   /**
@@ -1806,12 +1905,13 @@ export class McpPool {
       config: reportedConfig(entry.config, secrets),
       status: entry.status,
       error: entry.error ?? "",
-      tools: entry.tools.map(({ name, qualified, description, title, annotations }) => ({
+      tools: entry.tools.map(({ name, qualified, description, title, annotations, tokens }) => ({
         name,
         qualified,
         description,
         ...defined({ title, annotations }),
         hidden: isHidden(entry.config, name),
+        tokens,
       })),
       ...(entry.stale ? { stale: true } : {}),
       toolsFingerprint: entry.fingerprint,

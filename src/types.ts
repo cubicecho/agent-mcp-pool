@@ -73,6 +73,17 @@ interface McpServerBase {
    */
   hiddenTools?: string[] | null;
   /**
+   * This server's tools a model is sent before it asks, by the server's own names — the mirror of
+   * `hiddenTools`.
+   *
+   * For on-demand loading, where the model starts with a catalogue and a handful of schemas: this
+   * is where an operator says which handful, so each consumer does not keep that list somewhere
+   * else. The pool only reports it — `McpPool.alwaysLoaded()` gives the qualified names, and
+   * `tools({ names })` takes them. A name the server does not offer, or one that is hidden, is
+   * left out. Read when asked, so an edit applies without a reconnect.
+   */
+  alwaysLoad?: string[] | null;
+  /**
    * Tool calls this server wants made at points in a session — see `ToolHook` and
    * `McpPool.runHooks`. Run by the consumer, never by the pool on its own: only the consumer knows
    * when a turn starts. Read at the time they run, like `hiddenTools`.
@@ -365,8 +376,10 @@ export interface McpServerState {
    *
    * `hidden` is whether the row's `hiddenTools` keeps it from the model. Reported rather than
    * filtered out: the operator is the one who hid it, and the form they unhide it from needs it.
+   *
+   * `tokens` is roughly what the tool's definition costs a request — see `CatalogServer`.
    */
-  tools: (ToolSummary & { qualified: string; hidden: boolean })[];
+  tools: (ToolSummary & { qualified: string; hidden: boolean; tokens: number })[];
   /**
    * Whether `tools` is a last-known list rather than a live one: the server is `idle`, and what
    * it offered before it was reaped or stopped — or what `toolsCache` remembered — is still
@@ -457,8 +470,12 @@ export interface CatalogServer {
    * `name` is the **qualified** one — `<slug>__<tool>`, what the model calls — because the whole
    * point of a catalogue is a list a model picks from. `McpServerState.tools[].name` is the
    * server's own, with the qualified one beside it; the two lists look alike and are not.
+   *
+   * `tokens` is an estimate of what sending the tool's whole definition costs — four characters a
+   * token over the JSON `tools()` hands out, the same rough count agent-core budgets with. For
+   * choosing how many schemas a small context window can afford, not for billing.
    */
-  tools: ToolSummary[];
+  tools: (ToolSummary & { tokens: number })[];
   /** Set where the server is not connected and this is its last-known list. Absent otherwise. */
   stale?: boolean;
 }
