@@ -41,16 +41,16 @@ export {
   validateHooks,
 } from "./hooks.ts";
 export { listAllTools } from "./listing.ts";
-export {
-  type CallOptions,
-  type DescribeOptions,
-  McpPool,
-  type McpPoolOptions,
-  type PoolLog,
-  type RunHooksOptions,
-  type StateOptions,
-  type ToolsOptions,
-} from "./pool.ts";
+export type {
+  CallOptions,
+  DescribeOptions,
+  McpPoolOptions,
+  PoolLog,
+  RunHooksOptions,
+  StateOptions,
+  ToolsOptions,
+} from "./options.ts";
+export { McpPool } from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
 export { resultText, truncateText } from "./results.ts";
 export {

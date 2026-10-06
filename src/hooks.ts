@@ -1,3 +1,4 @@
+import { isPlainObject, parseJson, wholeNumber } from "./shape.ts";
 import type { HookContext, HookEvent, HookMessage, HookOutcome, ToolHook } from "./types.ts";
 
 /**
@@ -82,10 +83,15 @@ export function hookVars(event: HookEvent): string[] {
   return [...COMMON_VARS, ...(EVENT_VARS[event] ?? [])];
 }
 
+/** `{{path}}`, capturing the path. One source, so the two readings below cannot disagree on it. */
+const PLACEHOLDER = String.raw`\{\{\s*([\w.]+)\s*\}\}`;
 /** A string that is one placeholder and nothing else: its value goes in raw. */
-const WHOLE = /^\{\{\s*([\w.]+)\s*\}\}$/;
+const WHOLE = new RegExp(`^${PLACEHOLDER}$`);
 /** A placeholder anywhere in a string: its value goes in as text. */
-const ANY = /\{\{\s*([\w.]+)\s*\}\}/g;
+const ANY = new RegExp(PLACEHOLDER, "g");
+
+/** `a`, `a and b` — the events a message names, read off the set that enforces them. */
+const listed = (events: ReadonlySet<HookEvent>) => [...events].join(" and ");
 
 /** One dotted path into a context, or `undefined` where any step of it is absent. */
 function lookup(context: HookContext, path: string): unknown {
@@ -163,9 +169,6 @@ export function expandArgs(args: unknown, context: HookContext): ExpandedArgs {
   return { args: walk(args ?? {}), missing: [...missing] };
 }
 
-const positive = (value: unknown) =>
-  typeof value === "number" && Number.isInteger(value) && value > 0;
-
 /**
  * What is wrong with a row's hooks, for the form that saves them.
  *
@@ -186,12 +189,12 @@ export function validateHooks(hooks: unknown): string[] {
   const errors: string[] = [];
   const ids = new Set<string>();
   for (const [index, item] of hooks.entries()) {
-    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+    if (!isPlainObject(item)) {
       errors.push(`hook ${index + 1}: must be an object`);
       continue;
     }
     // Every field is checked before it is read as its type, so past here the shape is known.
-    const hook = item as Partial<Record<keyof ToolHook, unknown>>;
+    const hook: Partial<Record<keyof ToolHook, unknown>> = item;
     const id = typeof hook.id === "string" ? hook.id : "";
     const name = id ? `hook "${id}"` : `hook ${index + 1}`;
     if (!id.trim()) errors.push(`${name}: needs an id`);
@@ -210,15 +213,17 @@ export function validateHooks(hooks: unknown): string[] {
     }
     const on = hook.on as HookEvent;
     if (hook.inject && !INJECT_EVENTS.has(on)) {
-      errors.push(`${name}: only sessionStart and beforeTurn can inject; ${on} runs too late`);
+      errors.push(`${name}: only ${listed(INJECT_EVENTS)} can inject; ${on} runs too late`);
     }
     if (hook.veto && !VETO_EVENTS.has(on)) {
-      errors.push(`${name}: only beforeCompact can veto; nothing about ${on} can be called off`);
+      errors.push(
+        `${name}: only ${listed(VETO_EVENTS)} can veto; nothing about ${on} can be called off`,
+      );
     }
-    if (hook.maxTokens != null && !positive(hook.maxTokens)) {
+    if (hook.maxTokens != null && !wholeNumber(hook.maxTokens, 1)) {
       errors.push(`${name}: maxTokens must be a positive whole number`);
     }
-    if (hook.timeoutMs != null && !positive(hook.timeoutMs)) {
+    if (hook.timeoutMs != null && !wholeNumber(hook.timeoutMs, 1)) {
       errors.push(`${name}: timeoutMs must be a positive whole number`);
     }
     const offered = hookVars(on);
@@ -247,15 +252,8 @@ export function validateHooks(hooks: unknown): string[] {
  */
 export function readVeto(text: string | undefined): { veto: boolean; reason?: string } {
   if (!text) return { veto: false };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { veto: false };
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
-    return { veto: false };
-  const answer = parsed as { veto?: unknown; reason?: unknown };
+  const answer = parseJson(text);
+  if (!isPlainObject(answer)) return { veto: false };
   if (answer.veto !== true) return { veto: false };
   const reason = typeof answer.reason === "string" ? answer.reason.trim() : "";
   return reason ? { veto: true, reason } : { veto: true };

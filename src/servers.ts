@@ -1,5 +1,7 @@
 import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import { validateHooks } from "./hooks.ts";
+import { NAME_CHARS } from "./namespace.ts";
+import { isPlainObject, parseJson, wholeNumber } from "./shape.ts";
 import type {
   HttpServerConfig,
   McpServerConfig,
@@ -137,10 +139,10 @@ export function fromMcpServersJson(
 ): McpServerConfig[] {
   const env = options.env ?? runtimeEnv();
   const parsed = typeof json === "string" ? parseText(json) : json;
-  if (!isRecord(parsed)) throw new Error("an mcpServers config must be a JSON object");
+  if (!isPlainObject(parsed)) throw new Error("an mcpServers config must be a JSON object");
 
   const servers = parsed.mcpServers ?? parsed.servers ?? parsed;
-  if (!isRecord(servers)) throw new Error("mcpServers must be an object of named servers");
+  if (!isPlainObject(servers)) throw new Error("mcpServers must be an object of named servers");
 
   const entries: [string, unknown][] = isBody(servers)
     ? [[options.name ?? "", servers]]
@@ -149,17 +151,15 @@ export function fromMcpServersJson(
 
   return entries.map(([key, body]) => {
     if (!key) throw new Error("a server's body with no name around it needs `name` for its id");
-    if (!isRecord(body)) throw new Error(`server "${key}" must be an object`);
+    if (!isPlainObject(body)) throw new Error(`server "${key}" must be an object`);
     return toRow(key, body, (text) => expand(text, env));
   });
 }
 
 function parseText(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error("that config is not valid JSON");
-  }
+  const parsed = parseJson(text);
+  if (parsed === undefined) throw new Error("that config is not valid JSON");
+  return parsed;
 }
 
 /** Whether an object is one server's body rather than a map of named ones. */
@@ -182,13 +182,13 @@ function toRow(
       command: typeof body.command === "string" ? fill(body.command) : "",
     };
     if (Array.isArray(body.args)) row.args = body.args.map((arg) => fillAny(arg, fill) as string);
-    if (isRecord(body.env)) row.env = fillStrings(body.env, fill);
+    if (isPlainObject(body.env)) row.env = fillStrings(body.env, fill);
     if (typeof body.cwd === "string") row.cwd = fill(body.cwd);
     return row;
   }
   if (declared === undefined || HTTP_TYPES.has(String(declared))) {
     const row: HttpServerConfig = { ...base, transport: "http", url: url ?? "" };
-    if (isRecord(body.headers)) row.headers = fillStrings(body.headers, fill);
+    if (isPlainObject(body.headers)) row.headers = fillStrings(body.headers, fill);
     return row;
   }
   if (declared === "sse") {
@@ -228,11 +228,15 @@ function runtimeEnv(): Record<string, string | undefined> {
   return host.process?.env ?? {};
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
+/** A namespace made only of what a qualified tool name may hold — see `NAME_CHARS`. */
+const NAMESPACE = new RegExp(`^[${NAME_CHARS}]+$`);
 
-/** The characters OpenAI allows in a function name, which every qualified tool name is. */
-const NAMESPACE = /^[A-Za-z0-9_-]+$/;
+/**
+ * `slugOf` for a row not yet known to be one: a `slug` that is not a string is no slug, and what
+ * comes back is whatever the row had for an `id`.
+ */
+const namespaceOf = <Id>({ slug, id }: { slug: unknown; id: Id }) =>
+  (typeof slug === "string" && slug) || id;
 
 /**
  * What is wrong with a row, for the form that saves it — before `sync()` is handed it.
@@ -246,7 +250,7 @@ const NAMESPACE = /^[A-Za-z0-9_-]+$/;
  * @returns One message per problem. Empty means the row is fine.
  */
 export function validateServerConfig(row: unknown): string[] {
-  if (!isRecord(row)) return ["a server must be an object"];
+  if (!isPlainObject(row)) return ["a server must be an object"];
   const errors: string[] = [];
   const optional = (field: string, ok: (value: unknown) => boolean, what: string) => {
     if (row[field] != null && !ok(row[field])) errors.push(`${field} must be ${what}`);
@@ -254,7 +258,7 @@ export function validateServerConfig(row: unknown): string[] {
 
   if (typeof row.id !== "string" || !row.id.trim()) errors.push("needs an id");
   optional("slug", (value) => typeof value === "string", "a string");
-  const namespace = (typeof row.slug === "string" && row.slug) || row.id;
+  const namespace = namespaceOf({ slug: row.slug, id: row.id });
   if (typeof namespace === "string" && namespace.trim() && !NAMESPACE.test(namespace)) {
     errors.push(
       `"${namespace}" cannot namespace tool names: use letters, digits, _ and - (set a slug)`,
@@ -307,29 +311,30 @@ export function validateServerConfig(row: unknown): string[] {
 export function validateServers(rows: unknown): string[] {
   if (!Array.isArray(rows)) return ["servers must be a list"];
   const errors: string[] = [];
-  for (const [index, row] of rows.entries()) {
-    const id = isRecord(row) && typeof row.id === "string" && row.id.trim() ? row.id : "";
-    const name = id ? `server "${id}"` : `server ${index + 1}`;
-    errors.push(...validateServerConfig(row).map((error) => `${name}: ${error}`));
-  }
-
-  // Only rows that named themselves can be reported as clashing; one with no usable id already
-  // has an error of its own, and a second message about it would say nothing new.
+  const clashes: string[] = [];
   const ids = new Map<string, number>();
   const slugs = new Map<string, string>();
-  for (const row of rows) {
-    if (!isRecord(row) || typeof row.id !== "string" || !row.id.trim()) continue;
-    ids.set(row.id, (ids.get(row.id) ?? 0) + 1);
-    const slug = (typeof row.slug === "string" && row.slug) || row.id;
+  for (const [index, row] of rows.entries()) {
+    const id = isPlainObject(row) && typeof row.id === "string" && row.id.trim() ? row.id : "";
+    const name = id ? `server "${id}"` : `server ${index + 1}`;
+    errors.push(...validateServerConfig(row).map((error) => `${name}: ${error}`));
+
+    // Only rows that named themselves can be reported as clashing; one with no usable id already
+    // has an error of its own, and a second message about it would say nothing new.
+    if (!id || !isPlainObject(row)) continue;
+    ids.set(id, (ids.get(id) ?? 0) + 1);
+    const slug = namespaceOf({ slug: row.slug, id });
     const first = slugs.get(slug);
-    if (first === undefined) slugs.set(slug, row.id);
-    else if (first !== row.id) {
-      errors.push(
-        `servers "${first}" and "${row.id}" share the namespace "${slug}": ` +
+    if (first === undefined) slugs.set(slug, id);
+    else if (first !== id) {
+      clashes.push(
+        `servers "${first}" and "${id}" share the namespace "${slug}": ` +
           `their tools would answer to the same names (set a slug)`,
       );
     }
   }
+  // Kept apart until here so the set's problems still follow every row's own.
+  errors.push(...clashes);
   for (const [id, count] of ids) {
     if (count > 1) errors.push(`server "${id}": another server has that id`);
   }
@@ -338,10 +343,8 @@ export function validateServers(rows: unknown): string[] {
 
 const isString = (value: unknown) => typeof value === "string";
 
-const isStringRecord = (value: unknown) => isRecord(value) && Object.values(value).every(isString);
-
-const wholeNumber = (value: unknown, min: number) =>
-  typeof value === "number" && Number.isInteger(value) && value >= min;
+const isStringRecord = (value: unknown) =>
+  isPlainObject(value) && Object.values(value).every(isString);
 
 function isHttpUrl(text: string) {
   // `URL.canParse` is in every runtime this targets, browsers included; a parse that throws is

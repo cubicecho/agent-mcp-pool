@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "vitest";
 import { McpPoolError } from "../src/errors.ts";
 import {
@@ -9,23 +8,9 @@ import {
   templatePaths,
   validateHooks,
 } from "../src/hooks.ts";
-import { McpPool } from "../src/pool.ts";
+import { makePool } from "../src/testing/index.ts";
 import type { HookContext, HookOutcome, StdioServerConfig, ToolHook } from "../src/types.ts";
-
-const FIXTURE = fileURLToPath(new URL("./fixtures/mcp-echo.mjs", import.meta.url));
-
-const config = (over: Partial<StdioServerConfig> = {}): StdioServerConfig => ({
-  id: "echo-1",
-  slug: "echo",
-  label: "Echo",
-  enabled: true,
-  transport: "stdio",
-  command: process.execPath,
-  args: [FIXTURE],
-  ...over,
-});
-
-const makePool = () => new McpPool({ clientName: "mcp-pool-hooks-test", log: {} });
+import { echoRow } from "./helpers.ts";
 
 let pool = makePool();
 
@@ -51,7 +36,7 @@ const hook = (over: Partial<ToolHook> = {}): ToolHook => ({
 
 /** A pool holding one echo server with these hooks, connected. */
 async function withHooks(hooks: ToolHook[], over: Partial<StdioServerConfig> = {}) {
-  await pool.sync([config({ hooks, ...over })]);
+  await pool.sync([echoRow({ hooks, ...over })]);
 }
 
 /** An outcome with nothing but what `contextBlocks` reads set. */
@@ -306,7 +291,7 @@ test("runHooks leaves out disabled servers and servers outside the scope", async
   expect(await pool.runHooks("beforeTurn", context, { servers: [] })).toEqual([]);
   expect(await pool.runHooks("beforeTurn", context, { servers: ["echo-1"] })).toHaveLength(1);
 
-  await pool.sync([config({ hooks: [hook()], enabled: false })]);
+  await pool.sync([echoRow({ hooks: [hook()], enabled: false })]);
   expect(await pool.runHooks("beforeTurn", context)).toEqual([]);
 });
 
@@ -371,6 +356,18 @@ test("an empty result is a success with nothing to inject", async () => {
   expect(result.ok).toBe(true);
   expect(result.text).toBeUndefined();
   expect(contextBlocks([result]).text).toBe("");
+});
+
+/**
+ * "Empty" was read off the answer: the hook compared what `call()` handed back against the
+ * placeholder `call()` substitutes for nothing. A tool whose real answer was those same characters
+ * was indistinguishable from one that sent none, and what it said was dropped.
+ */
+test("a tool that answers with the pool's own placeholder text is still heard", async () => {
+  await withHooks([hook({ inject: true, args: { raw: "(no output)" } })]);
+  const [result] = await pool.runHooks("beforeTurn", context);
+  expect(result.ok).toBe(true);
+  expect(result.text).toBe("(no output)");
 });
 
 test("inject is ignored on an event that runs too late, even on an unvalidated row", async () => {
@@ -465,7 +462,7 @@ test("runHooks fills in now when the caller did not", async () => {
 
 test("a hidden tool is not offered, is refused to a plain call, and reaches a hook", async () => {
   await pool.sync([
-    config({
+    echoRow({
       hiddenTools: ["add"],
       hooks: [hook({ tool: "add", args: { a: 1, b: 2 } })],
     }),
@@ -493,15 +490,15 @@ test("a hidden tool is not offered, is refused to a plain call, and reaches a ho
 });
 
 test("a server whose every tool is hidden drops out of the catalogue", async () => {
-  await pool.sync([config({ hiddenTools: ["ping", "echo", "add"] })]);
+  await pool.sync([echoRow({ hiddenTools: ["ping", "echo", "add"] })]);
   expect(pool.catalog()).toEqual([]);
   expect(pool.tools()).toEqual([]);
 });
 
 test("unhiding a tool applies without a reconnect", async () => {
-  await pool.sync([config({ hiddenTools: ["add"] })]);
+  await pool.sync([echoRow({ hiddenTools: ["add"] })]);
   const { pid } = pool.state()[0];
-  await pool.sync([config({ hiddenTools: [] })]);
+  await pool.sync([echoRow({ hiddenTools: [] })]);
   expect(pool.state()[0].pid).toBe(pid);
   expect(pool.tools().map((t) => t.function.name)).toContain("echo__add");
 });
@@ -509,7 +506,7 @@ test("unhiding a tool applies without a reconnect", async () => {
 // --- call options -------------------------------------------------------------------------------
 
 test("call still takes a bare scope as its third argument", async () => {
-  await pool.sync([config()]);
+  await pool.sync([echoRow()]);
   expect(await pool.call("echo__ping", {}, ["echo-1"])).toBe("ping({})");
   expect((await pool.call("echo__ping", {}, ["other"]).catch((e) => e)).code).toBe("out-of-scope");
   expect((await pool.call("echo__ping", {}, { servers: [] }).catch((e) => e)).code).toBe(
@@ -518,7 +515,7 @@ test("call still takes a bare scope as its third argument", async () => {
 });
 
 test("call honours a timeout and a signal", async () => {
-  await pool.sync([config()]);
+  await pool.sync([echoRow()]);
   const started = Date.now();
   await expect(pool.call("echo__echo", { sleepMs: 2000 }, { timeoutMs: 100 })).rejects.toThrow();
   expect(Date.now() - started).toBeLessThan(1500);

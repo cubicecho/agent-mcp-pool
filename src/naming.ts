@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { labelOf, NAME_CHARS, slugOf } from "./namespace.ts";
 import { truncateText } from "./results.ts";
+import { defined } from "./shape.ts";
 import type { McpServerConfig, ToolDefinition } from "./types.ts";
 
 /** Between a server's namespace and its tool's own name, in every name the model sees. */
@@ -45,33 +47,11 @@ export interface PooledTool {
 }
 
 /**
- * The namespace this server's tools live under: its `slug`, or its `id` when it has none.
- *
- * Every read of the field has to agree — a `qualify` defaulting to the id and a `wake` prefix
- * test reading the raw field would build names one of them could not recognise. Empty falls back
- * too, since an empty slug would qualify a tool as `__name`.
- */
-export function slugOf(config: Pick<McpServerConfig, "id" | "slug">) {
-  return config.slug || config.id;
-}
-
-/**
- * What an operator calls this server: its `label`, or the namespace its tools live under.
- *
- * The same fallback as `slugOf` and for the same reason — it was written out at each site that
- * needed it, and the site that forgot showed an operator an empty name for a server the model
- * was being told about by its slug.
- */
-export function labelOf(config: Pick<McpServerConfig, "id" | "slug" | "label">) {
-  return config.label || slugOf(config);
-}
-
-/**
  * Every character OpenAI's `^[a-zA-Z0-9_-]{1,64}$` rejects, which is a wider set than MCP's own
  * rule for a tool name: a server is free to call a tool `fs.read`, and the dot reaches
  * `function.name` unaltered.
  */
-const DISALLOWED = /[^A-Za-z0-9_-]/g;
+const DISALLOWED = new RegExp(`[^${NAME_CHARS}]`, "g");
 
 /**
  * The one place a tool's wire name is built, so `call` and `tools` agree.
@@ -147,10 +127,7 @@ export function pooledTool(
     name,
     description,
     parameters,
-    ...(title !== undefined ? { title } : {}),
-    ...(annotations !== undefined ? { annotations } : {}),
-    ...(outputSchema !== undefined ? { outputSchema } : {}),
-    ...(meta !== undefined ? { meta } : {}),
+    ...defined({ title, annotations, outputSchema, meta }),
     qualified,
     // Frozen because `tools()` hands this very object out rather than a copy — the agent loop
     // rebuilds its tool array every iteration, and copying every schema each time to guard

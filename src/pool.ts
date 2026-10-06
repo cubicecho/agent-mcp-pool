@@ -2,30 +2,31 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   type CallToolResult,
-  type ElicitRequestParams,
   ElicitRequestSchema,
-  type ElicitResult,
   ErrorCode,
   McpError,
   type Notification,
 } from "@modelcontextprotocol/sdk/types.js";
 import { coerceArguments } from "./arguments.ts";
-import { requestBudget } from "./budget.ts";
-import { copyConfig, scope } from "./config.ts";
+import { copyConfig, inScope, reportedConfig, scope } from "./config.ts";
+import { dial } from "./dial.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
-import {
-  DEFAULT_HOOK_MAX_TOKENS,
-  expandArgs,
-  INJECT_EVENTS,
-  INJECT_TIMEOUT_MS,
-  readVeto,
-  VETO_EVENTS,
-} from "./hooks.ts";
-import { listAllTools } from "./listing.ts";
-import { couldQualify, labelOf, type PooledTool, pooledTool, qualify, slugOf } from "./naming.ts";
+import { runHooks } from "./hook-runner.ts";
+import { labelOf, namespaceOwners, slugOf } from "./namespace.ts";
+import { couldQualify, type PooledTool, pooledTool } from "./naming.ts";
+import type {
+  CallOptions,
+  DescribeOptions,
+  McpPoolOptions,
+  PoolLog,
+  RunHooksOptions,
+  StateOptions,
+  ToolsOptions,
+} from "./options.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { resultText, truncateText } from "./results.ts";
 import { sameConnection } from "./servers.ts";
+import { defined } from "./shape.ts";
 import {
   createTransport,
   readStderrTail,
@@ -40,13 +41,11 @@ import type {
   McpConnection,
   McpProbe,
   McpServerConfig,
-  McpServerPublicConfig,
   McpServerState,
   McpStatus,
   PoolCloseReason,
   PoolEvent,
   ToolDefinition,
-  ToolHook,
   ToolInfo,
 } from "./types.ts";
 import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
@@ -86,296 +85,11 @@ interface Entry {
   startedAt?: number;
 }
 
-/**
- * Where the pool's own progress goes.
- *
- * Named so a consumer wiring its own logger in has something to type the adapter against —
- * `McpPoolOptions["log"]` is optional, so it had to unwrap the `undefined` first.
- */
-export interface PoolLog {
-  info?: (message: string) => void;
-  error?: (message: string) => void;
-}
-
-/** How a pool is built: where its rows come from, how patient it is, and what it may spawn. */
-export interface McpPoolOptions {
-  /**
-   * Where the configured servers come from when `sync()` is called with nothing.
-   *
-   * The seam that used to be an `import { db }`. The pool has no opinion about where rows live —
-   * a Drizzle select, a parsed config file, a constant array in a test — it only needs to be able
-   * to ask again after a write.
-   */
-  load?: () => Promise<McpServerConfig[]>;
-  /** How this process introduces itself to the servers it connects to. */
-  clientName?: string;
-  /**
-   * The version reported beside `clientName` in the handshake. Defaults to this package's own.
-   *
-   * `clientInfo` is the whole of what a dialled server learns about its caller, and the pool
-   * used to fill half of it in with a constant `0.1.0` — a version of nothing, indistinguishable
-   * from a real one. Set it with `clientName`: a name that is the consumer's beside a version
-   * that is the pool's still tells the server something untrue.
-   */
-  clientVersion?: string;
-  /** Where the pool's own progress goes. Defaults to the console; pass `{}` to silence it. */
-  log?: PoolLog;
-  /** How long a failed server is left alone before it is dialled again. Defaults to 5s. */
-  crashBackoffMs?: number;
-  /**
-   * Which of this process's environment variables a stdio child inherits. Defaults to all of
-   * them; `MINIMAL_CHILD_ENV` is a sensible allowlist to narrow to.
-   */
-  childEnv?: readonly string[];
-  /**
-   * What every http server is reached with. Defaults to `keepAliveFetch()`, which keeps an idle
-   * connection for 30s so a tool call after a pause does not open a new one.
-   *
-   * Pass `keepAliveFetch(ms)` for another idle time, or a `fetch` of your own for a proxy.
-   * `probe()` uses it too.
-   */
-  fetch?: FetchLike;
-  /**
-   * How long a server gets to connect: `initialize` and every page of `tools/list` together.
-   *
-   * The SDK already applies its own 60s default, so this is not about an unbounded hang — it is
-   * about how long a boot is willing to stall. One budget for the whole connect rather than one
-   * per request, since page size is the server's choice and a per-request number would multiply
-   * by a page count nobody knows in advance. `sync` connects servers in parallel, but one wedged
-   * server still holds the whole reconcile open for the full timeout.
-   *
-   * The pool-wide default. `McpServerConfig.connectTimeoutMs` overrides it for one server, which
-   * is where a `uvx` package that downloads itself on first run belongs.
-   */
-  connectTimeoutMs?: number;
-  /**
-   * How long `probe()` waits, when a probe should not wait as long as a boot.
-   *
-   * Defaults to `connectTimeoutMs`, because a probe exists to dial the way the pool does. Set it
-   * when the two have different audiences: a reconcile of thirty servers can afford to be
-   * patient, and a person who pressed "Test connection" cannot. A probed row's own
-   * `connectTimeoutMs` outranks both — see `McpPool.probe`.
-   */
-  probeTimeoutMs?: number;
-  /**
-   * How long one `call()` gets before it is abandoned.
-   *
-   * Absent leaves the SDK's own 60s, which is what this existed to improve on everywhere else and
-   * was unreachable here: `connectTimeoutMs` is worked out to three levels of precedence and then
-   * a tool call took whatever the SDK felt like. For an agent loop it is the number that matters
-   * most — a wedged tool holds up the turn, and the turn is what a person is waiting on.
-   *
-   * The pool-wide default. `McpServerConfig.callTimeoutMs` overrides it for one server, which is
-   * where a search that legitimately takes a minute belongs.
-   */
-  callTimeoutMs?: number;
-  /**
-   * Repair a model's arguments against the tool's own schema before sending them, and refuse
-   * what cannot be repaired as `invalid-arguments`. On by default.
-   *
-   * Local models send `"5"` for a number, `"true"` for a boolean, an object as a JSON string, and
-   * `""` for a parameter they meant to omit; a strict server refuses every one, and the model
-   * reads its stack trace. See `coerceArguments` for exactly what is repaired. Off sends the
-   * arguments exactly as given. `McpServerConfig.coerceArguments` overrides this for one server,
-   * and `CallOptions.coerce` for one call.
-   */
-  coerceArguments?: boolean;
-  /**
-   * The most characters one `call()` returns, head and tail kept around a marker. Unset is no cap.
-   *
-   * A tool that reads a file or a page can return more than a local model's whole window, and a
-   * server does not know how small the reader is. Applied to the text a call returns and to a
-   * `tool-error`'s message; see `truncateText` for the cut. `McpServerConfig.maxResultChars`
-   * overrides it for one server and `CallOptions.maxResultChars` for one call.
-   */
-  maxResultChars?: number;
-  /**
-   * The most characters a tool's description may take in `tools()`. Unset is no cap.
-   *
-   * OpenAI refuses a function description past 1024 characters, and a server is free to send
-   * several thousand — a whole usage guide, sometimes the tool's own examples. The refusal is of
-   * the request rather than of that one tool, so one verbose server costs the model every other
-   * server's tools as well.
-   *
-   * Counted over the description the model is sent, `[Label] ` prefix included, since that is what
-   * the API measures. `state()`, `catalog()` and `describe()` still report the server's own text
-   * in full: this is a wire limit, not an opinion about what a tool should say for itself.
-   */
-  maxDescriptionChars?: number;
-  /**
-   * Answers a server that asks the user for input mid-call: MCP's `elicitation/create`.
-   *
-   * Absent, the pool declares no elicitation capability, so a well-behaved server does not ask and
-   * one that asks anyway is refused by the SDK. Present, every connection declares it and routes
-   * each request here with the id of the server that sent it. Resolve with `accept` and the
-   * `content`, or `decline` or `cancel`. A listener that throws is logged and answered `cancel`,
-   * so a broken prompt does not fail the server's tool with a protocol error.
-   *
-   * A person answering takes time, and the call that caused the request is still on its clock:
-   * set `callTimeoutMs` for that server with the wait in mind.
-   *
-   * @param serverId The config id of the server asking.
-   * @param params The request: `message`, and `requestedSchema` for a form or `url` for a link.
-   * @param extra `signal` aborts when the server gives up on the request.
-   * @returns The user's answer.
-   */
-  onElicit?: (
-    serverId: string,
-    params: ElicitRequestParams,
-    extra: { signal: AbortSignal },
-  ) => ElicitResult | Promise<ElicitResult>;
-  /**
-   * Which elicitation modes `onElicit` can handle. Defaults to `["form"]`.
-   *
-   * `form` asks for fields against a flat schema; `url` asks the user to open a link, for a flow
-   * such as an OAuth consent the client should not see. Declare `url` only when the host can open
-   * one, since a server takes the declaration as a promise.
-   */
-  elicitationModes?: ("form" | "url")[];
-  /**
-   * Register servers without connecting them; connect on first use instead.
-   *
-   * Off by default: for an agent loop, spawning a child per run costs more than the run. A
-   * gateway has the opposite pressure — dozens of servers, most idle most of the time.
-   *
-   * An unconnected server sits at `idle`. `call()` and `client()` connect it; `tools()` and
-   * `catalog()` do not, so they report nothing for it until something has.
-   */
-  lazy?: boolean;
-  /**
-   * Close a connected server after this long without a call, leaving it able to reconnect.
-   *
-   * Absent means never. Reset on every use. A reap is a success path, not a crash: the server
-   * returns to `idle` rather than `error`, no backoff applies, and the next use reconnects
-   * immediately. `McpServerConfig.idleTimeoutMs` overrides it for one server.
-   */
-  idleTimeoutMs?: number;
-  /**
-   * List a server's tools when it connects, so the pool can offer them to a model. On by default.
-   *
-   * Off is for the other shape of consumer: a gateway proxying `tools/list` straight through from
-   * the client that asked, which never reads `tools()`, `catalog()` or `call()`. For that one the
-   * drain is pure cost — an extra round trip per page on the first request that spawns a server,
-   * a second copy of every tool held for nobody, and one more thing that can fail on a server it
-   * could otherwise still have proxied `resources/read` to.
-   *
-   * Off means the index is empty for ever, so `tools()`, `catalog()` and `state().tools` are
-   * empty and `call()` refuses every name. `client()` is unaffected, and so is `probe()` — a
-   * probe exists to report what a config offers.
-   */
-  indexTools?: boolean;
-  /**
-   * Builds each connection's transport instead of `createTransport`.
-   *
-   * For a test that wants a server without a child — `memoryTransport` from
-   * `@cubicecho/agent-mcp-pool/testing` — or a consumer with a transport the pool does not know.
-   * `probe()` uses it too, so a "Test connection" button dials the way the pool does.
-   */
-  createTransport?: TransportFactory;
-}
-
-/**
- * What `tools()` takes: which tools to send, and which servers this run may reach.
- *
- * One object rather than two positional arguments because both are collections of strings, so
- * swapping them is not a type error — and the answer to a swap is an empty array, which is also
- * the correct answer for a run scoped to servers that offer nothing. A consumer adopting the pool
- * transposed them, compiled, connected, and offered its model no tools at all.
- */
-export interface ToolsOptions {
-  /**
-   * Qualified names, in the caller's order. A name asked for twice is sent once; a name nothing
-   * offers is skipped and logged. Omitted means every indexed tool — on-demand loading passes a
-   * handful rather than every schema.
-   */
-  names?: string[];
-  /**
-   * The run's scope. Absent is every server, empty is none — the two must not collapse, since
-   * "no servers linked" is a real state.
-   */
-  servers?: Iterable<string>;
-}
-
-/** What `state()` takes: whether the rows it reports come back with their credentials. */
-export interface StateOptions {
-  /**
-   * Include each row's `env` and `headers`.
-   *
-   * Off by default, because the documented reason to want the row at all — a UI drawing the edit
-   * form beside the connection state — sends what it is given to a browser, and for a real server
-   * those two fields are an API key and an `Authorization: Bearer`. An edit form rendered
-   * *server-side* is the case that legitimately needs them back: that one asks.
-   */
-  secrets?: boolean;
-}
-
-/** What `describe()` takes beside the name. */
-export interface DescribeOptions {
-  /** The run's scope, read as `call()` reads it: a tool outside it is not described. */
-  servers?: Iterable<string>;
-  /** Describe a tool the row hides from the model. The host's own lookups only, as for `call()`. */
-  hidden?: boolean;
-}
-
-/**
- * How one `call()` is made, beyond its name and arguments.
- *
- * An object since hooks needed more than the scope. The bare scope `call()` took before is still
- * accepted in the same position, so no existing caller changes.
- */
-export interface CallOptions {
-  /** The run's scope, read as `tools()` reads it. */
-  servers?: Iterable<string>;
-  /** Cancels the request; the call rejects with the SDK's abort error. */
-  signal?: AbortSignal;
-  /**
-   * Whether to repair and check the arguments against the tool's schema, overriding the row's
-   * `coerceArguments` and the pool's. False sends `input` exactly as given.
-   */
-  coerce?: boolean;
-  /**
-   * The most characters this call returns, overriding the row's `maxResultChars` and the pool's.
-   * `0` is no cap for this call.
-   */
-  maxResultChars?: number;
-  /**
-   * Return the server's `CallToolResult` as it came, rather than text.
-   *
-   * For a consumer that wants the blocks themselves, an image to show or `structuredContent` to
-   * read, without giving up the scope check `client()` skips. Scope, hiding, coercion and the
-   * timeout still apply; no truncation does, and an `isError` result is returned, not thrown.
-   */
-  raw?: boolean;
-  /** How long the request gets, overriding the row's `callTimeoutMs` and the pool's. */
-  timeoutMs?: number;
-  /**
-   * Reach a tool the row's `hiddenTools` keeps from the model. For the host's own calls — hooks —
-   * never for a name the model sent, which is the whole of what hiding is for.
-   */
-  hidden?: boolean;
-}
-
-/** What `runHooks` takes beyond the event and its context. */
-export interface RunHooksOptions {
-  /** The run's scope: only these servers' hooks run. Absent is every server, empty is none. */
-  servers?: Iterable<string>;
-  /**
-   * Cancels every hook still running; each resolves promptly as a failed outcome. For the hooks
-   * on a turn's path, pass the turn's own signal — a user who stopped the turn stopped its recall.
-   */
-  signal?: AbortSignal;
-  /**
-   * Told about each hook that failed or was skipped, as it settles. A hook's failure never fails
-   * the turn, so this is the one place it is heard — a host that wants the user to see "recall
-   * failed" wires it here.
-   */
-  onNotice?: (notice: string, outcome: HookOutcome) => void;
-}
-
 /** What `invoke` learns about a call on the way, for the `call` event. */
 interface CallTrace {
   serverId?: string;
   toolName?: string;
+  /** How much the tool said, before any cap and before `NO_OUTPUT` stood in for nothing. */
   chars?: number;
   truncated?: boolean;
 }
@@ -387,6 +101,9 @@ const elapsed = (started: number) => Math.round(performance.now() - started);
 const isHidden = (config: McpServerConfig, name: string) =>
   config.hiddenTools?.includes(name) ?? false;
 
+/** What `call()` answers when a tool returned nothing: a model must be told something. */
+const NO_OUTPUT = "(no output)";
+
 /** `call()`'s third argument in either of the shapes it accepts. */
 function callOptions(options?: Iterable<string> | CallOptions): CallOptions {
   if (options === undefined) return {};
@@ -394,40 +111,6 @@ function callOptions(options?: Iterable<string> | CallOptions): CallOptions {
     return { servers: options as Iterable<string> };
   }
   return options as CallOptions;
-}
-
-/**
- * `work`, or a rejection when the time or the signal runs out first.
- *
- * The request's own timeout and signal are passed to the SDK as well, which is what stops the
- * server's work; this is what bounds everything before the request — waking a server that is down
- * — which the SDK's timer never sees.
- */
-function bounded<T>(work: Promise<T>, ms?: number, signal?: AbortSignal): Promise<T> {
-  if (ms === undefined && !signal) return work;
-  return new Promise<T>((resolve, reject) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const onAbort = () => finish(() => reject(new Error("aborted")));
-    const finish = (settle: () => void) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      settle();
-    };
-    if (ms !== undefined) {
-      timer = setTimeout(
-        () =>
-          finish(() =>
-            reject(new McpPoolError("timeout", `timed out after ${ms}ms`, { timeoutMs: ms })),
-          ),
-        ms,
-      );
-    }
-    signal?.addEventListener("abort", onAbort, { once: true });
-    work.then(
-      (value) => finish(() => resolve(value)),
-      (error) => finish(() => reject(error)),
-    );
-  });
 }
 
 /**
@@ -650,18 +333,7 @@ export class McpPool {
     return this.queue(async () => {
       const entry = this.entries.get(id);
       if (!entry) return;
-      // Settled before the close rather than after, so a listener told the server closed reads
-      // `state()` as the close left it.
-      // A disabled server is already off, for a reason `idle` would lose. Everything else lands
-      // where a reap leaves it, with the failure it may have been stopped over cleared.
-      if (entry.status !== "disabled") entry.status = "idle";
-      await this.close(entry, "stop");
-      entry.error = undefined;
-      entry.failedAt = undefined;
-      // Cleared with the connection that listed them, as `onClose` and `reap` do: a stopped
-      // server with tools still on it reads as one that could answer a call.
-      entry.tools = [];
-      this.reindex();
+      await this.park(entry, "stop");
       this.log.info?.(`[mcp] ${slugOf(entry.config)}: stopped`);
     });
   }
@@ -734,23 +406,19 @@ export class McpPool {
     await Promise.all(
       wanted.map(async (config) => {
         const existing = this.entries.get(config.id);
-        if (existing && sameConnection(existing.config, config)) {
+        // Read once, before `relabel` swaps the row in: it is the same answer afterwards, since a
+        // relabel only happens where nothing about the connection moved.
+        const same = existing !== undefined && sameConnection(existing.config, config);
+        if (existing && same) {
           // Nothing about how to reach it moved, so the child stays up and a new name is applied
           // in place.
           this.relabel(existing, config);
-          // Restarting a healthy server costs a process spawn for nothing. A failed one is what a
-          // later sync should pick up — but not faster than the backoff.
-          if (existing.status === "ready" || existing.status === "disabled") return;
-          // Nothing is wrong with an idle server; not reconnecting it is what lazy is for.
-          if (existing.status === "idle") return;
+          // Restarting a healthy server costs a process spawn for nothing, and nothing is wrong
+          // with an idle one — not reconnecting it is what lazy is for. A failed one is what a
+          // later sync should pick up, but not faster than the backoff.
           if (!this.retryDue(existing)) return;
         }
-        if (existing) {
-          await this.close(
-            existing,
-            sameConnection(existing.config, config) ? "redial" : "changed",
-          );
-        }
+        if (existing) await this.close(existing, same ? "redial" : "changed");
         await this.connect(config, config.id === dial);
       }),
     );
@@ -806,6 +474,20 @@ export class McpPool {
     return entry.failedAt === undefined || Date.now() - entry.failedAt >= this.crashBackoffMs;
   }
 
+  /** Whether a use should dial this server: it is cold, or failed and past its backoff. */
+  private dialDue(entry: Entry) {
+    return entry.status === "idle" || this.retryDue(entry);
+  }
+
+  /**
+   * Dials a server a use is waiting on, `lazy` or not, closing whatever was left of its last
+   * connection first. Only ever from inside the queue — see `ensure`.
+   */
+  private async redial(entry: Entry) {
+    await this.close(entry, "redial");
+    await this.connect(entry.config, true);
+  }
+
   /**
    * Connects whatever might answer a name the index does not know: the cold servers whose slug
    * could have produced it, and the failed ones that are due another attempt.
@@ -835,14 +517,11 @@ export class McpPool {
       // this one waited, and dialling one twice is the orphaned child the queue exists to prevent.
       const candidates = [...this.entries.values()].filter(
         (entry) =>
-          (allowed === undefined || allowed.has(entry.config.id)) &&
+          inScope(allowed, entry.config.id) &&
           couldQualify(slugOf(entry.config), qualifiedName) &&
-          (entry.status === "idle" || this.retryDue(entry)),
+          this.dialDue(entry),
       );
-      for (const entry of candidates) {
-        await this.close(entry, "redial");
-        await this.connect(entry.config, true);
-      }
+      for (const entry of candidates) await this.redial(entry);
       if (candidates.length > 0) this.reindex();
     });
   }
@@ -857,25 +536,13 @@ export class McpPool {
    */
   private reindex() {
     this.index.clear();
-    // Which of two rows sharing a namespace owns it, settled over every entry and broken by id.
-    // Over every entry because only `ready` ones reach the index, so a tie broken among those is
-    // a tie broken by the idle clock. By id because that is in the rows: entries are inserted as
-    // their handshakes finish, concurrently, so their order is not the configured order.
-    const owner = new Map<string, string>();
+    // Which of two rows sharing a namespace owns it, settled over every entry rather than the
+    // `ready` ones that reach the index — see `namespaceOwners`.
+    const { owner, shadowed } = namespaceOwners(
+      Array.from(this.entries.values(), (entry) => entry.config),
+    );
     const reported = new Set<string>();
-    const shadows = new Map<string, string[]>();
-    for (const entry of this.entries.values()) {
-      const slug = slugOf(entry.config);
-      const first = owner.get(slug);
-      if (first === undefined) owner.set(slug, entry.config.id);
-      else {
-        const [kept, lost] =
-          first < entry.config.id ? [first, entry.config.id] : [entry.config.id, first];
-        owner.set(slug, kept);
-        shadows.set(slug, [...(shadows.get(slug) ?? []), lost]);
-      }
-    }
-    for (const [slug, lost] of shadows) {
+    for (const [slug, lost] of shadowed) {
       const kept = owner.get(slug);
       const all = [kept, ...lost].sort();
       this.warnOnce(reported, `ns:${slug}:${all.join(",")}`, () =>
@@ -1003,15 +670,11 @@ export class McpPool {
       // number without the fast one losing its bound. Read here rather than held on the entry, so
       // an edit reaches the next connect without a restart.
       const timeoutMs = config.connectTimeoutMs ?? this.connectTimeoutMs;
-      // One budget across the whole connect rather than one per request. The number a consumer
-      // picks is what its boot can afford to stall for, and `initialize` plus a `tools/list` per
-      // page spends it several times over otherwise — see `requestBudget`.
-      const remaining = requestBudget(timeoutMs);
-      await client.connect(transport, remaining());
-      // Every page: a tool that landed on page two is missing from the index, and `call()` then
-      // refuses it as a tool that does not exist. Skipped entirely when nothing is going to read
-      // the index — see `indexTools`, where the walk is a round trip per page for nobody.
-      const tools = this.indexTools ? await listAllTools(client, remaining()) : [];
+      // One budget across the whole connect rather than one per request: the number a consumer
+      // picks is what its boot can afford to stall for. The list is skipped entirely when nothing
+      // is going to read the index — see `indexTools`, where the walk is a round trip per page
+      // for nobody.
+      const tools = await dial(client, transport, { timeoutMs, listTools: this.indexTools });
 
       entry.client = client;
       entry.status = "ready";
@@ -1058,17 +721,13 @@ export class McpPool {
       // The handshake got far enough to start a child and not far enough to hand it over. Nothing
       // else holds this client, so `close()` and `shutdown()` would never reach the process.
       await client?.close().catch(() => {});
-      entry.status = "error";
-      // What the child said on the way out: "ModuleNotFoundError: no module named mcp_server_git"
-      // beats "MCP error -32000: Connection closed".
-      entry.error = entry.stderrTail?.() || errorMessage(error);
-      entry.failedAt = Date.now();
-      this.log.error?.(`[mcp] ${slugOf(config)}: ${entry.error}`);
+      const reason = this.fail(entry, errorMessage(error));
+      this.log.error?.(`[mcp] ${slugOf(config)}: ${reason}`);
       this.emit({
         type: "connect-failed",
         serverId: config.id,
         ms: elapsed(started),
-        error: entry.error,
+        error: reason,
       });
     }
   }
@@ -1084,15 +743,50 @@ export class McpPool {
     if (entry.closing) return;
     this.disarm(entry);
     this.forget(entry);
-    entry.status = "error";
-    entry.error = entry.stderrTail?.() || "the server closed the connection";
-    entry.failedAt = Date.now();
+    const reason = this.fail(entry, "the server closed the connection");
     // Cleared rather than kept as a last-known list, so `state()` cannot read as a server that is
     // down but still has tools to offer.
     entry.tools = [];
     this.reindex();
-    this.log.error?.(`[mcp] ${slugOf(entry.config)}: ${entry.error}`);
-    this.emit({ type: "close", serverId: entry.config.id, reason: "crash", error: entry.error });
+    this.log.error?.(`[mcp] ${slugOf(entry.config)}: ${reason}`);
+    this.emit({ type: "close", serverId: entry.config.id, reason: "crash", error: reason });
+  }
+
+  /**
+   * Marks a server failed and starts its backoff.
+   *
+   * @param fallback What went wrong as the pool saw it, used where the child said nothing.
+   * @returns The reason recorded: what the child wrote to stderr on the way out, where it wrote
+   *   anything — "ModuleNotFoundError: no module named mcp_server_git" beats "MCP error -32000:
+   *   Connection closed".
+   */
+  private fail(entry: Entry, fallback: string) {
+    entry.status = "error";
+    entry.error = entry.stderrTail?.() || fallback;
+    entry.failedAt = Date.now();
+    return entry.error;
+  }
+
+  /**
+   * Closes a server that is not wanted for now, leaving it where the next use can start it.
+   *
+   * What a reap and a `stop` share. Everything is settled before the close rather than after it:
+   * the close is awaited, and for its length an entry still holding its tools is one `tools()`
+   * offers and a warm `call` dispatches to — on the client being closed. It is also what a
+   * listener told the server closed reads from `state()`.
+   *
+   * @param entry Left `idle` with no `error` and no `failedAt`, so no backoff stands between it
+   *   and the next use. A disabled one stays `disabled`: it is already off, for a reason `idle`
+   *   would lose.
+   * @param reason Why, for the `close` event.
+   */
+  private async park(entry: Entry, reason: "idle" | "stop") {
+    if (entry.status !== "disabled") entry.status = "idle";
+    entry.error = undefined;
+    entry.failedAt = undefined;
+    entry.tools = [];
+    this.reindex();
+    await this.close(entry, reason);
   }
 
   /**
@@ -1155,7 +849,7 @@ export class McpPool {
         if (!this.expected(name)) this.log.info?.(`[mcp] no tool named ${name} is offered`);
         continue;
       }
-      if (allowed && !allowed.has(found.serverId)) continue;
+      if (!inScope(allowed, found.serverId)) continue;
       // Skipped silently even when asked for by name: to the model a hidden tool does not exist,
       // and "no tool named …" in the log would read as a rename that never happened.
       const owner = this.entries.get(found.serverId);
@@ -1282,14 +976,13 @@ export class McpPool {
    *   object, so this is not always the one passed in.
    */
   private async ensure(entry: Entry): Promise<Entry> {
-    if (entry.status === "idle" || this.retryDue(entry)) {
+    if (this.dialDue(entry)) {
       await this.queue(async () => {
         // Re-read inside the queue: another caller may have connected this server while this one
         // waited, and dialling it twice is the orphaned child the queue exists to prevent.
         const current = this.entries.get(entry.config.id);
-        if (!current || (current.status !== "idle" && !this.retryDue(current))) return;
-        await this.close(current, "redial");
-        await this.connect(current.config, true);
+        if (!current || !this.dialDue(current)) return;
+        await this.redial(current);
         this.reindex();
       });
     }
@@ -1338,11 +1031,7 @@ export class McpPool {
       const current = this.entries.get(entry.config.id);
       if (!current || current !== entry || current.idleTimer !== timer) return;
       if (current.status !== "ready") return;
-      // Settled before the close, as `stop` does, for a listener reading `state()`.
-      current.status = "idle";
-      current.tools = [];
-      this.reindex();
-      await this.close(current, "idle");
+      await this.park(current, "idle");
       this.log.info?.(`[mcp] ${slugOf(current.config)}: idle, closed`);
     });
   }
@@ -1362,7 +1051,7 @@ export class McpPool {
     const out: CatalogServer[] = [];
     for (const entry of this.entries.values()) {
       if (entry.status !== "ready") continue;
-      if (allowed && !allowed.has(entry.config.id)) continue;
+      if (!inScope(allowed, entry.config.id)) continue;
       // Before the emptiness check, so a server whose every tool is hidden — or whose names all
       // belong to another server — drops out like one that offers none.
       const offered = entry.tools.filter(
@@ -1375,8 +1064,7 @@ export class McpPool {
         tools: offered.map(({ qualified, description, title, annotations }) => ({
           name: qualified,
           description,
-          ...(title !== undefined ? { title } : {}),
-          ...(annotations !== undefined ? { annotations } : {}),
+          ...defined({ title, annotations }),
         })),
       });
     }
@@ -1407,7 +1095,7 @@ export class McpPool {
     const found = this.index.get(qualifiedName);
     if (!found) return undefined;
     const allowed = scope(servers);
-    if (allowed && !allowed.has(found.serverId)) return undefined;
+    if (!inScope(allowed, found.serverId)) return undefined;
     const entry = this.entries.get(found.serverId);
     const isHiddenTool = entry !== undefined && isHidden(entry.config, found.tool.name);
     if (isHiddenTool && !hidden) return undefined;
@@ -1419,10 +1107,7 @@ export class McpPool {
       qualified,
       description,
       inputSchema: parameters,
-      ...(title !== undefined ? { title } : {}),
-      ...(annotations !== undefined ? { annotations } : {}),
-      ...(outputSchema !== undefined ? { outputSchema } : {}),
-      ...(meta !== undefined ? { meta } : {}),
+      ...defined({ title, annotations, outputSchema, meta }),
       hidden: isHiddenTool,
     };
   }
@@ -1459,7 +1144,7 @@ export class McpPool {
     // Read before the dial, because afterwards the two are indistinguishable: a connect that
     // failed just now leaves exactly the state a backoff this call refused to break was already
     // in, and a caller in front of an HTTP API answers 502 to one and 503 to the other.
-    const dialling = entry.status === "idle" || this.retryDue(entry);
+    const dialling = this.dialDue(entry);
     // The whole lazy path for a consumer that knows which server it wants: a cold entry is
     // dialled here, and a warm one has its idle clock restarted.
     const current = await this.ensure(entry);
@@ -1619,14 +1304,28 @@ export class McpPool {
     input: unknown,
     options?: Iterable<string> | CallOptions,
   ): Promise<string | CallToolResult> {
+    return this.traced(qualifiedName, input, callOptions(options), {});
+  }
+
+  /**
+   * `call()` with its options read and its trace in the caller's hands.
+   *
+   * @param trace Filled in as the call learns things. `call()` hands in one it never reads; a hook
+   *   reads `chars` to tell a tool that said nothing from one that said something.
+   */
+  private async traced(
+    qualifiedName: string,
+    input: unknown,
+    parsed: CallOptions,
+    trace: CallTrace,
+  ): Promise<string | CallToolResult> {
     // Nobody listening is the ordinary case, and it should cost a call nothing.
-    if (this.eventListeners.size === 0) return this.invoke(qualifiedName, input, options, {});
+    if (this.eventListeners.size === 0) return this.invoke(qualifiedName, input, parsed, trace);
     const started = performance.now();
-    const { hidden = false, raw = false } = callOptions(options);
-    const trace: CallTrace = {};
+    const { hidden = false, raw = false } = parsed;
     const base = { type: "call" as const, qualified: qualifiedName, hidden, raw };
     try {
-      const out = await this.invoke(qualifiedName, input, options, trace);
+      const out = await this.invoke(qualifiedName, input, parsed, trace);
       const failed = typeof out !== "string" && out.isError === true;
       this.emit({
         ...base,
@@ -1651,11 +1350,14 @@ export class McpPool {
 
   /**
    * `call()`'s work, recording what the `call` event reports into `trace` as it learns it.
+   *
+   * @param options Already read by `callOptions`, so the two shapes `call()` accepts are told
+   *   apart in one place.
    */
   private async invoke(
     qualifiedName: string,
     input: unknown,
-    options: Iterable<string> | CallOptions | undefined,
+    options: CallOptions,
     trace: CallTrace,
   ): Promise<string | CallToolResult> {
     const {
@@ -1666,7 +1368,7 @@ export class McpPool {
       coerce: ownCoerce,
       maxResultChars: ownMaxResultChars,
       raw = false,
-    } = callOptions(options);
+    } = options;
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
     // past 64 characters, and the split of a shortened name is a tool its server never had.
@@ -1684,7 +1386,7 @@ export class McpPool {
     }
     // A tool outside this run's scope is answered as one that does not exist, because to this run
     // it does not: "that server is not yours" would teach the model to ask again.
-    const outOfScope = found !== undefined && allowed !== undefined && !allowed.has(found.serverId);
+    const outOfScope = found !== undefined && !inScope(allowed, found.serverId);
     const entry = found && this.entries.get(found.serverId);
     // A hidden tool is one the model was never offered, so a call to it is answered the way a
     // call to a tool that does not exist is — the model is not to learn it is there.
@@ -1782,20 +1484,20 @@ export class McpPool {
 
     const cap = ownMaxResultChars ?? entry?.config.maxResultChars ?? this.maxResultChars;
     const text = resultText(result);
+    trace.chars = text.length;
     // The server ran the tool and the tool failed — not one of the pool's refusals, which is why
     // this was a plain `Error`. It carries a code anyway because a caller sorting failures cares
     // most about this line: nothing about retrying a rejected argument resembles retrying a
     // backoff. The message is what it always was.
     if (result.isError) {
-      trace.chars = text.length;
       throw new McpPoolError("tool-error", truncateText(text || "tool call failed", cap), {
         toolName: qualifiedName,
         serverId: found.serverId,
       });
     }
-    const out = truncateText(text || "(no output)", cap);
-    trace.chars = text.length;
-    trace.truncated = out.length < (text || "(no output)").length;
+    const shown = text || NO_OUTPUT;
+    const out = truncateText(shown, cap);
+    trace.truncated = out.length < shown.length;
     return out;
   }
 
@@ -1823,95 +1525,28 @@ export class McpPool {
    * @returns One outcome per hook that was considered, in configuration order. Pair it with
    *   `contextBlocks` to get what the injecting ones returned into a request.
    */
-  async runHooks(
+  runHooks(
     event: HookEvent,
     context: HookContext,
     options: RunHooksOptions = {},
   ): Promise<HookOutcome[]> {
-    const allowed = scope(options.servers);
-    const full: HookContext = { ...context, now: context.now ?? new Date().toISOString() };
-    const running: Promise<HookOutcome>[] = [];
-    for (const entry of this.entries.values()) {
-      const row = entry.config;
-      if (!row.enabled || (allowed && !allowed.has(row.id))) continue;
-      for (const hook of row.hooks ?? []) {
-        if (hook.on !== event || hook.enabled === false) continue;
-        running.push(this.runHook(row, hook, full, options));
-      }
-    }
-    return Promise.all(running);
-  }
-
-  /** One hook, start to outcome. Resolves on every path; `runHooks` relies on that. */
-  private async runHook(
-    row: McpServerConfig,
-    hook: ToolHook,
-    context: HookContext,
-    { servers, signal, onNotice }: RunHooksOptions,
-  ): Promise<HookOutcome> {
-    const started = Date.now();
-    const base = {
-      serverId: row.id,
-      label: labelOf(row),
-      hookId: hook.id,
-      event: hook.on,
-      // Held to the events that can use it here as well as in `validateHooks`, since a row need
-      // not have been through that: an `afterTurn` hook marked inject would otherwise be handed
-      // to `contextBlocks` as though it had run in time.
-      inject: Boolean(hook.inject) && INJECT_EVENTS.has(hook.on),
-      maxTokens: hook.maxTokens ?? DEFAULT_HOOK_MAX_TOKENS,
-    };
-    // Held to its events for the same reason as `inject`, and the stakes are higher: a row that
-    // never went through `validateHooks` must not be able to stall a compaction from `afterTurn`.
-    const mayVeto = Boolean(hook.veto) && VETO_EVENTS.has(hook.on);
-    const settle = (result: Pick<HookOutcome, "ok" | "text" | "error" | "skipped" | "veto">) => {
-      const outcome: HookOutcome = { ...base, ...result, ms: Date.now() - started };
-      if (!outcome.ok) {
-        const notice = `${base.label}: ${hook.on} hook "${hook.id}" ${
-          outcome.skipped ? "skipped" : "failed"
-        }: ${outcome.error}`;
-        this.log.info?.(`[mcp] ${notice}`);
-        onNotice?.(notice, outcome);
-      }
-      return outcome;
-    };
-
-    if (signal?.aborted)
-      return settle({ ok: false, skipped: true, error: "aborted before it ran" });
-    const { args, missing } = expandArgs(hook.args, context);
-    if (missing.length > 0) {
-      const paths = missing.map((path) => `{{${path}}}`).join(", ");
-      return settle({ ok: false, skipped: true, error: `no value for ${paths}` });
-    }
-
-    // By the event rather than by `inject`: a `beforeTurn` hook that injects nothing still holds
-    // up the turn it runs in front of. A hook that can veto is waited on the same way — the
-    // compaction does not start until it answers — so it gets that patience too.
-    const waitedOn = INJECT_EVENTS.has(hook.on) || mayVeto;
-    const timeoutMs = hook.timeoutMs ?? (waitedOn ? INJECT_TIMEOUT_MS : undefined);
-    try {
-      const text = await bounded(
-        this.call(qualify(slugOf(row), hook.tool), args, {
-          servers,
-          signal,
-          timeoutMs,
-          hidden: true,
-        }),
-        timeoutMs,
-        signal,
-      );
-      // Only a call that came back can veto. A failure is no opinion — agent-core reads `ok:
-      // false` as such — so a memory server that is down cannot stall every compaction.
-      if (mayVeto) {
-        const { veto, reason } = readVeto(text);
-        if (veto) return settle({ ok: true, veto: true, text: reason });
-      }
-      // The pool's own placeholder for an empty result is for a model, which must be told
-      // something; for a hook it is nothing to inject.
-      return settle({ ok: true, text: text === "(no output)" ? undefined : text });
-    } catch (error) {
-      return settle({ ok: false, error: errorMessage(error) });
-    }
+    return runHooks(
+      {
+        rows: Array.from(this.entries.values(), (entry) => entry.config),
+        log: this.log,
+        call: async (qualifiedName, args, how) => {
+          const trace: CallTrace = {};
+          // Not `raw`, so what comes back is the text.
+          const text = (await this.traced(qualifiedName, args, how, trace)) as string;
+          // Asked of the trace rather than of the text: a tool is free to answer with the words
+          // `call()` puts where there were none.
+          return { text, empty: trace.chars === 0 };
+        },
+      },
+      event,
+      context,
+      options,
+    );
   }
 
   /**
@@ -1963,15 +1598,14 @@ export class McpPool {
       id: entry.config.id,
       slug: slugOf(entry.config),
       label: labelOf(entry.config),
-      config: this.reportedConfig(entry.config, secrets),
+      config: reportedConfig(entry.config, secrets),
       status: entry.status,
       error: entry.error ?? "",
       tools: entry.tools.map(({ name, qualified, description, title, annotations }) => ({
         name,
         qualified,
         description,
-        ...(title !== undefined ? { title } : {}),
-        ...(annotations !== undefined ? { annotations } : {}),
+        ...defined({ title, annotations }),
         hidden: isHidden(entry.config, name),
       })),
       pid: entry.pid,
@@ -1985,29 +1619,6 @@ export class McpPool {
       instructions: entry.client?.getInstructions(),
       capabilities: entry.client?.getServerCapabilities(),
     }));
-  }
-
-  /**
-   * A row as it goes out of `state()`: a copy, and without the credentials unless asked for.
-   *
-   * A copy because the pool's record of what it dialled is not the caller's to edit, and without
-   * `env`/`headers` because the documented use for the row — a UI drawing the edit form beside
-   * the connection state — is a browser, and those two fields are an API key and a bearer token.
-   *
-   * @param config The entry's own row.
-   * @param secrets Whether the caller asked for the credentials back.
-   */
-  private reportedConfig(config: McpServerConfig, secrets: boolean): McpServerPublicConfig {
-    const copy = copyConfig(config);
-    if (secrets) return copy;
-    // One credential field per arm, stripped by arm: a row carries only its own transport's
-    // fields now, so there is no single destructure that names both.
-    if (copy.transport === "stdio") {
-      const { env, ...rest } = copy;
-      return rest;
-    }
-    const { headers, ...rest } = copy;
-    return rest;
   }
 
   /**

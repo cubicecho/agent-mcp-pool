@@ -1,11 +1,11 @@
-import type { McpServerConfig } from "./types.ts";
+import type { McpServerConfig, McpServerPublicConfig } from "./types.ts";
 
 /**
  * The pool's handling of rows it has been given — no connection, no pool state.
  *
- * Kept apart from `servers.ts`, which answers questions a host asks about a row too: these two
- * are the pool's own business, and they live outside the class because neither needs anything it
- * holds and both are easier to test against plain objects.
+ * Kept apart from `servers.ts`, which answers questions a host asks about a row too: these are
+ * the pool's own business, and they live outside the class because none needs anything it holds
+ * and all are easier to test against plain objects.
  */
 
 /**
@@ -42,6 +42,29 @@ export function copyConfig(config: McpServerConfig): McpServerConfig {
 }
 
 /**
+ * A row as it goes out of `state()`: a copy, and without the credentials unless asked for.
+ *
+ * A copy because the pool's record of what it dialled is not the caller's to edit, and without
+ * `env`/`headers` because the documented use for the row — a UI drawing the edit form beside
+ * the connection state — is a browser, and those two fields are an API key and a bearer token.
+ *
+ * @param config The entry's own row.
+ * @param secrets Whether the caller asked for the credentials back.
+ */
+export function reportedConfig(config: McpServerConfig, secrets: boolean): McpServerPublicConfig {
+  const copy = copyConfig(config);
+  if (secrets) return copy;
+  // One credential field per arm, stripped by arm: a row carries only its own transport's
+  // fields now, so there is no single destructure that names both.
+  if (copy.transport === "stdio") {
+    const { env, ...rest } = copy;
+    return rest;
+  }
+  const { headers, ...rest } = copy;
+  return rest;
+}
+
+/**
  * A run's scope, as a set.
  *
  * `undefined` is every connected server; an empty scope is none of them, which is what an agent
@@ -49,4 +72,17 @@ export function copyConfig(config: McpServerConfig): McpServerConfig {
  */
 export function scope(servers?: Iterable<string>): ReadonlySet<string> | undefined {
   return servers === undefined ? undefined : new Set(servers);
+}
+
+/**
+ * Whether a run scoped to `allowed` may reach this server.
+ *
+ * The one reading of what `scope` returns. Written out per site it was `allowed && !allowed.has`,
+ * which is right — an empty set is truthy — and one `allowed?.size` away from handing a run
+ * scoped to nothing the whole pool.
+ *
+ * @param allowed What `scope` made of the run's servers; `undefined` is every server.
+ */
+export function inScope(allowed: ReadonlySet<string> | undefined, id: string) {
+  return allowed === undefined || allowed.has(id);
 }

@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { requestBudget } from "./budget.ts";
+import { dial } from "./dial.ts";
 import { errorMessage } from "./errors.ts";
-import { listAllTools } from "./listing.ts";
+import { defined } from "./shape.ts";
 import type { TransportFactory, TransportOptions } from "./transport.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
 import type { ClientIdentity, McpConnection, McpProbe } from "./types.ts";
@@ -64,24 +64,19 @@ export async function probe(
     // server rather than of naming it, so a row that needs two minutes to start needs them behind
     // the "Test connection" button too — read past it, and the button reports a failure for a
     // server that works. The argument still wins: it was passed about this call.
-    const patience = timeoutMs ?? config.connectTimeoutMs ?? undefined;
+    const patience = timeoutMs ?? config.connectTimeoutMs;
     // Both requests and not just the dial — a server that completes the handshake and then wedges
     // on `tools/list` is exactly the kind of misconfiguration a probe is asked about — but one
     // budget across them rather than one each: what a person waiting on a button is owed is a
     // bound on the wait, and a paginated server spends a per-request number once per page.
-    const remaining = requestBudget(patience);
-    await mcpClient.connect(transport, remaining());
-    // Every page of them: a probe that under-reports shows a person fewer tools than the server
-    // has, which is the same wrong answer the pool used to give.
-    const tools = await listAllTools(mcpClient, remaining());
+    const tools = await dial(mcpClient, transport, { timeoutMs: patience });
     return {
       ok: true,
       error: "",
-      tools: tools.map((tool) => ({
-        name: tool.name,
-        description: tool.description ?? "",
-        ...(tool.title !== undefined ? { title: tool.title } : {}),
-        ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
+      tools: tools.map(({ name, description = "", title, annotations }) => ({
+        name,
+        description,
+        ...defined({ title, annotations }),
       })),
       // A cached read of the handshake this probe already made. What a row offers is not only its
       // tool list: a server's instructions are what its tools are for.

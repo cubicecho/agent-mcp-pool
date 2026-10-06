@@ -1,3 +1,5 @@
+import { isPlainObject, parseJson } from "./shape.ts";
+
 /**
  * Arguments as a model wrote them, brought into line with the schema the server published.
  *
@@ -22,9 +24,6 @@ export interface CoercedArguments {
 
 type Schema = Record<string, unknown>;
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 const isSchema = (value: unknown): value is Schema => isPlainObject(value);
 
 /** The longest a quoted value gets inside a problem, so a pasted file does not become the hint. */
@@ -35,15 +34,6 @@ function preview(value: unknown): string {
   if (value === undefined) return "nothing";
   const text = JSON.stringify(value) ?? String(value);
   return text.length > PREVIEW_CHARS ? `${text.slice(0, PREVIEW_CHARS - 1)}…` : text;
-}
-
-/** JSON, or `undefined` where the string is not JSON. */
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
 }
 
 /** The types a schema node declares, or none where it says nothing this pass can read. */

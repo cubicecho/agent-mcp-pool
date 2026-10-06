@@ -1,19 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type OpenAI from "openai";
 import { afterAll, afterEach, expect, test, vi } from "vitest";
 import { McpPoolError } from "../src/errors.ts";
 import { qualify, SEPARATOR } from "../src/naming.ts";
 import { McpPool } from "../src/pool.ts";
 import { probe } from "../src/probe.ts";
+import { makePool } from "../src/testing/index.ts";
 import { MINIMAL_CHILD_ENV } from "../src/transport.ts";
 import type { McpServerConfig, McpServerPublicConfig, StdioServerConfig } from "../src/types.ts";
 import { POOL_VERSION } from "../src/version.ts";
+import { echoRow, FIXTURE } from "./helpers.ts";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-pool-"));
-const FIXTURE = fileURLToPath(new URL("./fixtures/mcp-echo.mjs", import.meta.url));
 const spawnLog = path.join(dir, "spawns.log");
 
 /** The pid of every child the fixture has been started as, across every sync so far. */
@@ -55,21 +55,9 @@ async function until(done: () => boolean, what: string) {
   if (!done()) throw new Error(`timed out waiting for ${what}`);
 }
 
-const config = (over: Partial<StdioServerConfig> = {}): StdioServerConfig => ({
-  id: "echo-1",
-  slug: "echo",
-  label: "Echo",
-  enabled: true,
-  transport: "stdio",
-  command: process.execPath,
-  args: [FIXTURE],
-  env: { MCP_ECHO_SPAWN_LOG: spawnLog },
-  ...over,
-});
-
-/** Silent: these tests spawn servers that fail on purpose, and say so on stderr. */
-const makePool = (load?: () => Promise<McpServerConfig[]>, crashBackoffMs?: number) =>
-  new McpPool({ load, clientName: "mcp-pool-test", log: {}, crashBackoffMs });
+/** The shared row, counted: every child it starts writes its pid to `spawnLog`. */
+const config = (over: Partial<StdioServerConfig> = {}): StdioServerConfig =>
+  echoRow({ env: { MCP_ECHO_SPAWN_LOG: spawnLog }, ...over });
 
 /** The qualified names in a set of definitions. A definition is a union; only the function arm
  * is used here. */
@@ -159,7 +147,7 @@ test("an unchanged config is left alone rather than reconnected", async () => {
 test("overlapping syncs off the source reconnect an edited server once", async () => {
   // The seam under test: the pool asks its `load` for the rows rather than importing a database.
   let rows = [config()];
-  pool = makePool(async () => rows);
+  pool = makePool({ load: async () => rows });
   await pool.sync();
 
   // An edit the connection is actually made of, so the server has to be restarted for it.
@@ -185,7 +173,7 @@ test("overlapping syncs off the source reconnect an edited server once", async (
  */
 test("renaming a server keeps its child and re-labels its tools in place", async () => {
   let rows = [config()];
-  pool = makePool(async () => rows);
+  pool = makePool({ load: async () => rows });
   await pool.sync();
   const [first] = spawnedPids();
 
@@ -253,7 +241,7 @@ test("state() hands back the row a server was configured from", async () => {
 
 test("a renamed server reports the new row, not the one it connected under", async () => {
   let rows = [config()];
-  pool = makePool(async () => rows);
+  pool = makePool({ load: async () => rows });
   await pool.sync();
 
   rows = [config({ label: "Echo, renamed" })];
@@ -313,7 +301,7 @@ test("state() leaves the credentials out of the row, unless they are asked for",
  */
 test("a row edited in place is a changed row, not one the pool is already running", async () => {
   const row = config();
-  pool = makePool(async () => [row]);
+  pool = makePool({ load: async () => [row] });
   await pool.sync();
 
   row.args = [FIXTURE, "--edited"];
@@ -353,7 +341,7 @@ test("state() describes the running child: its pid, and when it started", async 
 });
 
 test("a pid does not outlive the child it named", async () => {
-  pool = makePool(undefined, 60_000);
+  pool = makePool({ crashBackoffMs: 60_000 });
   await pool.sync([config()]);
   process.kill(spawnedPids()[0] as number, "SIGKILL");
   await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
@@ -398,7 +386,7 @@ test("a server that cannot start is reported rather than thrown", async () => {
 
 test("flush pays off a debounced sync, so a reader sees its own write", async () => {
   let rows: McpServerConfig[] = [];
-  pool = makePool(async () => rows);
+  pool = makePool({ load: async () => rows });
 
   rows = [config()];
   pool.syncSoon();
@@ -418,7 +406,7 @@ test("flush pays off a debounced sync, so a reader sees its own write", async ()
  */
 test("flush waits for a debounced sync that has already started", async () => {
   let rows: McpServerConfig[] = [];
-  pool = makePool(async () => rows);
+  pool = makePool({ load: async () => rows });
 
   rows = [config()];
   pool.syncSoon();
@@ -477,7 +465,7 @@ test("a call to a server outside the run's scope is refused as one that does not
 
 test("reconnect dials a server again that sync would have left alone", async () => {
   const rows = [config()];
-  pool = makePool(async () => rows);
+  pool = makePool({ load: async () => rows });
   await pool.sync();
   const [first] = spawnedPids();
 
@@ -547,7 +535,7 @@ test("sync with an empty array still closes every server, since a caller said so
  * mean the same thing by the method.
  */
 test("reconnect dials a lazy server rather than leaving it registered and stopped", async () => {
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([config()]);
   await pool.call("echo__ping", {});
   const [first] = spawnedPids();
@@ -563,7 +551,7 @@ test("reconnect dials a lazy server rather than leaving it registered and stoppe
 /** Forcing the dial is for enabled servers; a disabled row is off for a reason `reconnect` does
  * not overrule. */
 test("reconnect leaves a disabled server disabled rather than starting it", async () => {
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([config({ enabled: false })]);
   await pool.reconnect("echo-1", [config({ enabled: false })]);
 
@@ -600,7 +588,7 @@ test("stop closes one server's child and leaves the row able to come back", asyn
  */
 test("a stopped server stays stopped through a sync of an unchanged row", async () => {
   const rows = [config()];
-  pool = makePool(async () => rows);
+  pool = makePool({ load: async () => rows });
   await pool.sync();
   await pool.stop("echo-1");
 
@@ -616,7 +604,7 @@ test("a stopped server stays stopped through a sync of an unchanged row", async 
  */
 test("stop clears the backoff standing in front of a failed server", async () => {
   // A backoff far longer than the test, so only clearing it can let the call through.
-  pool = makePool(undefined, 60_000);
+  pool = makePool({ crashBackoffMs: 60_000 });
   await pool.sync([config()]);
   process.kill(spawnedPids()[0] as number, "SIGKILL");
   await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
@@ -668,7 +656,7 @@ test("shutting down is not mistaken for a crash", async () => {
  */
 test("a later sync retries a crashed server, but not before the backoff", async () => {
   const rows = [config()];
-  pool = makePool(async () => rows, 10_000);
+  pool = makePool({ load: async () => rows, crashBackoffMs: 10_000 });
   await pool.sync();
   const [child] = spawnedPids();
 
@@ -681,7 +669,7 @@ test("a later sync retries a crashed server, but not before the backoff", async 
 
   // Same again with no backoff to wait out, which is the 3am case once the timer has passed.
   await pool.shutdown();
-  pool = makePool(async () => rows, 0);
+  pool = makePool({ load: async () => rows, crashBackoffMs: 0 });
   await pool.sync();
   const before = spawned();
   process.kill(spawnedPids().at(-1) as number, "SIGKILL");
@@ -694,7 +682,7 @@ test("a later sync retries a crashed server, but not before the backoff", async 
 });
 
 test("a call to a tool whose server crashed brings the server back", async () => {
-  pool = makePool(undefined, 0);
+  pool = makePool({ crashBackoffMs: 0 });
   await pool.sync([config()]);
 
   process.kill(spawnedPids()[0] as number, "SIGKILL");
@@ -721,7 +709,7 @@ test("a stdio child inherits the whole environment by default, and only the allo
   expect(wide.MCP_POOL_TEST_SECRET).toBe("sk-do-not-share");
 
   await pool.shutdown();
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, childEnv: MINIMAL_CHILD_ENV });
+  pool = makePool({ childEnv: MINIMAL_CHILD_ENV });
   await pool.sync([inheriting]);
 
   const narrow = JSON.parse(fs.readFileSync(dump, "utf8"));
@@ -746,7 +734,7 @@ test("a server that hangs on tools/list does not leave its child behind", async 
   // Generous on purpose. The budget has to outlast a cold `node` start under load, or the child
   // is killed before it has run a line and the test fails at the handshake — the one stage it is
   // not about. The hang never answers, so the timeout still expires either way.
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 1000 });
+  pool = makePool({ connectTimeoutMs: 1000 });
   await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" } })]);
 
   // The pool's own account of it is right either way, which is why this went unnoticed.
@@ -805,11 +793,7 @@ test("tool names too long for the limit stay distinct instead of collapsing", as
 /** A pool that keeps what it logged at `error`, which is where a name clash is reported. */
 function loudPool(options: ConstructorParameters<typeof McpPool>[0] = {}) {
   const logged: string[] = [];
-  const made = new McpPool({
-    clientName: "mcp-pool-test",
-    log: { error: (message) => logged.push(message) },
-    ...options,
-  });
+  const made = makePool({ log: { error: (message) => logged.push(message) }, ...options });
   return { pool: made, logged };
 }
 
@@ -876,7 +860,7 @@ test("a tool named in a way OpenAI refuses is offered under a name it accepts", 
 });
 
 test("maxDescriptionChars caps what the model is sent, not what the pool reports", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, maxDescriptionChars: 20 });
+  pool = makePool({ maxDescriptionChars: 20 });
   await pool.sync([config()]);
 
   const sent = pool
@@ -958,7 +942,7 @@ const capturing = () => {
  */
 test("a name no server offers is skipped, and said so", async () => {
   const { lines, log } = capturing();
-  pool = new McpPool({ clientName: "mcp-pool-test", log });
+  pool = makePool({ log });
   await pool.sync([config()]);
 
   expect(names(pool.tools({ names: ["echo__ping", "gone__tool"] }))).toEqual(["echo__ping"]);
@@ -974,7 +958,7 @@ test("a name no server offers is skipped, and said so", async () => {
  */
 test("a cold server's tools are not reported as names nothing offers", async () => {
   const { lines, log } = capturing();
-  pool = new McpPool({ clientName: "mcp-pool-test", log, lazy: true });
+  pool = makePool({ log, lazy: true });
   await pool.sync([config()]);
 
   expect(pool.tools({ names: ["echo__ping"] })).toEqual([]);
@@ -1011,7 +995,7 @@ test("the two collections cannot be transposed, because they are one named objec
  */
 test("a name held back by the run's scope is not reported as missing", async () => {
   const { lines, log } = capturing();
-  pool = new McpPool({ clientName: "mcp-pool-test", log });
+  pool = makePool({ log });
   await pool.sync([config()]);
 
   expect(pool.tools({ names: ["echo__ping"], servers: ["someone-else"] })).toEqual([]);
@@ -1025,7 +1009,7 @@ test("a name held back by the run's scope is not reported as missing", async () 
  */
 test("giving a slugless server a slug re-qualifies its tools without restarting it", async () => {
   let rows = [config({ id: "notes", slug: undefined })];
-  pool = makePool(async () => rows);
+  pool = makePool({ load: async () => rows });
   await pool.sync();
   const [first] = spawnedPids();
 
@@ -1062,7 +1046,7 @@ test("the pool probes under its own name, rather than one the caller repeats", a
  */
 test("the version a server is told is the consumer's, on a connection and on a probe", async () => {
   const dump = path.join(dir, "client-version.json");
-  pool = new McpPool({ clientName: "mcp-pool-test", clientVersion: "4.2.0", log: {} });
+  pool = makePool({ clientVersion: "4.2.0" });
   await pool.sync([config({ env: { MCP_ECHO_CLIENT_DUMP: dump } })]);
 
   expect(JSON.parse(fs.readFileSync(dump, "utf8"))).toMatchObject({
@@ -1165,7 +1149,7 @@ test("a server that repeats its cursor is failed rather than paged forever", asy
 });
 
 test("a probe gives up on the pool's schedule, not the SDK's", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 1000 });
+  pool = makePool({ connectTimeoutMs: 1000 });
 
   const started = Date.now();
   const result = await pool.probe(
@@ -1185,12 +1169,7 @@ test("a probe gives up on the pool's schedule, not the SDK's", async () => {
  * patient; a person who has just pressed a button cannot.
  */
 test("probeTimeoutMs makes a probe more impatient than a boot", async () => {
-  pool = new McpPool({
-    clientName: "mcp-pool-test",
-    log: {},
-    connectTimeoutMs: 30_000,
-    probeTimeoutMs: 1000,
-  });
+  pool = makePool({ connectTimeoutMs: 30_000, probeTimeoutMs: 1000 });
 
   const started = Date.now();
   const result = await pool.probe(
@@ -1209,7 +1188,7 @@ test("probeTimeoutMs makes a probe more impatient than a boot", async () => {
  * the case the option exists for — hanging for as long as the slow one legitimately needs.
  */
 test("a row's connectTimeoutMs overrides the pool's", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 30_000 });
+  pool = makePool({ connectTimeoutMs: 30_000 });
   await pool.sync([
     config({
       connectTimeoutMs: 1000,
@@ -1223,7 +1202,7 @@ test("a row's connectTimeoutMs overrides the pool's", async () => {
 });
 
 test("a row with no connectTimeoutMs still takes the pool's", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 1000 });
+  pool = makePool({ connectTimeoutMs: 1000 });
   // `null` is the same absence as an unset field — what a row loaded from a database column says.
   await pool.sync([
     config({
@@ -1253,7 +1232,7 @@ test("an edited connect timeout applies to the next connect without restarting t
  * connection" button too — otherwise the button reports a failure for a server that works.
  */
 test("a probe takes the row's connect timeout over the pool's probe timeout", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, probeTimeoutMs: 30_000 });
+  pool = makePool({ probeTimeoutMs: 30_000 });
 
   const started = Date.now();
   const result = await pool.probe(
@@ -1276,7 +1255,7 @@ test("a probe takes the row's connect timeout over the pool's probe timeout", as
  * read as a slow pool rather than as a timeout that did not apply.
  */
 test("a connect timeout bounds the whole connect, not each page of tools/list", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 600 });
+  pool = makePool({ connectTimeoutMs: 600 });
   // Three pages at 300ms: every one of them answers inside the 600ms a per-request reading would
   // have given it, and together they cannot fit in the budget.
   await pool.sync([
@@ -1298,7 +1277,7 @@ test("a connect timeout bounds the whole connect, not each page of tools/list", 
 });
 
 test("a paginated server that fits inside the budget still connects", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, connectTimeoutMs: 30_000 });
+  pool = makePool({ connectTimeoutMs: 30_000 });
   await pool.sync([
     config({
       env: {
@@ -1404,7 +1383,7 @@ test("a stdio server starts in the cwd its config names", async () => {
 
 test("editing only the cwd restarts the server, since it is part of the connection", async () => {
   let rows = [config()];
-  pool = makePool(async () => rows);
+  pool = makePool({ load: async () => rows });
   await pool.sync();
 
   // A no-op sync first: an optional field absent on both rows must not read as a difference.
@@ -1506,7 +1485,7 @@ test("a server that sends no instructions reports none rather than an empty stri
 });
 
 test("both describe the connection, so they go when it does", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, lazy: true });
+  pool = makePool({ lazy: true });
   const row = config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } });
   await pool.sync([row]);
 
@@ -1528,7 +1507,7 @@ test("both describe the connection, so they go when it does", async () => {
  * gateway proxying the protocol, which is exactly the one that needs to know what it may proxy.
  */
 test("indexTools: false keeps the tool index empty and still reports the handshake", async () => {
-  pool = new McpPool({ clientName: "mcp-pool-test", log: {}, indexTools: false });
+  pool = makePool({ indexTools: false });
   await pool.sync([config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } })]);
 
   expect(pool.state()[0]).toMatchObject({
@@ -1559,7 +1538,7 @@ test("client() refuses a server that is disabled or not configured at all", asyn
 
 test("client() brings back a server that is merely down, the way call() does", async () => {
   const once = path.join(dir, "failed-once");
-  pool = makePool(undefined, 0);
+  pool = makePool({ crashBackoffMs: 0 });
   await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_FAIL_ONCE: once } })]);
   expect(pool.state()).toMatchObject([{ status: "error" }]);
 
@@ -1592,7 +1571,7 @@ test("client() says which of its refusals this is, rather than only what went wr
  */
 test("client() tells a backoff apart from a connect that failed on this call", async () => {
   const broken = config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_FAIL: "boom" } });
-  pool = makePool(undefined, 60_000);
+  pool = makePool({ crashBackoffMs: 60_000 });
   await pool.sync([broken]);
 
   const held = await refusal(pool.client("echo-1"));
@@ -1604,7 +1583,7 @@ test("client() tells a backoff apart from a connect that failed on this call", a
 
   // No backoff to hold it off, so this one does dial, and does fail.
   await pool.shutdown();
-  pool = makePool(undefined, 0);
+  pool = makePool({ crashBackoffMs: 0 });
   await pool.sync([broken]);
   const failed = await refusal(pool.client("echo-1"));
   expect(failed.code).toBe("connect-failed");
@@ -1627,12 +1606,8 @@ test("a refused call says whether the tool is missing or merely out of this run'
   expect(unscoped.message).toMatch(/no connected MCP server offers a tool called/);
 });
 
-/** A pool with the lifecycle options under test; silent for the same reason `makePool` is. */
-const lazyPool = (over: Partial<ConstructorParameters<typeof McpPool>[0]> = {}) =>
-  new McpPool({ clientName: "mcp-pool-test", log: {}, lazy: true, ...over });
-
 test("a lazy pool registers a server without starting it, and starts it on use", async () => {
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([config()]);
 
   // The reconcile still happened — the entry is there and complete — only the child is deferred.
@@ -1654,7 +1629,7 @@ test("a lazy pool registers a server without starting it, and starts it on use",
  * name unclaimed by it, so the pool would wake every other server and still not find the tool.
  */
 test("a cold server with no slug is woken by a name its id claims", async () => {
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([config({ id: "notes", slug: undefined }), config({ id: "other" })]);
 
   expect(await pool.call("notes__ping", {})).toBe("ping({})");
@@ -1669,7 +1644,7 @@ test("a cold server with no slug is woken by a name its id claims", async () => 
  * anyway. Four servers here; a gateway with thirty pays thirty child processes for one typo.
  */
 test("a name no server could have built starts nothing", async () => {
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([
     config({ id: "alpha", slug: "alpha" }),
     config({ id: "beta", slug: "beta" }),
@@ -1688,7 +1663,7 @@ test("a name no server could have built starts nothing", async () => {
  */
 test("a cold server whose slug is truncated out of its own names is still woken", async () => {
   const slug = "s".repeat(60);
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([config({ id: "long", slug }), config({ id: "other", slug: "other" })]);
 
   const name = qualify(slug, "ping");
@@ -1700,7 +1675,7 @@ test("a cold server whose slug is truncated out of its own names is still woken"
 });
 
 test("a second sync leaves an idle server idle rather than dialling it", async () => {
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([config()]);
   await pool.sync([config()]);
 
@@ -1710,7 +1685,7 @@ test("a second sync leaves an idle server idle rather than dialling it", async (
 });
 
 test("two calls arriving together on a cold server start one child", async () => {
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([config()]);
 
   const both = await Promise.all([
@@ -1724,7 +1699,7 @@ test("two calls arriving together on a cold server start one child", async () =>
 });
 
 test("client() starts a cold server for a consumer that knows which one it wants", async () => {
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([config()]);
 
   const { tools } = await (await pool.client("echo-1")).listTools();
@@ -1734,7 +1709,7 @@ test("client() starts a cold server for a consumer that knows which one it wants
 
 test("an unused server is closed, and the next call brings it back", async () => {
   // A backoff far longer than the test, to prove a reap is not treated as a crash.
-  pool = lazyPool({ lazy: false, idleTimeoutMs: 50, crashBackoffMs: 60_000 });
+  pool = makePool({ idleTimeoutMs: 50, crashBackoffMs: 60_000 });
   await pool.sync([config()]);
   const [first] = spawnedPids();
 
@@ -1750,7 +1725,7 @@ test("an unused server is closed, and the next call brings it back", async () =>
 });
 
 test("use restarts the idle clock instead of letting it run out under load", async () => {
-  pool = lazyPool({ lazy: false, idleTimeoutMs: 150 });
+  pool = makePool({ idleTimeoutMs: 150 });
   await pool.sync([config()]);
 
   for (let i = 0; i < 4; i++) {
@@ -1763,7 +1738,7 @@ test("use restarts the idle clock instead of letting it run out under load", asy
 });
 
 test("a server can opt out of reaping, or set its own timeout", async () => {
-  pool = lazyPool({ lazy: false, idleTimeoutMs: 50 });
+  pool = makePool({ idleTimeoutMs: 50 });
   // 0 rather than absent: absent means "use the pool's", which is what the other server does.
   await pool.sync([
     config({ id: "kept", slug: "kept", idleTimeoutMs: 0 }),
@@ -1782,14 +1757,14 @@ test("a server can opt out of reaping, or set its own timeout", async () => {
  * pool's own drain is a round trip per page for a list nobody reads.
  */
 test("a pool that does not index tools connects without listing them", async () => {
-  pool = lazyPool({ lazy: false, indexTools: true });
+  pool = makePool({ indexTools: true });
   await pool.sync([config()]);
   // What the default costs, for the contrast: one `tools/list` walk per connect, held per entry.
   expect(pool.state()).toMatchObject([{ status: "ready" }]);
   expect(pool.state()[0]?.tools).toHaveLength(3);
   await pool.shutdown();
 
-  pool = lazyPool({ lazy: false, indexTools: false });
+  pool = makePool({ indexTools: false });
   await pool.sync([config()]);
 
   // Connected and usable — only the listing is gone.
@@ -1809,7 +1784,7 @@ test("a pool that does not index tools connects without listing them", async () 
  * and under the default it never reaches `ready` at all.
  */
 test("a server that wedges on tools/list is still connected when nothing lists them", async () => {
-  pool = lazyPool({ lazy: false, indexTools: false });
+  pool = makePool({ indexTools: false });
   await pool.sync([config({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_HANG_TOOLS: "1" } })]);
 
   expect(pool.state()).toMatchObject([{ status: "ready", error: "" }]);
@@ -1823,7 +1798,7 @@ test("a server that wedges on tools/list is still connected when nothing lists t
  * call — the whole cost `lazy` exists to avoid, paid on every request.
  */
 test("a call against an unindexed pool is refused without starting anything", async () => {
-  pool = lazyPool({ indexTools: false });
+  pool = makePool({ lazy: true, indexTools: false });
   await pool.sync([config()]);
 
   const error = await pool.call("echo__ping", {}).catch((thrown: unknown) => thrown);
@@ -1841,7 +1816,7 @@ test("a call against an unindexed pool is refused without starting anything", as
  * the server exists.
  */
 test("a scoped call does not start a server the run cannot reach", async () => {
-  pool = lazyPool();
+  pool = makePool({ lazy: true });
   await pool.sync([config({ id: "alpha", slug: "alpha" }), config({ id: "beta", slug: "beta" })]);
 
   const refused = await refusal(pool.call("beta__ping", {}, ["alpha"]));
@@ -1862,7 +1837,7 @@ test("a scoped call does not start a server the run cannot reach", async () => {
  * added to stop, paid on the other path.
  */
 test("a name no server could have built does not redial a crashed one either", async () => {
-  pool = makePool(undefined, 0);
+  pool = makePool({ crashBackoffMs: 0 });
   await pool.sync([config({ id: "alpha", slug: "alpha" }), config({ id: "beta", slug: "beta" })]);
   const beta = () => pool.state().find((entry) => entry.id === "beta");
 
@@ -1891,7 +1866,7 @@ test("a name no server could have built does not redial a crashed one either", a
 test("a call landing after the idle timer fired is answered, not closed under", async () => {
   vi.useFakeTimers();
   try {
-    pool = lazyPool({ lazy: false, idleTimeoutMs: 1000 });
+    pool = makePool({ idleTimeoutMs: 1000 });
     await pool.sync([config()]);
     expect(pool.state()).toMatchObject([{ status: "ready" }]);
 
@@ -1979,7 +1954,7 @@ test("a tool that fails is a refusal with a code, not a bare error", async () =>
 });
 
 test("a call is bounded by the pool's timeout rather than the SDK's own minute", async () => {
-  pool = lazyPool({ lazy: false, callTimeoutMs: 100 });
+  pool = makePool({ callTimeoutMs: 100 });
   await pool.sync([config()]);
 
   await expect(pool.call("echo__echo", { sleepMs: 2000 })).rejects.toThrow(/timed out/i);
@@ -1989,14 +1964,14 @@ test("a call is bounded by the pool's timeout rather than the SDK's own minute",
 });
 
 test("a row's callTimeoutMs overrides the pool's, in both directions", async () => {
-  pool = lazyPool({ lazy: false, callTimeoutMs: 20_000 });
+  pool = makePool({ callTimeoutMs: 20_000 });
   await pool.sync([config({ callTimeoutMs: 100 })]);
 
   await expect(pool.call("echo__echo", { sleepMs: 2000 })).rejects.toThrow(/timed out/i);
 
   // And the other way: the row is the patient one, under a pool that would have given up.
   await pool.shutdown();
-  pool = lazyPool({ lazy: false, callTimeoutMs: 100 });
+  pool = makePool({ callTimeoutMs: 100 });
   await pool.sync([config({ callTimeoutMs: 20_000 })]);
 
   expect(await pool.call("echo__echo", { sleepMs: 300 })).toBe('echo({"sleepMs":300})');

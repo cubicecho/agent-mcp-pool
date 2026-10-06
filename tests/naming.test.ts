@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
-import { couldQualify, labelOf, pooledTool, qualify, SEPARATOR, slugOf } from "../src/naming.ts";
+import { labelOf, slugOf } from "../src/namespace.ts";
+import { couldQualify, pooledTool, qualify, SEPARATOR } from "../src/naming.ts";
 import type { StdioServerConfig } from "../src/types.ts";
 
 const config = (over: Partial<StdioServerConfig> = {}): StdioServerConfig => ({

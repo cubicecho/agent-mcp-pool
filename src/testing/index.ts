@@ -16,7 +16,8 @@ import {
   ListToolsRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { McpPool, type McpPoolOptions } from "../pool.ts";
+import type { McpPoolOptions } from "../options.ts";
+import { McpPool } from "../pool.ts";
 import type { TransportFactory } from "../transport.ts";
 import type { HttpServerConfig } from "../types.ts";
 
