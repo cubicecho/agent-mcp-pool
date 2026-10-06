@@ -1,3 +1,13 @@
+# [3.7.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.6.1...v3.7.0) (2026-10-06)
+
+
+### Features
+
+* answer a repeated read-only call from memory ([3436832](https://github.com/cubicecho/agent-mcp-pool/commit/34368329f0e17a9b35539507cf0ed0dddc6a7787)), closes [#91](https://github.com/cubicecho/agent-mcp-pool/issues/91)
+* keep a cold server's last-known tools on offer ([640061b](https://github.com/cubicecho/agent-mcp-pool/commit/640061b1066a3b960aaa9953cb9b7b71a7e2c12b)), closes [#87](https://github.com/cubicecho/agent-mcp-pool/issues/87)
+* list a server's tools again when it says they changed ([84c18e2](https://github.com/cubicecho/agent-mcp-pool/commit/84c18e2bba8681aa1910d79e91c74bc6afb86305)), closes [#78](https://github.com/cubicecho/agent-mcp-pool/issues/78)
+* search the catalogue, name what loads first, and weigh a tool set ([696cc51](https://github.com/cubicecho/agent-mcp-pool/commit/696cc514f8015fe1077fb5ff3a85b8ba7206c756)), closes [#87](https://github.com/cubicecho/agent-mcp-pool/issues/87)
+
 ## [3.6.1](https://github.com/cubicecho/agent-mcp-pool/compare/v3.6.0...v3.6.1) (2026-10-06)
 
 
