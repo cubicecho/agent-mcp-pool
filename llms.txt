@@ -93,6 +93,7 @@ Questions about server rows that need neither a connection nor Node — for the 
 - `keepAliveFetch` — A `fetch` that keeps its idle connections for longer than Node's 4s.
 - `MINIMAL_CHILD_ENV` — A short allowlist of variables a stdio child usually cannot start without.
 - `readStderrTail` — Starts collecting a stdio child's stderr, and returns a reader for the last of it.
+- `sessionLost` — Whether a request failed because the server no longer has the session it was sent on.
 - `TransportFactory` (type) — What builds the transport for one connection, where the pool's own construction is not wanted.
 - `TransportOptions` (type) — What a transport takes beyond the config itself.
 

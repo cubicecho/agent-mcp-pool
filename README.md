@@ -420,6 +420,22 @@ carry. `client(id)` hands back the connected client:
 const { resources } = await (await pool.client(id)).listResources();
 ```
 
+A remote server can lose the session that client was opened with — it restarted, or it reaped a
+session it took for abandoned — and go on answering. Nothing closes, so the pool is not told, the
+server stays `ready`, and every request on that client is refused: `404` for a session id the
+server no longer knows, or `400` for a missing one where a server that was stateless has come back
+stateful. `use(id, run)` is `client(id)` with that handled:
+
+```ts
+const { resources } = await pool.use(id, (client) => client.listResources());
+```
+
+The first such refusal redials the server and calls `run` once more with the new client; any
+other failure is passed through. Both refusals come before the server dispatches the request, so
+a `tools/call` sent again has not run twice. Requests that share the dead client share one redial,
+and it waits for the ones still in flight. `call()` does the same on its own, and `sessionLost`
+is the test both use, exported for a consumer that keeps its own clients.
+
 `listAllTools(client, options?)` is the other half a raw client needs: `tools/list` is paginated,
 the page size is the **server's** choice rather than the caller's, and a tool left on page two is
 not merely unlisted — it is absent from the index, so `call()` refuses it as one that does not

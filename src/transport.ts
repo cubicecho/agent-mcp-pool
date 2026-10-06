@@ -1,5 +1,8 @@
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { FetchLike, Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Agent } from "undici";
 import type { McpConnection } from "./types.ts";
@@ -129,6 +132,29 @@ export function createTransport(config: McpConnection, options: TransportOptions
     requestInit: { headers: config.headers ?? {} },
     fetch: options.fetch ?? sharedFetch,
   });
+}
+
+/**
+ * Whether a request failed because the server no longer has the session it was sent on.
+ *
+ * A streamable HTTP server that restarts, or reaps a session it took for abandoned, goes on
+ * answering — so the transport never closes, the pool never hears of it, and every request after
+ * that is refused for as long as the client is kept. Two refusals mean it: `404` to a session id
+ * the server does not know, which the spec says to answer with a new session, and `400` to a
+ * request carrying none, from a server that was stateless when this client joined and has come
+ * back wanting one. A `400` to a client that does hold a session is about the request instead.
+ *
+ * Both are sent before the server dispatches anything, so the request did not run and sending it
+ * again on a new connection cannot run it twice.
+ *
+ * @param transport The transport the request went out on. Read structurally, as a
+ *   `TransportFactory`'s is whatever it built.
+ * @param error What the request rejected with.
+ * @returns True where a new connection is the remedy. Always false over stdio.
+ */
+export function sessionLost(transport: Transport | undefined, error: unknown): boolean {
+  if (!(error instanceof StreamableHTTPError)) return false;
+  return transport?.sessionId === undefined ? error.code === 400 : error.code === 404;
 }
 
 /** The variables to hand a child, before the server's own `env` is layered on. */

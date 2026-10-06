@@ -67,6 +67,7 @@ export {
   keepAliveFetch,
   MINIMAL_CHILD_ENV,
   readStderrTail,
+  sessionLost,
   type TransportFactory,
   type TransportOptions,
 } from "./transport.ts";
