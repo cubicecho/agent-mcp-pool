@@ -570,9 +570,10 @@ test("stop closes one server's child and leaves the row able to come back", asyn
 
   await pool.stop("echo-1");
 
-  // Where a reap leaves a server, reached by a person instead of a clock.
-  expect(pool.state()).toMatchObject([{ slug: "echo", status: "idle", error: "", tools: [] }]);
-  expect(pool.tools()).toEqual([]);
+  // Where a reap leaves a server, reached by a person instead of a clock: nothing running, and
+  // what it offered still offered.
+  expect(pool.state()).toMatchObject([{ slug: "echo", status: "idle", error: "", stale: true }]);
+  expect(pool.tools().map((tool) => tool.function.name)).toContain("echo__ping");
   expect(await stillAlive([first as number])).toEqual([]);
 
   // A restart is a stop and then a use.
@@ -1716,12 +1717,14 @@ test("an unused server is closed, and the next call brings it back", async () =>
   await until(() => pool.state()[0]?.status === "idle", "the idle reap");
   expect(await stillAlive([first as number])).toEqual([]);
   // A success path: no error to explain, no failure time to wait out.
-  expect(pool.state()).toMatchObject([{ status: "idle", error: "", tools: [] }]);
-  expect(pool.tools()).toEqual([]);
+  expect(pool.state()).toMatchObject([{ status: "idle", error: "", stale: true }]);
+  // The list outlives the child, so a model that never used the server is still told about it.
+  expect(pool.tools().map((tool) => tool.function.name)).toContain("echo__ping");
 
   // Immediately, despite the minute-long backoff, because none applies to a server that is fine.
   expect(await pool.call("echo__ping", {})).toBe("ping({})");
   expect(spawned()).toBe(2);
+  expect(pool.state()[0]?.stale).toBeUndefined();
 });
 
 test("use restarts the idle clock instead of letting it run out under load", async () => {

@@ -60,3 +60,11 @@ export function canonicalJson(value: unknown): string {
     ) ?? "null"
   );
 }
+
+/**
+ * Tokens in a string, as agent-core's `estimateTokens` counts them.
+ *
+ * Four characters a token, which is rough and deliberately the same rough: a cap measured one way
+ * here and another in the request budget would let the two disagree about whether it fit.
+ */
+export const estimateTokens = (text: string) => Math.ceil(text.length / 4);

@@ -156,8 +156,9 @@ test("state reports the fingerprint a probe of the same server does", async () =
   expect(probed.toolsFingerprint).toBe(pool.state()[0].toolsFingerprint);
   expect((await pool.probe(memoryRow("missing"))).toolsFingerprint).toBe("");
 
+  // A stopped server keeps the list it had, so it keeps the fingerprint of it.
   await pool.stop("first");
-  expect(pool.state()[0].toolsFingerprint).toBeUndefined();
+  expect(pool.state()[0].toolsFingerprint).toBe(probed.toolsFingerprint);
 });
 
 test("a fingerprint ignores order and moves with anything a model or a host is told", () => {

@@ -189,6 +189,7 @@ test("validation reports every problem with a row, including its hooks'", () => 
       maxResultChars: "big",
       coerceArguments: "no",
       hiddenTools: "remember",
+      alwaysLoad: [1],
       hooks: [{ id: "h", on: "never", tool: "t" }],
     }),
   ).toEqual([
@@ -205,6 +206,7 @@ test("validation reports every problem with a row, including its hooks'", () => 
     "maxResultChars must be a whole number, 0 or more",
     "coerceArguments must be true or false",
     "hiddenTools must be a list of tool names",
+    "alwaysLoad must be a list of tool names",
     expect.stringMatching(/^hook "h": "never" is not an event/),
   ]);
 });

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { canonicalJson } from "./shape.ts";
+import type { McpServerConfig } from "./types.ts";
 
 /** What of a tool `toolsFingerprint` reads — the fields `tools/list` sends them under. */
 export interface FingerprintedTool {
@@ -40,4 +41,24 @@ export function toolsFingerprint(tools: readonly FingerprintedTool[]): string {
     ])
     .sort(([a], [b]) => (a === b ? 0 : (a as string) < (b as string) ? -1 : 1));
   return createHash("sha256").update(canonicalJson(tuples)).digest("hex");
+}
+
+/**
+ * A hash of the fields a connection is made of — the ones `sameConnection` compares.
+ *
+ * What a cached tool list is stamped with, so one fetched over another command or another url is
+ * not offered as this row's. A hash rather than the fields because two of them are `env` and
+ * `headers`: a tool cache is a table somebody will read, and it has no business holding an API key.
+ *
+ * `enabled` is left out, unlike in `sameConnection`: switching a server off and on again restarts
+ * it, and does not change what it offers.
+ */
+export function connectionFingerprint(config: McpServerConfig): string {
+  const reached =
+    config.transport === "stdio"
+      ? [config.command, config.cwd ?? "", config.args ?? [], config.env ?? {}]
+      : [config.url, config.headers ?? {}];
+  return createHash("sha256")
+    .update(canonicalJson([config.transport, ...reached]))
+    .digest("hex");
 }

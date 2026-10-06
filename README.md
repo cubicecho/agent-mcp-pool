@@ -141,7 +141,8 @@ reported under `indexTools: false` as well, unlike `tools` — they were already
 consumer that turned indexing off is the one proxying the protocol.
 
 `toolsFingerprint` is a hash of what the server last listed — every tool's name, description,
-input schema and annotations — and is absent while it has no list. A server whose descriptions
+input schema and annotations — and is absent while it has no list. A cold server reports the one
+its last-known list hashes to, beside `stale: true`. A server whose descriptions
 change after an operator approved them is the "rug pull" of the MCP security write-ups, and it can
 only be noticed against something stored:
 
@@ -368,8 +369,45 @@ new McpPool({
 
 A registered-but-unconnected server sits at `idle`, which is neither `disabled` (switched off) nor
 `error` (tried, failed, waiting out a backoff). `call()` and `client()` start it; **`tools()` and
-`catalog()` do not**, so a cold server offers nothing until something has used it. Listing a cold
-server's tools without spawning it needs a cached last-known tool list, which is its own change.
+`catalog()` do not** — they answer from the tools it was last known to have.
+
+### What a cold server offers
+
+A server that was reaped or stopped keeps its list. Nothing went wrong, so what it offered a moment
+ago is the best account of what it will offer when a call brings it back; dropping it made a
+reaped server vanish from the catalogue until something happened to call it by name, which nothing
+could, since the catalogue is where a model gets the names. `state()` and `catalog()` mark such a
+server `stale: true`, and the mark goes when it connects.
+
+A call to a last-known tool starts its server — that one alone, and only after the scope and
+`hiddenTools` refusals, so a run that may not reach a tool does not spawn a child to be told so.
+If the server comes back offering something else, the list is replaced, `tools-changed` fires, and
+a tool that is gone is refused as one that does not exist. A crash is the other case: a server at
+`error` keeps nothing, so `state()` never reads as one that is down and still has tools to offer.
+
+That covers a server the pool has seen. For one it has not — a lazy pool's first boot, or any
+restart — `toolsCache` is where a list outlives the process:
+
+```ts
+new McpPool({
+  load,
+  lazy: true,
+  toolsCache: {
+    load: (id) => db.tools.get(id),            // { connection, tools } | undefined
+    save: (id, cached) => db.tools.put(id, cached),
+  },
+});
+```
+
+`save` is handed every list a server gives that the store does not already hold — on a connect and
+on a `tools/list_changed` — and is not awaited: a slow store must not hold a connect open, and a
+failing one is logged and costs only the next cold start's catalogue. `load` is asked once per row
+that `sync()` registers without dialling. `connection` is a hash of the command or url the list was
+fetched over, `env` and `headers` included, so a list from before a row was pointed somewhere else
+is not offered as its tools and the cache never holds a secret. Delete a row's entry when you
+delete the row.
+
+With that, a lazy pool sends a complete catalogue on its first turn having spawned nothing.
 
 `idleTimeoutMs` resets on every use, and `McpServerConfig.idleTimeoutMs` overrides it per server —
 `0` opts one out entirely. A reap is a **success** path, not a crash: the server goes back to
@@ -428,6 +466,45 @@ The index is then empty for ever, so `tools()`, `catalog()` and `state().tools` 
 `call()` refuses every name — without waking anything, since connecting a server could not index
 it either. `client()` is the surface that remains, and `probe()` is unaffected: a probe exists to
 report what a config offers.
+
+## Loading tools on demand
+
+Thirty MCP tools with real schemas are past a small model's context before the system prompt, so
+an agent loop sends a catalogue and a handful of schemas and lets the model ask for the rest. The
+pool's half of that is four things:
+
+```ts
+const servers = agent.serverIds;
+
+mcp.catalog(servers);                                   // every name and description, no schemas
+mcp.tools({ names: mcp.alwaysLoaded(servers), servers }); // the schemas sent before it asks
+mcp.search("read the config file", { servers, limit: 8 }); // the catalogue, cut to this turn
+mcp.tools({ names: asked, servers });                   // what `load_tools` came back with
+```
+
+None of them connects a server; a cold one answers from [its last-known
+list](#what-a-cold-server-offers).
+
+**`alwaysLoad`** is on the row, the mirror of `hiddenTools`: the tools an operator wants in front
+of the model from the first turn, by the server's own names. The row is where it is said so each
+consumer does not keep that list somewhere else. `alwaysLoaded()` answers with qualified names and
+only ones `tools()` would hand back — a name the server does not offer, or a hidden one, is left
+out rather than sent on to be skipped and logged.
+
+**`search()`** returns `catalog()`'s shape holding only what matched, servers ordered by their best
+tool and tools best first. The ranking is word overlap — a query word scores once, by the best
+place it turned up: the tool's name, then its title, then its description, then its server's slug
+and label. Names are split on punctuation and camelCase, and `reads`, `reading` and `read` are one
+word. No embedding and no dependency: it is a shortlist, where roughly right about which thirty of
+a hundred and forty is the whole job. `rankTools` is exported for ranking a list of your own.
+
+**`tokens`** is on every tool in `catalog()`, `search()` and `state()`: an estimate of what its
+whole definition costs to send, at four characters a token over the JSON `tools()` hands out —
+label prefix and schema included, and the same rough count agent-core budgets with. And `tools()`
+says so in `log.info` when the set it was asked for comes to more than `toolsTokenWarning` (default
+3000, `0` to silence). Ollama's default `num_ctx` is 4096 and a runtime that is overrun truncates
+without a word, so this is the only place the problem is ever stated. It is said once, and again
+only for a larger set than the last one reported — an agent loop asks every iteration.
 
 ## Past the agent surface
 
@@ -812,7 +889,8 @@ A close's `reason` is one of `idle`, `stop`, `reconnect`, `removed`, `changed`, 
 shows where the close left the server.
 
 `tools-changed` follows a `tools/list_changed` that moved the fingerprint; one that changed
-nothing is not reported. A tool whose description or schema changed is in neither `added` nor
+nothing is not reported. So does a cold server that comes back offering other tools than its
+last-known list. A tool whose description or schema changed is in neither `added` nor
 `removed`, so the fingerprints are what say a change happened.
 
 Listeners run synchronously as each thing happens. One that throws is logged and skipped, since a

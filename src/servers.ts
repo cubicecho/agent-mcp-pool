@@ -290,6 +290,11 @@ export function validateServerConfig(row: unknown): string[] {
     (value) => Array.isArray(value) && value.every(isString),
     "a list of tool names",
   );
+  optional(
+    "alwaysLoad",
+    (value) => Array.isArray(value) && value.every(isString),
+    "a list of tool names",
+  );
   errors.push(...validateHooks(row.hooks));
   return errors;
 }

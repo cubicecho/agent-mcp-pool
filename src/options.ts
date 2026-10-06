@@ -1,7 +1,7 @@
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ElicitRequestParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import type { TransportFactory } from "./transport.ts";
-import type { HookOutcome, McpServerConfig } from "./types.ts";
+import type { HookOutcome, McpServerConfig, ToolsCache } from "./types.ts";
 
 /**
  * What a pool and its methods are told: the constructor's options and each call's.
@@ -189,6 +189,26 @@ export interface McpPoolOptions {
    */
   indexTools?: boolean;
   /**
+   * Where each server's tool list is kept between processes, so a lazy pool can offer a server's
+   * tools before anything has connected it — see `ToolsCache`.
+   *
+   * Read when a row is registered without being dialled, and written after a connect or a re-list
+   * whose tools differ from what is cached. Within one process nothing needs it: a reaped or
+   * stopped server keeps its last-known list either way.
+   */
+  toolsCache?: ToolsCache;
+  /**
+   * How many estimated tokens of tool definitions `tools()` hands out before it says so in
+   * `log.info`. Default 3000; `0` never says anything.
+   *
+   * A local runtime's default context is a few thousand tokens — Ollama's `num_ctx` is 4096 — and
+   * one that is overrun truncates without a word, so thirty real schemas are gone before the
+   * system prompt and nothing anywhere reports it. Said once, and again only for a larger set
+   * than the last one reported. `CatalogServer.tools[].tokens` is the number per tool, for a
+   * consumer that wants to be strict rather than told.
+   */
+  toolsTokenWarning?: number;
+  /**
    * Builds each connection's transport instead of `createTransport`.
    *
    * For a test that wants a server without a child — `memoryTransport` from
@@ -218,6 +238,14 @@ export interface ToolsOptions {
    * "no servers linked" is a real state.
    */
   servers?: Iterable<string>;
+}
+
+/** What `search()` takes besides the query. */
+export interface SearchOptions {
+  /** The run's scope, read the way `catalog` reads it: absent is every server, empty is none. */
+  servers?: Iterable<string>;
+  /** The most tools to return, across every server. Default 10. */
+  limit?: number;
 }
 
 /** What `state()` takes: whether the rows it reports come back with their credentials. */

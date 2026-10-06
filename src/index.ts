@@ -16,6 +16,7 @@ export type {
   ElicitResult,
   Notification,
   ServerCapabilities,
+  Tool,
   ToolAnnotations,
 } from "@modelcontextprotocol/sdk/types.js";
 export { type CoercedArguments, coerceArguments } from "./arguments.ts";
@@ -48,12 +49,14 @@ export type {
   McpPoolOptions,
   PoolLog,
   RunHooksOptions,
+  SearchOptions,
   StateOptions,
   ToolsOptions,
 } from "./options.ts";
 export { McpPool } from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
 export { resultText, truncateText } from "./results.ts";
+export { rankTools, type SearchableTool } from "./search.ts";
 export {
   fromMcpServersJson,
   type McpServersJsonOptions,
@@ -73,6 +76,7 @@ export {
   type TransportOptions,
 } from "./transport.ts";
 export type {
+  CachedTools,
   CatalogServer,
   ClientIdentity,
   HookContext,
@@ -92,4 +96,5 @@ export type {
   ToolDefinition,
   ToolHook,
   ToolInfo,
+  ToolsCache,
 } from "./types.ts";

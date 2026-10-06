@@ -18,7 +18,7 @@ import type { McpServerConfig, McpServerPublicConfig } from "./types.ts";
  * child on the other end of the pipe was still the one started with the old arguments.
  *
  * Shallow but for the fields that are containers: the ones `sameConnection` reads by value, and
- * `hiddenTools` and `hooks`, which are read at call time and so must not change under the pool
+ * `hiddenTools`, `alwaysLoad` and `hooks`, which are read at call time and so must not change under the pool
  * either. A hook's `args` is arbitrary JSON, hence the clone.
  *
  * A branch per arm, because a row carries only its own transport's fields — and copying by arm is
@@ -37,6 +37,7 @@ export function copyConfig(config: McpServerConfig): McpServerConfig {
         }
       : { ...config, headers: config.headers ? { ...config.headers } : config.headers };
   if (config.hiddenTools) copy.hiddenTools = [...config.hiddenTools];
+  if (config.alwaysLoad) copy.alwaysLoad = [...config.alwaysLoad];
   if (config.hooks) copy.hooks = structuredClone(config.hooks);
   return copy;
 }

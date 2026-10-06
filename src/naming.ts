@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { labelOf, NAME_CHARS, slugOf } from "./namespace.ts";
 import { truncateText } from "./results.ts";
-import { defined } from "./shape.ts";
+import { defined, estimateTokens } from "./shape.ts";
 import type { McpServerConfig, ToolDefinition } from "./types.ts";
 
 /** Between a server's namespace and its tool's own name, in every name the model sees. */
@@ -44,6 +44,8 @@ export interface PooledTool {
   /** `<slug>__<name>`: what the model sees, and what it calls. */
   qualified: string;
   definition: ToolDefinition;
+  /** Roughly what `definition` costs a request — see `estimateTokens`. */
+  tokens: number;
 }
 
 /**
@@ -115,7 +117,7 @@ export function couldQualify(slug: string, qualified: string) {
  */
 export function pooledTool(
   config: McpServerConfig,
-  tool: Omit<PooledTool, "qualified" | "definition">,
+  tool: Omit<PooledTool, "qualified" | "definition" | "tokens">,
   maxDescriptionChars?: number,
 ): PooledTool {
   const slug = slugOf(config);
@@ -123,28 +125,32 @@ export function pooledTool(
   // Picked rather than spread: `relabel` hands back a whole `PooledTool`, and its old `definition`
   // must not outlive the name it was built under.
   const { name, description, parameters, title, annotations, outputSchema, meta } = tool;
+  // Frozen because `tools()` hands this very object out rather than a copy — the agent loop
+  // rebuilds its tool array every iteration, and copying every schema each time to guard
+  // against an edit nobody makes is the wrong trade. Frozen, an edit that would have silently
+  // rewritten what every later run is offered fails at the edit instead. Shallow on purpose:
+  // `parameters` is the server's own schema, passed through untouched, and deep-freezing an
+  // arbitrary object costs a walk per tool for a case nobody has hit.
+  const definition: ToolDefinition = Object.freeze({
+    type: "function",
+    function: Object.freeze({
+      name: qualified,
+      description: truncateText(
+        `[${labelOf(config)}] ${tool.description}`.trim(),
+        maxDescriptionChars,
+      ),
+      parameters: tool.parameters,
+    }),
+  });
   return {
     name,
     description,
     parameters,
     ...defined({ title, annotations, outputSchema, meta }),
     qualified,
-    // Frozen because `tools()` hands this very object out rather than a copy — the agent loop
-    // rebuilds its tool array every iteration, and copying every schema each time to guard
-    // against an edit nobody makes is the wrong trade. Frozen, an edit that would have silently
-    // rewritten what every later run is offered fails at the edit instead. Shallow on purpose:
-    // `parameters` is the server's own schema, passed through untouched, and deep-freezing an
-    // arbitrary object costs a walk per tool for a case nobody has hit.
-    definition: Object.freeze({
-      type: "function",
-      function: Object.freeze({
-        name: qualified,
-        description: truncateText(
-          `[${labelOf(config)}] ${tool.description}`.trim(),
-          maxDescriptionChars,
-        ),
-        parameters: tool.parameters,
-      }),
-    }),
+    definition,
+    // Of the definition as it is sent — label prefix, truncation and schema included — since that
+    // is what a request is charged for.
+    tokens: estimateTokens(JSON.stringify(definition)),
   };
 }
