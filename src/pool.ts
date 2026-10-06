@@ -26,7 +26,12 @@ import { couldQualify, labelOf, type PooledTool, pooledTool, qualify, slugOf } f
 import { probe as probeConfig } from "./probe.ts";
 import { resultText, truncateText } from "./results.ts";
 import { sameConnection } from "./servers.ts";
-import { createTransport, readStderrTail, type TransportFactory } from "./transport.ts";
+import {
+  createTransport,
+  readStderrTail,
+  sessionLost,
+  type TransportFactory,
+} from "./transport.ts";
 import type {
   CatalogServer,
   HookContext,
@@ -453,6 +458,11 @@ export class McpPool {
   /** Everything currently subscribed to server→client notifications, across every server. */
   private listeners = new Set<(id: string, notification: Notification) => void>();
   private eventListeners = new Set<(event: PoolEvent) => void>();
+
+  /** The requests still running on each client, so a redial can wait for them. See `renew`. */
+  private inFlight = new WeakMap<Client, Set<Promise<unknown>>>();
+  /** The redial each client that lost its session is being, or was, replaced by. See `renew`. */
+  private renewals = new WeakMap<Client, Promise<void>>();
   private readonly lazy: boolean;
   private readonly idleTimeoutMs?: number;
   private readonly indexTools: boolean;
@@ -1468,6 +1478,106 @@ export class McpPool {
   }
 
   /**
+   * Runs `run` against a server's client, on a new connection if the server has dropped the
+   * session the current one was opened with.
+   *
+   * What a consumer holding `client()` would otherwise have to write itself: a remote server that
+   * restarts or reaps a session keeps answering, so nothing closes and `client()` goes on handing
+   * back a client whose every request is refused — see `sessionLost`. Here the first such refusal
+   * redials the server and `run` is called once more with the new client. `call()` does the same.
+   *
+   * `run` may therefore be called twice, the second time only after a refusal that came before
+   * the server dispatched anything. Requests sharing a client share one redial, and it waits for
+   * the ones still in flight rather than closing the client under them.
+   *
+   * @param id The config id, not the slug.
+   * @param run The request, or several. Use the client it is given rather than one kept from an
+   *   earlier call.
+   * @returns What `run` resolved with.
+   * @throws {McpPoolError} Whatever `client()` throws, on the first connection or the second.
+   *   Anything else `run` rejects with is passed through untouched.
+   */
+  use<T>(id: string, run: (client: Client) => Promise<T>): Promise<T> {
+    return this.client(id).then((client) => this.attempt(id, client, () => this.client(id), run));
+  }
+
+  /**
+   * One request, sent again on a new connection where the first was refused for its session.
+   *
+   * @param id The server `client` belongs to.
+   * @param client The client to try first.
+   * @param fresh Reads the server's client again after a redial, by whichever door the caller
+   *   came in through.
+   * @param run The request.
+   */
+  private async attempt<T>(
+    id: string,
+    client: Client,
+    fresh: () => Promise<Client>,
+    run: (client: Client) => Promise<T>,
+  ): Promise<T> {
+    const again = async () => {
+      await this.renew(id, client);
+      const next = await fresh();
+      return this.track(next, run(next));
+    };
+    // Already known to be dead and on its way out: a request sent on it now is refused at best,
+    // and at worst is the one in flight when the redial closes it.
+    if (this.renewals.has(client)) return again();
+    try {
+      return await this.track(client, run(client));
+    } catch (error) {
+      if (!sessionLost(client.transport, error)) throw error;
+      return again();
+    }
+  }
+
+  /** Holds `request` as in flight on `client` until it settles. */
+  private track<T>(client: Client, request: Promise<T>): Promise<T> {
+    const running = this.inFlight.get(client) ?? new Set();
+    this.inFlight.set(client, running);
+    running.add(request);
+    const done = () => running.delete(request);
+    request.then(done, done);
+    return request;
+  }
+
+  /**
+   * Replaces a client whose server has dropped its session, once however many requests ask.
+   *
+   * Keyed by the client rather than the server: a burst of requests all hears the same refusal,
+   * and each asking for its own redial would have the second close the connection the first had
+   * just made. The entry is left as it is where it no longer holds this client — something else
+   * replaced or stopped it first, and that is the newer decision.
+   *
+   * @param id The server to redial.
+   * @param stale The client that was refused.
+   * @returns Resolves once the redial has been tried. A failed one leaves the server at `error`,
+   *   as any failed connect does.
+   */
+  private renew(id: string, stale: Client): Promise<void> {
+    let renewed = this.renewals.get(stale);
+    if (!renewed) {
+      // Not every request on this client was refused: one sent before the session went may still
+      // be streaming its answer, and closing the client now fails it for no reason of its own.
+      renewed = Promise.allSettled([...(this.inFlight.get(stale) ?? [])]).then(() =>
+        this.queue(async () => {
+          const entry = this.entries.get(id);
+          if (!entry || entry.client !== stale) return;
+          this.log.info?.(
+            `[mcp] ${slugOf(entry.config)}: the server dropped its session, redialling`,
+          );
+          await this.close(entry, "redial");
+          await this.connect(entry.config, true);
+          this.reindex();
+        }),
+      );
+      this.renewals.set(stale, renewed);
+    }
+    return renewed;
+  }
+
+  /**
    * Runs one tool call and returns text for a tool message.
    *
    * `servers` is checked again here rather than trusted from the definitions the caller was
@@ -1618,39 +1728,53 @@ export class McpPool {
     // the next call without bouncing the child. One request, so a plain timeout rather than a
     // `requestBudget`; budgets are for sequences.
     const timeoutMs = ownTimeoutMs ?? entry?.config.callTimeoutMs ?? this.callTimeoutMs;
-    const result = await found.client
-      .callTool(
-        { name: found.tool.name, arguments: args },
-        undefined,
-        // Built only when there is something to say: a `timeout: undefined` handed to the SDK is
-        // not the same as none, depending on how it reads the field. Deliberately without
-        // `resetTimeoutOnProgress`: a long call that reports progress is still cut off at this
-        // number. The alternative is a bound a server can hold open indefinitely by talking, which
-        // is not a bound. A consumer that wants the other reading has `client()`.
-        signal || timeoutMs != null
-          ? {
-              ...(signal ? { signal } : {}),
-              ...(timeoutMs != null ? { timeout: timeoutMs } : {}),
-            }
-          : undefined,
-      )
-      .catch((error: unknown) => {
-        // The SDK's own timeout, coded: a caller deciding whether to retry should not have to
-        // recognise "MCP error -32001" to find out the tool was merely slow.
-        if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
-          throw new McpPoolError(
-            "timeout",
-            `"${qualifiedName}" timed out after ${timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS}ms`,
-            {
-              toolName: qualifiedName,
-              serverId: found.serverId,
-              timeoutMs: timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
-              cause: error,
-            },
-          );
-        }
-        throw error;
-      });
+    const result = await this.attempt(
+      found.serverId,
+      found.client,
+      // Read back from the index rather than through `client()`: the redial indexed the server
+      // again, and a tool it no longer offers is one this call can no longer make.
+      async () => {
+        const client = this.index.get(qualifiedName)?.client;
+        if (client) return client;
+        throw new McpPoolError(
+          "unknown-tool",
+          `no connected MCP server offers a tool called "${qualifiedName}"`,
+          { toolName: qualifiedName, serverId: found.serverId },
+        );
+      },
+      (client) =>
+        client.callTool(
+          { name: found.tool.name, arguments: args },
+          undefined,
+          // Built only when there is something to say: a `timeout: undefined` handed to the SDK is
+          // not the same as none, depending on how it reads the field. Deliberately without
+          // `resetTimeoutOnProgress`: a long call that reports progress is still cut off at this
+          // number. The alternative is a bound a server can hold open indefinitely by talking, which
+          // is not a bound. A consumer that wants the other reading has `client()`.
+          signal || timeoutMs != null
+            ? {
+                ...(signal ? { signal } : {}),
+                ...(timeoutMs != null ? { timeout: timeoutMs } : {}),
+              }
+            : undefined,
+        ),
+    ).catch((error: unknown) => {
+      // The SDK's own timeout, coded: a caller deciding whether to retry should not have to
+      // recognise "MCP error -32001" to find out the tool was merely slow.
+      if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+        throw new McpPoolError(
+          "timeout",
+          `"${qualifiedName}" timed out after ${timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS}ms`,
+          {
+            toolName: qualifiedName,
+            serverId: found.serverId,
+            timeoutMs: timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+            cause: error,
+          },
+        );
+      }
+      throw error;
+    });
 
     // The compatibility arm of the SDK's union is a pre-2024 server answering `toolResult`; it has
     // no blocks either way, and `resultText` already reads it as empty.
