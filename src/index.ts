@@ -55,6 +55,7 @@ export type {
 } from "./options.ts";
 export { McpPool } from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
+export type { ResultCacheOptions } from "./result-cache.ts";
 export { resultText, truncateText } from "./results.ts";
 export { rankTools, type SearchableTool } from "./search.ts";
 export {

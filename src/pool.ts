@@ -27,10 +27,11 @@ import type {
   ToolsOptions,
 } from "./options.ts";
 import { probe as probeConfig } from "./probe.ts";
+import { ResultCache } from "./result-cache.ts";
 import { resultText, truncateText } from "./results.ts";
 import { rankTools } from "./search.ts";
 import { sameConnection } from "./servers.ts";
-import { defined } from "./shape.ts";
+import { canonicalJson, defined } from "./shape.ts";
 import {
   createTransport,
   readStderrTail,
@@ -109,6 +110,8 @@ interface CallTrace {
   /** How much the tool said, before any cap and before `NO_OUTPUT` stood in for nothing. */
   chars?: number;
   truncated?: boolean;
+  /** The answer came from the result cache. */
+  cached?: boolean;
 }
 
 /** Milliseconds since a `performance.now()` reading, rounded: an event is not a benchmark. */
@@ -191,6 +194,8 @@ export class McpPool {
   private readonly elicitationModes: ("form" | "url")[];
   private readonly createTransport: TransportFactory;
   private readonly toolsCache?: McpPoolOptions["toolsCache"];
+  /** Recent answers of tools that are safe to repeat, where the consumer asked for one. */
+  private readonly results?: ResultCache;
 
   /**
    * @param options See `McpPoolOptions`. All optional: a pool with no `load` is one driven by
@@ -218,6 +223,7 @@ export class McpPool {
     indexTools = true,
     createTransport: transportFactory = createTransport,
     toolsCache,
+    resultCache,
   }: McpPoolOptions = {}) {
     this.load = load;
     this.clientName = clientName;
@@ -239,6 +245,7 @@ export class McpPool {
     this.indexTools = indexTools;
     this.createTransport = transportFactory;
     this.toolsCache = toolsCache;
+    this.results = resultCache ? new ResultCache(resultCache) : undefined;
     this.log = log ?? {
       info: (message) => console.log(message),
       error: (message) => console.error(message),
@@ -852,6 +859,8 @@ export class McpPool {
   private announce(entry: Entry, before: string, had: readonly PooledTool[]) {
     const after = entry.fingerprint ?? "";
     if (after === before) return false;
+    // A tool that kept its name may not have kept its meaning, or its annotations.
+    this.results?.clear(entry.config.id);
     const was = new Set(had.map((tool) => tool.name));
     const now = new Set(entry.tools.map((tool) => tool.name));
     this.log.info?.(
@@ -931,6 +940,7 @@ export class McpPool {
     if (entry.closing) return;
     this.disarm(entry);
     this.forget(entry);
+    this.results?.clear(entry.config.id);
     const reason = this.fail(entry, "the server closed the connection");
     // Cleared rather than kept as a last-known list, unlike a reap: `state()` must not read as a
     // server that is down but still has tools to offer.
@@ -999,6 +1009,9 @@ export class McpPool {
   private async close(entry: Entry, reason: PoolCloseReason) {
     entry.closing = true;
     this.disarm(entry);
+    // Whatever replaces this connection is a server that may answer differently — restarted,
+    // re-pointed, or simply later than a reap.
+    this.results?.clear(entry.config.id);
     const open = entry.client !== undefined;
     try {
       await entry.client?.close();
@@ -1577,7 +1590,8 @@ export class McpPool {
    *   `maxResultChars` where one is set — see `resultText` for what each kind of content block flattens
    *   to, including a server that answers with `structuredContent` and no blocks at all — or
    *   `"(no output)"` when the server returned nothing whatsoever. A tool that answers with
-   *   `isError` throws instead.
+   *   `isError` throws instead. Where `resultCache` is on, a repeat of a call that is safe to
+   *   repeat is answered without asking the server — see `McpPoolOptions.resultCache`.
    * @throws {McpPoolError} `unknown-tool` (a hidden tool included), or `out-of-scope` for a tool
    *   this run may not reach. All carry the same message, so the model cannot tell them apart.
    *   `invalid-arguments` where the arguments fail the tool's schema after coercion, with a
@@ -1668,6 +1682,7 @@ export class McpPool {
       coerce: ownCoerce,
       maxResultChars: ownMaxResultChars,
       raw = false,
+      cache: useCache = true,
     } = options;
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
@@ -1732,6 +1747,40 @@ export class McpPool {
       args = coerced.args;
     }
 
+    const cap = ownMaxResultChars ?? entry?.config.maxResultChars ?? this.maxResultChars;
+    /** What a successful call answers with, from the server or from memory. */
+    const answer = (text: string) => {
+      trace.chars = text.length;
+      const shown = text || NO_OUTPUT;
+      const out = truncateText(shown, cap);
+      trace.truncated = out.length < shown.length;
+      return out;
+    };
+
+    // Only a tool that says repeating it is safe, on a row that says to believe it: annotations
+    // are the server's claims, and a cache acting on a false one swallows a real side effect.
+    const { readOnlyHint = false, idempotentHint = false } =
+      (entry?.config.trustAnnotations && found.tool.annotations) || {};
+    const results = this.results;
+    // Not a `raw` call: what is kept is the text, and its blocks are what that caller wants.
+    const key =
+      results && !raw && (readOnlyHint || idempotentHint)
+        ? `${found.serverId}\n${found.tool.name}\n${canonicalJson(args)}`
+        : undefined;
+    // After the refusals and the coercion, so a hit is never an answer to a run that may not
+    // reach the tool, and two spellings of the same arguments are one entry.
+    if (results && key !== undefined && useCache) {
+      const held = results.get(key);
+      if (held !== undefined) {
+        trace.cached = true;
+        return answer(held);
+      }
+    }
+    // Anything else that reaches the server may have changed what its reads would say. Cleared
+    // before and after: a read that lands while a write is in flight has cached one or the other.
+    const writes = results !== undefined && !readOnlyHint;
+    if (writes) results.clear(found.serverId);
+
     // This call's own first — a hook's 3s on the path of a turn — then the row, then the pool's
     // default, then the SDK's own 60s behind that: the same order `connectTimeoutMs` is read in,
     // and read here rather than held on the entry for the same reason: an edited number applies to
@@ -1764,29 +1813,32 @@ export class McpPool {
               }
             : undefined,
         ),
-    ).catch((error: unknown) => {
-      // The SDK's own timeout, coded: a caller deciding whether to retry should not have to
-      // recognise "MCP error -32001" to find out the tool was merely slow.
-      if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
-        throw new McpPoolError(
-          "timeout",
-          `"${qualifiedName}" timed out after ${timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS}ms`,
-          {
-            toolName: qualifiedName,
-            serverId: found.serverId,
-            timeoutMs: timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
-            cause: error,
-          },
-        );
-      }
-      throw error;
-    });
+    )
+      .catch((error: unknown) => {
+        // The SDK's own timeout, coded: a caller deciding whether to retry should not have to
+        // recognise "MCP error -32001" to find out the tool was merely slow.
+        if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
+          throw new McpPoolError(
+            "timeout",
+            `"${qualifiedName}" timed out after ${timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS}ms`,
+            {
+              toolName: qualifiedName,
+              serverId: found.serverId,
+              timeoutMs: timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+              cause: error,
+            },
+          );
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (writes) results.clear(found.serverId);
+      });
 
     // The compatibility arm of the SDK's union is a pre-2024 server answering `toolResult`; it has
     // no blocks either way, and `resultText` already reads it as empty.
     if (raw) return result as CallToolResult;
 
-    const cap = ownMaxResultChars ?? entry?.config.maxResultChars ?? this.maxResultChars;
     const text = resultText(result);
     trace.chars = text.length;
     // The server ran the tool and the tool failed — not one of the pool's refusals, which is why
@@ -1799,10 +1851,10 @@ export class McpPool {
         serverId: found.serverId,
       });
     }
-    const shown = text || NO_OUTPUT;
-    const out = truncateText(shown, cap);
-    trace.truncated = out.length < shown.length;
-    return out;
+    // Whole, before the cap: the next caller may have another one. Never a failure — the throw
+    // above is every `isError`, and a refusal never got this far.
+    if (key !== undefined) results?.set(found.serverId, key, text);
+    return answer(text);
   }
 
   /**

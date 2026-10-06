@@ -1,5 +1,6 @@
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ElicitRequestParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
+import type { ResultCacheOptions } from "./result-cache.ts";
 import type { TransportFactory } from "./transport.ts";
 import type { HookOutcome, McpServerConfig, ToolsCache } from "./types.ts";
 
@@ -198,6 +199,21 @@ export interface McpPoolOptions {
    */
   toolsCache?: ToolsCache;
   /**
+   * Answer a repeated call from memory instead of asking the server again. Off unless given;
+   * `{}` turns it on with the defaults — see `ResultCacheOptions`.
+   *
+   * A local model often makes the same read twice in a turn, and each is a round trip and the
+   * same tokens of answer. Only for a tool that says repeating it is safe — `readOnlyHint` or
+   * `idempotentHint` — on a row that says its annotations are to be believed
+   * (`trustAnnotations`), because a cache that swallows a second `send_email` is worse than none.
+   *
+   * Keyed on the tool and its arguments after coercion, key order aside. Never holds a failure.
+   * A server's answers go when its connection closes for any reason, when its tool list changes,
+   * and when any call that is not read-only reaches it — what was read before a write is not what
+   * would be read after it.
+   */
+  resultCache?: ResultCacheOptions;
+  /**
    * How many estimated tokens of tool definitions `tools()` hands out before it says so in
    * `log.info`. Default 3000; `0` never says anything.
    *
@@ -298,6 +314,13 @@ export interface CallOptions {
    * timeout still apply; no truncation does, and an `isError` result is returned, not thrown.
    */
   raw?: boolean;
+  /**
+   * `false` asks the server whatever `resultCache` holds, and stores what it says — a refresh.
+   *
+   * There is no `true` that means more than the default: what may be cached is decided by the
+   * tool's annotations and the row's `trustAnnotations`, and a caller cannot vouch for a tool.
+   */
+  cache?: boolean;
   /** How long the request gets, overriding the row's `callTimeoutMs` and the pool's. */
   timeoutMs?: number;
   /**

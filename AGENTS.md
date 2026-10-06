@@ -91,6 +91,12 @@ slug, and a slug scored as a name puts every tool of a server called `files` lev
 list written against a server that can change under it; a name passed on unfiltered is one
 `tools()` skips and logs every turn.
 
+**The result cache believes an annotation only where the row says to.** `readOnlyHint` or
+`idempotentHint`, *and* `trustAnnotations` on the row; a caller's `cache: true` cannot stand in for
+either, since a caller cannot vouch for a tool. The lookup sits after the scope and hidden
+refusals and after coercion, and anything that is not read-only clears its server's entries —
+before and after, since a read can land while the write is in flight.
+
 **The tools cache is written behind the connect, never in front of it.** `remember` is not
 awaited and its failure is a log line; a store that is slow or down costs the next cold start's
 catalogue and nothing on this one. It is stamped with `connectionFingerprint` — a hash, since two

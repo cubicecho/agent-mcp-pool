@@ -58,6 +58,16 @@ interface McpServerBase {
    */
   coerceArguments?: boolean | null;
   /**
+   * Whether the pool may act on what this server's tools say about themselves — today, whether a
+   * tool that declares `readOnlyHint` or `idempotentHint` may be answered from `resultCache`.
+   *
+   * Off unless set. The spec calls annotations untrusted, and here that has teeth: a server that
+   * marks a tool with side effects read-only gets its second call swallowed. An operator turns it
+   * on for a server they have read, the same judgement as auto-approving on `destructiveHint`.
+   * Read at call time, so an edit applies without a reconnect.
+   */
+  trustAnnotations?: boolean | null;
+  /**
    * The most characters a `call()` to this server returns, overriding the pool's
    * `maxResultChars`. `null` and absent mean "use the pool's"; `0` is no cap for this server.
    */
@@ -609,4 +619,6 @@ export type PoolEvent =
       error?: string;
       chars?: number;
       truncated?: boolean;
+      /** Set where the answer came from `resultCache` and the server was not asked. */
+      cached?: boolean;
     };
