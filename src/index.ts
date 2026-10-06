@@ -25,6 +25,7 @@ export {
   type McpPoolErrorCode,
   type McpPoolErrorOptions,
 } from "./errors.ts";
+export { type FingerprintedTool, toolsFingerprint } from "./fingerprint.ts";
 export {
   type ContextBlocks,
   contextBlocks,

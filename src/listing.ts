@@ -8,7 +8,7 @@ import { requestBudget } from "./budget.ts";
  * `Tool` is exported from the SDK's types too, but the method's own return type is the one that
  * cannot drift from what `listTools` actually hands back.
  */
-type ListedTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
+export type ListedTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
 
 /**
  * More pages than a real tool list has, and the only bound on the walk when nothing set a timeout.

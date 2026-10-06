@@ -41,3 +41,22 @@ export function defined<T extends Record<string, unknown>>(
     [K in keyof T]?: Exclude<T[K], undefined>;
   };
 }
+
+/**
+ * JSON with every object's keys in sorted order, so two values that are equal print alike.
+ *
+ * `JSON.stringify` keeps insertion order, and a server is free to send a schema's keys in a
+ * different order on every `tools/list`. Anything that hashes or compares the text has to be rid
+ * of that first, or it reports a change where there was none.
+ *
+ * @returns The text, with `undefined` printed as `null` at the top level so it is always a string.
+ */
+export function canonicalJson(value: unknown): string {
+  return (
+    JSON.stringify(value, (_key, held: unknown) =>
+      isPlainObject(held)
+        ? Object.fromEntries(Object.entries(held).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+        : held,
+    ) ?? "null"
+  );
+}

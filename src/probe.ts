@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { dial } from "./dial.ts";
 import { errorMessage } from "./errors.ts";
+import { toolsFingerprint } from "./fingerprint.ts";
 import { defined } from "./shape.ts";
 import type { TransportFactory, TransportOptions } from "./transport.ts";
 import { createTransport, readStderrTail } from "./transport.ts";
@@ -78,12 +79,19 @@ export async function probe(
         description,
         ...defined({ title, annotations }),
       })),
+      toolsFingerprint: toolsFingerprint(tools),
       // A cached read of the handshake this probe already made. What a row offers is not only its
       // tool list: a server's instructions are what its tools are for.
       instructions: mcpClient.getInstructions() ?? "",
     };
   } catch (error) {
-    return { ok: false, error: stderrTail() || errorMessage(error), tools: [], instructions: "" };
+    return {
+      ok: false,
+      error: stderrTail() || errorMessage(error),
+      tools: [],
+      toolsFingerprint: "",
+      instructions: "",
+    };
   } finally {
     await mcpClient.close().catch(() => {});
   }

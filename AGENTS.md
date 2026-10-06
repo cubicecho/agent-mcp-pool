@@ -97,6 +97,15 @@ tool left on page two is not merely unlisted — it is absent from `index`, so `
 as one that does not exist. `listAllTools` is the one walk; a `resources/list` or `prompts/list`
 added later paginates the same way.
 
+**A re-list swaps the list where the entry stands.** `tools()` answers in configuration order and
+then the server's own, and that order is what a prompt cache's prefix is made of — so a
+`tools/list_changed` replaces `entry.tools` in place and reindexes, never appends. It is queued
+like a connect, gated on the client it arrived on, and a failed walk keeps the old list.
+
+**A fingerprint is of what the server said, not of what the pool made of it.** Name, description,
+input schema and annotations, sorted — never the slug, the label or the listing order, or a rename
+reads as a rug pull.
+
 **A connect timeout is a deadline, not a per-request allowance.** `initialize` and every page of
 the drain spend one clock — `requestBudget` is the countdown they share. Handing the same number
 to each request instead makes the real ceiling `timeout × (1 + pages)`, and the page count is not

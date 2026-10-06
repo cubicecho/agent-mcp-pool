@@ -32,6 +32,11 @@ Arguments as a model wrote them, brought into line with the schema the server pu
 - `McpPoolErrorCode` (type) — Which of the pool's refusals this is.
 - `McpPoolErrorOptions` (type) — What an `McpPoolError` carries beyond its message.
 
+### fingerprint
+
+- `FingerprintedTool` (type) — What of a tool `toolsFingerprint` reads — the fields `tools/list` sends them under.
+- `toolsFingerprint` — A stable hash of what a server says its tools are, for noticing when that changes.
+
 ### hooks
 
 MCP tools as lifecycle hooks — the half that needs no connection.
