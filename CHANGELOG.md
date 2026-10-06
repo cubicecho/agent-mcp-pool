@@ -1,3 +1,11 @@
+## [3.6.1](https://github.com/cubicecho/agent-mcp-pool/compare/v3.6.0...v3.6.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* drop a stopped server's tools before its close, not after ([04a8a71](https://github.com/cubicecho/agent-mcp-pool/commit/04a8a713383e2d629ca3cff5e910d1fbf2985749))
+* hear a hook tool that answers with the pool's placeholder text ([e1dd335](https://github.com/cubicecho/agent-mcp-pool/commit/e1dd335823cc13ef7588ade9c05ed43f1e70265e))
+
 # [3.6.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.5.0...v3.6.0) (2026-10-06)
 
 
