@@ -1,3 +1,10 @@
+# [3.8.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.7.0...v3.8.0) (2026-10-20)
+
+
+### Features
+
+* authProvider on http servers, for MCP servers that want an OAuth login ([b42d3fb](https://github.com/cubicecho/agent-mcp-pool/commit/b42d3fb43b8d6c18fbcf01fc5cc5b35812077abe))
+
 # [3.7.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.6.1...v3.7.0) (2026-10-06)
 
 
