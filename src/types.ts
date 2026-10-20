@@ -1,3 +1,4 @@
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { ServerCapabilities, Tool, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { McpPoolErrorCode } from "./errors.ts";
 
@@ -261,6 +262,20 @@ export interface HttpServerConfig extends McpServerBase {
   transport: "http";
   url: string;
   headers?: Record<string, string> | null;
+  /**
+   * Signs the transport's requests with OAuth, for a server that asks for a login rather than a key.
+   *
+   * Handed to the SDK's `StreamableHTTPClientTransport` as is: it attaches the access token,
+   * refreshes it when the server refuses an expired one, and — when there is nothing to refresh
+   * with — calls `redirectToAuthorization` and fails the connect with an `UnauthorizedError`. The
+   * pool records that like any failed connect; the consumer, which owns the browser half of the
+   * flow, is the one that can do something about it.
+   *
+   * Not part of `sameConnection`: a provider is an object holding state, not a value, and a
+   * consumer that builds a fresh one per sync would otherwise reconnect on every sync. Tokens
+   * changing under it is the provider's business — the transport asks it on every request.
+   */
+  authProvider?: OAuthClientProvider | null;
 }
 
 /**
@@ -299,7 +314,13 @@ export interface ClientIdentity {
  * shape this package moved away from.
  */
 type ConnectionOf<T> = T extends unknown
-  ? Pick<T, Extract<keyof T, "transport" | "command" | "args" | "env" | "cwd" | "url" | "headers">>
+  ? Pick<
+      T,
+      Extract<
+        keyof T,
+        "transport" | "command" | "args" | "env" | "cwd" | "url" | "headers" | "authProvider"
+      >
+    >
   : never;
 
 /**
@@ -337,7 +358,8 @@ export type McpServerPublicConfig = PublicRow<McpServerConfig>;
  * credential fields, and `Pick` refuses a key its argument does not have.
  */
 type PublicRow<T> = T extends unknown
-  ? Omit<T, "env" | "headers"> & Partial<Pick<T, Extract<keyof T, "env" | "headers">>>
+  ? Omit<T, "env" | "headers" | "authProvider"> &
+      Partial<Pick<T, Extract<keyof T, "env" | "headers">>>
   : never;
 
 /**

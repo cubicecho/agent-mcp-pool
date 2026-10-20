@@ -74,6 +74,31 @@ test("an http transport puts the row's headers on the wire", async () => {
 });
 
 /**
+ * The provider is what a login-gated server needs: its token goes on the request, beside the
+ * row's own headers rather than instead of them.
+ */
+test("an http transport signs its requests with the row's authProvider", async () => {
+  const seen: { headers?: http.IncomingHttpHeaders; path?: string } = {};
+  const url = await recording(seen);
+  const authProvider = {
+    redirectUrl: "http://localhost/callback",
+    clientMetadata: { redirect_uris: ["http://localhost/callback"] },
+    clientInformation: () => ({ client_id: "c" }),
+    tokens: () => ({ access_token: "from-oauth", token_type: "Bearer" }),
+    saveTokens: () => {},
+    redirectToAuthorization: () => {},
+    saveCodeVerifier: () => {},
+    codeVerifier: () => "v",
+  };
+
+  const transport = createTransport(config({ url, headers: { "x-extra": "kept" }, authProvider }));
+  await expect(transport.send(ping)).rejects.toThrow();
+
+  expect(seen.headers?.authorization).toBe("Bearer from-oauth");
+  expect(seen.headers?.["x-extra"]).toBe("kept");
+});
+
+/**
  * `headers` is nullable on the row, and the option it feeds is not. A null arriving as
  * `{ headers: null }` is the kind of thing that only shows up against a real server.
  */

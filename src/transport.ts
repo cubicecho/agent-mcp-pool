@@ -131,6 +131,7 @@ export function createTransport(config: McpConnection, options: TransportOptions
   return new StreamableHTTPClientTransport(new URL(config.url), {
     requestInit: { headers: config.headers ?? {} },
     fetch: options.fetch ?? sharedFetch,
+    authProvider: config.authProvider ?? undefined,
   });
 }
 
