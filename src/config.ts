@@ -54,15 +54,16 @@ export function copyConfig(config: McpServerConfig): McpServerConfig {
  */
 export function reportedConfig(config: McpServerConfig, secrets: boolean): McpServerPublicConfig {
   const copy = copyConfig(config);
-  if (secrets) return copy;
+  if (secrets && copy.transport === "stdio") return copy;
   // One credential field per arm, stripped by arm: a row carries only its own transport's
   // fields now, so there is no single destructure that names both.
   if (copy.transport === "stdio") {
     const { env, ...rest } = copy;
     return rest;
   }
-  const { headers, ...rest } = copy;
-  return rest;
+  // The provider goes either way: it is an object with methods, not a credential a form can show.
+  const { headers, authProvider: _provider, ...rest } = copy;
+  return secrets && "headers" in copy ? { ...rest, headers } : rest;
 }
 
 /**

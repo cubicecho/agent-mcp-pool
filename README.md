@@ -1001,6 +1001,25 @@ already holds reuses its connection. This is why `undici` is a dependency: Node 
 set the idle time of its own `fetch`, and a global dispatcher would change every request the
 consumer makes rather than the pool's.
 
+### Servers that want a login
+
+A remote server that speaks MCP's OAuth — Home Assistant's, most hosted ones — has no key to put
+in `headers`. Give the row an `authProvider` (the SDK's `OAuthClientProvider`) and the transport
+signs every request with its token and refreshes it when it expires:
+
+```ts
+mcp.sync([{ id: "ha", transport: "http", url: "https://ha.example/api/mcp", authProvider }]);
+```
+
+With nothing to refresh with, the SDK calls the provider's `redirectToAuthorization` and the
+connect fails with an `UnauthorizedError`, recorded like any other failed connect. The browser
+half — opening that URL, taking the code back at a callback, `auth(provider, { authorizationCode })`
+— is the consumer's, because the pool has no browser and no route to take a callback on. Once the
+provider holds tokens, `stop(id)` clears the backoff and the next use dials again.
+
+The provider is not part of `sameConnection` — it is an object with state, not a value — and
+`state()` never reports it, `secrets` or not.
+
 ## Naming
 
 Tools are `<slug>__<tool name>`, capped at 64 characters for OpenAI's function-name limit, and
