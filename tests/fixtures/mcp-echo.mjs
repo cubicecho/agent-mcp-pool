@@ -10,6 +10,7 @@ import {
   ListResourceTemplatesRequestSchema,
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
+  SetLevelRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
 // One line per process started. The pool is supposed to keep one child per configured server,
@@ -86,6 +87,9 @@ const server = new Server(
       // pool must not ask — is what every other test talks to.
       ...(process.env.MCP_ECHO_PROMPTS ? { prompts: {} } : {}),
       ...(process.env.MCP_ECHO_COMPLETIONS ? { completions: {} } : {}),
+      // Off unless asked, like prompts: a server that never declared `logging` must not be sent
+      // `logging/setLevel`, and most servers are that one.
+      ...(process.env.MCP_ECHO_LOGGING ? { logging: {} } : {}),
     },
     // What a server tells a model about itself, returned by `initialize` beside the capabilities.
     // Off unless a test asks, since most of them are not about it — and a server that sends none
@@ -149,6 +153,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // A tool that is slow rather than broken: the case a call timeout is for, and the one a connect
   // timeout says nothing about because the handshake already finished. Also what an abort cuts.
   if (args.sleepMs) await new Promise((done) => setTimeout(done, Number(args.sleepMs)));
+  // What a server says about a call while it runs, sent before the answer the way a real one
+  // reports a retry or a rebuild. After the sleep, so two calls sleeping side by side are both in
+  // flight when they speak. `logCount` is a chatty server; `logs` is exactly these messages.
+  for (const params of args.logs ?? []) {
+    await server.notification({ method: "notifications/message", params });
+  }
+  for (let n = 0; n < Number(args.logCount ?? 0); n++) {
+    const level = n === Number(args.logCount) - 1 ? "error" : "debug";
+    await server.notification({
+      method: "notifications/message",
+      params: { level, data: `#${n}` },
+    });
+  }
   // The tool itself failing, which MCP reports as a successful response carrying `isError` rather
   // than as a protocol error — so nothing below the pool distinguishes it from an answer. A string
   // is the message to fail with.
@@ -327,6 +344,15 @@ if (process.env.MCP_ECHO_PROMPTS) {
       default:
         throw new Error(`no prompt called ${request.params.name}`);
     }
+  });
+}
+
+// Every level the client set, one per line, so a test can see what was sent and how often.
+if (process.env.MCP_ECHO_LOGGING) {
+  server.setRequestHandler(SetLevelRequestSchema, (request) => {
+    if (process.env.MCP_ECHO_LEVEL_LOG)
+      appendFileSync(process.env.MCP_ECHO_LEVEL_LOG, `${request.params.level}\n`);
+    return {};
   });
 }
 

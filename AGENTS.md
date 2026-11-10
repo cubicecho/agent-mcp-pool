@@ -163,6 +163,13 @@ same connection, dropped by a crash, a failed dial or a changed connection — m
 in `unlist`, which a reap of a server listing nothing goes through. `catalog()` carries
 `instructions` too, so agent-core can render them without a `state()` read per host.
 
+**A server's log message is a call's only when that call is the one request in flight.** SDK 1.30
+hands a notification handler the notification alone and its transports drop which stream carried
+it, so elimination is the whole of the attribution: two in flight is no answer, and the message
+goes to `onNotification`. `logSinks` is keyed by the same promise `track` holds, so `relayLog` can
+go from "the one request running here" to the call that made it. One relayed to `onLog` is not
+also handed to `onNotification`; past `maxLogsPerCall` it is, and the call gets one summary.
+
 **The pool holds its own copy of every row, and `state()` hands back another.** An entry aliasing
 the caller's object makes `sameConnection` compare a row against itself, so an in-place edit never
 reconnects. `state()` also drops `env` and `headers` unless asked: the documented reader of that

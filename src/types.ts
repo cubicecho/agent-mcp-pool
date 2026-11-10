@@ -1,5 +1,6 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
+  LoggingLevel,
   Prompt,
   Resource,
   ResourceTemplate,
@@ -81,6 +82,16 @@ interface McpServerBase {
    * `maxResultChars`. `null` and absent mean "use the pool's"; `0` is no cap for this server.
    */
   maxResultChars?: number | null;
+  /**
+   * How much this server logs, sent as `logging/setLevel` once it connects — and again when an
+   * edit changes it on a live server, since a level is no reason to restart the child.
+   *
+   * Only to a server whose handshake declared `logging`: the SDK refuses the request to any other.
+   * `null` and absent mean "use the pool's", and where the pool has none either nothing is sent
+   * and the server keeps its own default. What it logs during a call reaches that call's
+   * `CallOptions.onLog`; the rest reaches `onNotification`.
+   */
+  logLevel?: LoggingLevel | null;
   /**
    * This server's tools the model is not offered, by the server's own names.
    *
@@ -711,6 +722,24 @@ export interface ToolAnswer {
    * none; optional so a dispatcher of another kind need not say so.
    */
   links?: ResourceLink[];
+}
+
+/**
+ * One `notifications/message` a server sent while a call was running, as `CallOptions.onLog` is
+ * handed it.
+ *
+ * The notification's own `params`, unchanged, so a host can show it the way the server wrote it.
+ * The one entry the pool writes itself is the summary of what a call's cap dropped: it carries
+ * `dropped`, the most severe level among them, and a sentence as `data`.
+ */
+export interface ServerLogEntry {
+  level: LoggingLevel;
+  /** The server's name for the part of itself that logged, where it gave one. */
+  logger?: string;
+  /** Whatever the server sent: a string usually, any JSON value by the spec. */
+  data: unknown;
+  /** Set only on the cap's summary: how many messages past the cap the call did not hear. */
+  dropped?: number;
 }
 
 /**

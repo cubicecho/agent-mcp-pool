@@ -14,6 +14,7 @@ Full prose, worked examples and the reasoning behind each seam are in README.md;
 - `CallToolResult` (type)
 - `ElicitRequestParams` (type)
 - `ElicitResult` (type)
+- `LoggingLevel` (type)
 - `Notification` (type)
 - `Prompt` (type)
 - `PromptReference` (type)
@@ -120,6 +121,7 @@ What a pool and its methods are told: the constructor's options and each call's.
 Questions about server rows that need neither a connection nor Node — for the form that edits one.
 
 - `fromMcpServersJson` — Rows from the `mcpServers` JSON that Claude Desktop, Claude Code, Cursor and most server READMEs describe a server with.
+- `LOG_LEVELS` — Every level `logging/setLevel` takes, least severe first — syslog's, as the spec has them.
 - `McpServersJsonOptions` (type) — What `fromMcpServersJson` needs besides the JSON.
 - `sameConnection` — Whether two rows describe the same live connection.
 - `serversWith` — The connected servers that offer a capability — the filter every host wrote for itself.
@@ -157,6 +159,7 @@ Questions about server rows that need neither a connection nor Node — for the 
 - `PoolEvent` (type) — Something the pool did, as `McpPool.onEvent` reports it.
 - `ResourceLink` (type) — A `resource_link` block a tool answered with, less its `type`: a handle to something the call made or found — a document it wrote, a file it saved.
 - `ResourceText` (type) — A resource read back as text, by `McpPool.readResource()`.
+- `ServerLogEntry` (type) — One `notifications/message` a server sent while a call was running, as `CallOptions.onLog` is handed it.
 - `ServerPrompts` (type) — One server's prompts, as `McpPool.prompts()` lists them.
 - `ServerResources` (type) — One server's resources and resource templates, as `McpPool.resources()` lists them.
 - `StdioServerConfig` (type) — A server reached by spawning a child process and speaking MCP over its stdio.
@@ -204,9 +207,11 @@ Importable in a browser as `@cubicecho/agent-mcp-pool/servers`: nothing here, an
 - `serversWith` — The connected servers that offer a capability — the filter every host wrote for itself.
 - `McpServersJsonOptions` (type) — What `fromMcpServersJson` needs besides the JSON.
 - `fromMcpServersJson` — Rows from the `mcpServers` JSON that Claude Desktop, Claude Code, Cursor and most server READMEs describe a server with.
+- `LOG_LEVELS` — Every level `logging/setLevel` takes, least severe first — syslog's, as the spec has them.
 - `validateServerConfig` — What is wrong with a row, for the form that saves it — before `sync()` is handed it.
 - `validateServers` — What is wrong with a whole list of rows, for the form that saves one into it.
 - `HttpServerConfig` (type)
+- `LoggingLevel` (type)
 - `McpServerConfig` (type)
 - `McpServerState` (type)
 - `ServerCapabilities` (type)

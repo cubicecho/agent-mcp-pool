@@ -7,13 +7,14 @@
  * `McpPoolOptions.load`.
  */
 
-// Re-exported so a consumer can type an `onNotification` or `onElicit` listener, or the
-// capabilities `state()` reports, without depending on the SDK's module layout — which this
+// Re-exported so a consumer can type an `onNotification` or `onElicit` listener, a row's
+// `logLevel`, or the capabilities `state()` reports, without depending on the SDK's module layout — which this
 // package pins through its peer dependency anyway.
 export type {
   CallToolResult,
   ElicitRequestParams,
   ElicitResult,
+  LoggingLevel,
   Notification,
   Prompt,
   PromptReference,
@@ -84,6 +85,7 @@ export {
 export { rankTools, type SearchableTool } from "./search.ts";
 export {
   fromMcpServersJson,
+  LOG_LEVELS,
   type McpServersJsonOptions,
   sameConnection,
   serversWith,
@@ -119,6 +121,7 @@ export type {
   PoolEvent,
   ResourceLink,
   ResourceText,
+  ServerLogEntry,
   ServerPrompts,
   ServerResources,
   StdioServerConfig,

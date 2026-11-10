@@ -1,4 +1,4 @@
-import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import type { LoggingLevel, ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import { validateHooks } from "./hooks.ts";
 import { NAME_CHARS } from "./namespace.ts";
 import { isPlainObject, parseJson, wholeNumber } from "./shape.ts";
@@ -19,6 +19,7 @@ import type {
 
 export type {
   HttpServerConfig,
+  LoggingLevel,
   McpServerConfig,
   McpServerState,
   ServerCapabilities,
@@ -228,6 +229,24 @@ function runtimeEnv(): Record<string, string | undefined> {
   return host.process?.env ?? {};
 }
 
+/**
+ * Every level `logging/setLevel` takes, least severe first — syslog's, as the spec has them.
+ *
+ * Written out rather than read off the SDK's schema, which is a runtime import of zod into a
+ * module a browser loads for a select box. Severity is the index, which is how the pool picks
+ * the worst of what a call's cap dropped.
+ */
+export const LOG_LEVELS: readonly LoggingLevel[] = [
+  "debug",
+  "info",
+  "notice",
+  "warning",
+  "error",
+  "critical",
+  "alert",
+  "emergency",
+];
+
 /** A namespace made only of what a qualified tool name may hold — see `NAME_CHARS`. */
 const NAMESPACE = new RegExp(`^[${NAME_CHARS}]+$`);
 
@@ -286,6 +305,11 @@ export function validateServerConfig(row: unknown): string[] {
   optional("maxResultChars", (value) => wholeNumber(value, 0), "a whole number, 0 or more");
   optional("coerceArguments", (value) => typeof value === "boolean", "true or false");
   optional("trustAnnotations", (value) => typeof value === "boolean", "true or false");
+  optional(
+    "logLevel",
+    (value) => LOG_LEVELS.includes(value as LoggingLevel),
+    `one of ${LOG_LEVELS.join(", ")}`,
+  );
   optional(
     "hiddenTools",
     (value) => Array.isArray(value) && value.every(isString),
