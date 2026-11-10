@@ -1,3 +1,10 @@
+# [3.9.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.8.0...v3.9.0) (2026-11-10)
+
+
+### Features
+
+* links: true answers call() with { text, links } ([3a2158a](https://github.com/cubicecho/agent-mcp-pool/commit/3a2158a5c8f3dc71e425c625927d390d85730bf8)), closes [#105](https://github.com/cubicecho/agent-mcp-pool/issues/105)
+
 # [3.8.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.7.0...v3.8.0) (2026-10-20)
 
 
