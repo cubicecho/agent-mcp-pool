@@ -975,7 +975,7 @@ drops the rest. `PoolLog` is exported so a consumer can declare one rather than 
 ## Notifications
 
 Anything a server sends that the SDK does not handle itself — `tools/list_changed`,
-`resources/list_changed`, `prompts/list_changed`, `resources/updated`, `logging/message` — is
+`resources/list_changed`, `prompts/list_changed`, `resources/updated`, a server's log — is
 dropped unless someone is listening:
 
 ```ts
@@ -986,7 +986,8 @@ const stop = pool.onNotification((id, notification) => {
 
 The server id comes first because a listener hears from every server at once and the notification
 does not say where it came from. The handler is installed before each connect and reinstalled on
-a respawn, so a `logging/message` sent during a server's own startup is not missed. An agent loop
+a respawn, so a log message sent during a server's own startup is not missed — and a log message
+a call's `onLog` heard is not repeated here; see below. An agent loop
 can ignore all of this, but a consumer relaying the protocol onward cannot.
 
 `tools/list_changed` is the one the pool acts on as well as forwards. It lists that server's tools
@@ -998,6 +999,52 @@ the list as it was, and a pool with `indexTools: false` does not list at all.
 a re-list keeps the server's slot. Prompt caching on every local runtime — llama.cpp's prefix
 cache, Ollama, vLLM's automatic prefix caching — depends on the tool array being byte-identical
 from turn to turn, and a changed server appended to the end would move every definition after it.
+
+### A server's log, per call
+
+When a tool fails or answers strangely, the server has often said why in its log — "rate
+limited, retrying", "index stale, rebuilding" — and on `onNotification` that reaches nobody
+looking at the call. Two things bring it to the call instead.
+
+A **level** per row, sent as `logging/setLevel` once a server connects, to a server whose
+handshake declared `logging` (the SDK refuses the request to any other). Absent or `null` on the
+row is the pool's `logLevel`; with neither, nothing is sent and the server keeps its own default.
+An edit to the level reaches a live server without restarting it. `LOG_LEVELS` lists the eight
+the spec allows, for a form's select, and `validateServerConfig` refuses anything else.
+
+```ts
+new McpPool({ load, logLevel: "warning" });          // every server that logs
+{ id: "search", url: "...", logLevel: "debug" }       // this one, while you chase something
+```
+
+**`onLog`** on a call hears that server's `notifications/message` while the call runs:
+
+```ts
+await pool.call(name, input, { onLog: ({ level, logger, data }) => report(level, data) });
+```
+
+A message relayed there is not also handed to `onNotification`. A call hears at most
+`maxLogsPerCall` messages (50 by default); the rest go to `onNotification`, and the call hears one
+summary when it settles — `dropped` set to how many, at the most severe level among them — so a
+server at `debug` cannot bury a run's events.
+
+**Which call a message belongs to is a guess by elimination, and that is the SDK's limit, not a
+choice.** The 2026-07-28 revision carries a request-scoped notification on the response stream of
+its request, but SDK 1.30 speaks 2025-11-25 at most, hands a client's notification handler the
+notification and nothing else, and its streamable-http transport drops which stream a message
+arrived on. So a message is a call's when that call is the only request the pool has in flight on
+the connection:
+
+- Two in flight — another call, a hook, a `use()` — and neither hears it; it goes to
+  `onNotification`.
+- While a call is the only one, whatever the server logs is heard as that call's, including a
+  line about some background job of its own.
+- A request the pool makes outside a call — a re-list after `tools/list_changed`, a prompt
+  expansion — is not counted as in flight, so a message during one can be credited to a call
+  running beside it.
+
+If a later SDK exposes the related request, the rule can become exact without the option
+changing shape.
 
 ## Events
 

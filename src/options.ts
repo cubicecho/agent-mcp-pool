@@ -1,8 +1,12 @@
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { ElicitRequestParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  ElicitRequestParams,
+  ElicitResult,
+  LoggingLevel,
+} from "@modelcontextprotocol/sdk/types.js";
 import type { ResultCacheOptions } from "./result-cache.ts";
 import type { TransportFactory } from "./transport.ts";
-import type { HookOutcome, McpServerConfig, ToolsCache } from "./types.ts";
+import type { HookOutcome, McpServerConfig, ServerLogEntry, ToolsCache } from "./types.ts";
 
 /**
  * What a pool and its methods are told: the constructor's options and each call's.
@@ -127,6 +131,20 @@ export interface McpPoolOptions {
    * in full: this is a wire limit, not an opinion about what a tool should say for itself.
    */
   maxDescriptionChars?: number;
+  /**
+   * The level every server that declares `logging` is set to on connect. Unset sends nothing,
+   * leaving each server its own default. `McpServerConfig.logLevel` overrides it for one server.
+   */
+  logLevel?: LoggingLevel;
+  /**
+   * The most of a server's log messages one call's `onLog` hears. Defaults to 50.
+   *
+   * A server set to `debug` can say hundreds of things during one call, and each one a host turns
+   * into a run event is a row someone has to scroll past to find the warning. Past the cap the
+   * call hears one summary when it settles — how many, and the worst level among them — and the
+   * messages themselves go to `onNotification` as though nobody had asked.
+   */
+  maxLogsPerCall?: number;
   /**
    * Answers a server that asks the user for input mid-call: MCP's `elicitation/create`.
    *
@@ -370,6 +388,20 @@ export interface CallOptions {
   cache?: boolean;
   /** How long the request gets, overriding the row's `callTimeoutMs` and the pool's. */
   timeoutMs?: number;
+  /**
+   * Hears what the server logs while this call is running: its `notifications/message`, at the
+   * level the row's `logLevel` set.
+   *
+   * Attributed by elimination, not by id. The SDK hands a client's notification handler the
+   * notification alone, and its transports drop which response stream carried it, so nothing
+   * says which request a message belongs to; a message is this call's when this call is the
+   * only request the pool has in flight on that connection. With two in flight — another call,
+   * a hook, a `use()` — neither hears it, and it goes to `onNotification` as before. What the
+   * server logs about something else while this is its only call is heard here too. Capped at
+   * `McpPoolOptions.maxLogsPerCall`, with one summary entry for what the cap dropped; a message
+   * relayed here is not also handed to `onNotification`. A listener that throws is logged.
+   */
+  onLog?: (entry: ServerLogEntry) => void;
   /**
    * Reach a tool the row's `hiddenTools` keeps from the model. For the host's own calls — hooks —
    * never for a name the model sent, which is the whole of what hiding is for.

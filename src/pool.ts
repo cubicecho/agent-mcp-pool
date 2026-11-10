@@ -4,6 +4,7 @@ import {
   type CallToolResult,
   ElicitRequestSchema,
   ErrorCode,
+  type LoggingLevel,
   McpError,
   type Notification,
   type PromptReference,
@@ -50,7 +51,7 @@ import {
   truncateText,
 } from "./results.ts";
 import { rankTools } from "./search.ts";
-import { sameConnection } from "./servers.ts";
+import { LOG_LEVELS, sameConnection } from "./servers.ts";
 import { canonicalJson, defined, estimateTokens } from "./shape.ts";
 import {
   createTransport,
@@ -72,6 +73,7 @@ import type {
   PoolCloseReason,
   PoolEvent,
   ResourceText,
+  ServerLogEntry,
   ServerPrompts,
   ServerResources,
   ToolAnswer,
@@ -139,6 +141,32 @@ interface Handshake {
 
 /** What a server sends when the set of tools it offers has changed. */
 const TOOLS_LIST_CHANGED = "notifications/tools/list_changed";
+
+/** What a server logs with: the logging utility's one notification. */
+const LOG_MESSAGE = "notifications/message";
+
+/** How many log messages one call hears before the rest are summarised. */
+const DEFAULT_MAX_LOGS_PER_CALL = 50;
+
+/** One call listening for its server's log: who hears it, and what the cap has kept back. */
+interface LogSink {
+  onLog: (entry: ServerLogEntry) => void;
+  heard: number;
+  dropped: number;
+  /** The most severe level among the dropped, as an index into `LOG_LEVELS`. */
+  worst: number;
+}
+
+/**
+ * A `notifications/message` read as an entry, or `undefined` for one that is not shaped like the
+ * spec's — which is left to `onNotification`, where a listener can make of it what it likes.
+ */
+function logEntry(params: Notification["params"]): ServerLogEntry | undefined {
+  const level = params?.level as LoggingLevel | undefined;
+  if (!level || !LOG_LEVELS.includes(level) || !params || !("data" in params)) return undefined;
+  const { logger } = params;
+  return { level, ...(typeof logger === "string" ? { logger } : {}), data: params.data };
+}
 
 /** What `invoke` learns about a call on the way, for the `call` event. */
 interface CallTrace {
@@ -230,6 +258,8 @@ export class McpPool {
 
   /** The requests still running on each client, so a redial can wait for them. See `renew`. */
   private inFlight = new WeakMap<Client, Set<Promise<unknown>>>();
+  /** The calls in `inFlight` that asked to hear their server's log, by request. See `relayLog`. */
+  private logSinks = new WeakMap<Promise<unknown>, LogSink>();
   /** The redial each client that lost its session is being, or was, replaced by. See `renew`. */
   private renewals = new WeakMap<Client, Promise<void>>();
   private readonly lazy: boolean;
@@ -249,6 +279,8 @@ export class McpPool {
   private readonly coerceArguments: boolean;
   private readonly maxResultChars?: number;
   private readonly maxDescriptionChars?: number;
+  private readonly logLevel?: LoggingLevel;
+  private readonly maxLogsPerCall: number;
   private readonly toolsTokenWarning: number;
   /** The largest over-limit tool set `tools()` has reported. See `weigh`. */
   private weighed = 0;
@@ -277,6 +309,8 @@ export class McpPool {
     coerceArguments = true,
     maxResultChars,
     maxDescriptionChars,
+    logLevel,
+    maxLogsPerCall = DEFAULT_MAX_LOGS_PER_CALL,
     toolsTokenWarning = 3000,
     onElicit,
     elicitationModes = ["form"],
@@ -299,6 +333,8 @@ export class McpPool {
     this.coerceArguments = coerceArguments;
     this.maxResultChars = maxResultChars;
     this.maxDescriptionChars = maxDescriptionChars;
+    this.logLevel = logLevel;
+    this.maxLogsPerCall = maxLogsPerCall;
     this.toolsTokenWarning = toolsTokenWarning;
     this.onElicit = onElicit;
     this.elicitationModes = elicitationModes;
@@ -561,10 +597,14 @@ export class McpPool {
   private relabel(entry: Entry, config: McpServerConfig) {
     const renamed = slugOf(entry.config) !== slugOf(config) || entry.config.label !== config.label;
     const reclocked = entry.config.idleTimeoutMs !== config.idleTimeoutMs;
+    const relevelled = this.levelOf(entry.config) !== this.levelOf(config);
     entry.config = copyConfig(config);
     // An edited idle timeout is no reason to restart the child, but the armed timer is still
     // running the old one, so re-arm rather than let it fire on a stale duration.
     if (reclocked) this.touch(entry);
+    // Nor is a level. A level taken away is left as the server has it — there is no request that
+    // means "back to your default" — and the next connect sends nothing.
+    if (relevelled && entry.client) this.setLevel(entry, entry.client);
     if (!renamed) return;
     entry.tools = entry.tools.map((tool) => pooledTool(config, tool, this.maxDescriptionChars));
   }
@@ -770,6 +810,7 @@ export class McpPool {
       // send `logging/message` or `tools/list_changed` during its own startup, and a handler
       // installed after `listTools` would have missed it.
       client.fallbackNotificationHandler = async (notification) => {
+        if (notification.method === LOG_MESSAGE && this.relayLog(dialled, notification)) return;
         this.notify(config.id, notification);
         if (notification.method === TOOLS_LIST_CHANGED) this.relist(entry, dialled);
       };
@@ -804,6 +845,7 @@ export class McpPool {
       };
       this.adopt(entry, tools);
       this.remember(entry, tools);
+      this.setLevel(entry, client);
       // Installed only once the server is up: a child that dies mid-handshake is reported by
       // `connect` rejecting, and `onClose` firing then would race the success path below.
       client.onclose = () => this.onClose(entry);
@@ -1301,6 +1343,94 @@ export class McpPool {
       } catch (error) {
         this.log.error?.(`[mcp] ${id}: notification listener threw: ${errorMessage(error)}`);
       }
+    }
+  }
+
+  /** The level a row asks for: its own, else the pool's, else none at all. */
+  private levelOf(config: McpServerConfig): LoggingLevel | undefined {
+    return config.logLevel ?? this.logLevel;
+  }
+
+  /**
+   * Sends a server the level its row asks for, if it asks for one and the server logs.
+   *
+   * Not awaited by the connect: a server that is slow to answer it is no less ready to answer a
+   * tool, and the request is on the wire ahead of any call made after this, so the server reads
+   * it first anyway. A refusal is a log line — a server that cannot be quietened is still one
+   * whose tools work.
+   *
+   * @param entry The server, for its row and its name.
+   * @param client The connection to set it on. Passed rather than read off the entry, since a
+   *   connect sets the level before anything else could have replaced it.
+   */
+  private setLevel(entry: Entry, client: Client) {
+    const level = this.levelOf(entry.config);
+    // The SDK refuses the request itself to a server that did not declare `logging`, so this is
+    // the same answer without a rejection to swallow.
+    if (!level || !client.getServerCapabilities()?.logging) return;
+    const timeoutMs = entry.config.callTimeoutMs ?? this.callTimeoutMs;
+    client
+      .setLoggingLevel(level, timeoutMs != null ? { timeout: timeoutMs } : undefined)
+      .catch((error: unknown) => {
+        // A connection closed under the request says nothing about the level.
+        if (entry.client !== client) return;
+        this.log.error?.(
+          `[mcp] ${slugOf(entry.config)}: logging/setLevel ${level}: ${errorMessage(error)}`,
+        );
+      });
+  }
+
+  /**
+   * Hands a server's log message to the call it belongs to, where one can be named.
+   *
+   * Named by elimination: the SDK gives a notification handler the notification alone, and the
+   * http transport drops which response stream carried it, so the only call a message can be
+   * pinned on is the one request in flight on its connection. Two in flight is two candidates
+   * and no answer. Past the call's cap the message is counted for the summary and left to
+   * `onNotification`, as is one with no listening call.
+   *
+   * @param client The connection the message arrived on.
+   * @param notification A `notifications/message`.
+   * @returns Whether a call heard it, in which case nobody else is told.
+   */
+  private relayLog(client: Client, notification: Notification): boolean {
+    const running = this.inFlight.get(client);
+    if (running?.size !== 1) return false;
+    const [only] = running;
+    const sink = this.logSinks.get(only);
+    const entry = sink && logEntry(notification.params);
+    if (!sink || !entry) return false;
+    if (sink.heard >= this.maxLogsPerCall) {
+      sink.dropped += 1;
+      sink.worst = Math.max(sink.worst, LOG_LEVELS.indexOf(entry.level));
+      return false;
+    }
+    sink.heard += 1;
+    this.hear(sink, entry);
+    return true;
+  }
+
+  /**
+   * Tells a call what the cap kept from it, once it has settled and the count is final.
+   *
+   * At the worst level among the dropped, so an error past the cap is not summarised as noise.
+   */
+  private summarise(sink: LogSink) {
+    if (sink.dropped === 0) return;
+    const { dropped } = sink;
+    this.hear(sink, {
+      level: LOG_LEVELS[sink.worst] ?? "debug",
+      data: `${dropped} more message${dropped === 1 ? "" : "s"} dropped`,
+      dropped,
+    });
+  }
+
+  /** `onLog`, kept from throwing into the SDK's handler — the same reasoning as `notify`. */
+  private hear(sink: LogSink, entry: ServerLogEntry) {
+    try {
+      sink.onLog(entry);
+    } catch (error) {
+      this.log.error?.(`[mcp] log listener threw: ${errorMessage(error)}`);
     }
   }
 
@@ -2036,6 +2166,7 @@ export class McpPool {
       raw = false,
       links: withLinks = false,
       cache: useCache = true,
+      onLog,
     } = options;
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
@@ -2140,6 +2271,9 @@ export class McpPool {
     // the next call without bouncing the child. One request, so a plain timeout rather than a
     // `requestBudget`; budgets are for sequences.
     const timeoutMs = ownTimeoutMs ?? entry?.config.callTimeoutMs ?? this.callTimeoutMs;
+    // One for the call rather than one per attempt, so a redial carries the count and the cap
+    // across the second request instead of granting the server a fresh allowance.
+    const sink: LogSink | undefined = onLog ? { onLog, heard: 0, dropped: 0, worst: 0 } : undefined;
     const result = await this.attempt(
       found.serverId,
       client,
@@ -2150,8 +2284,8 @@ export class McpPool {
         if (redialled) return redialled;
         throw refusal("unknown-tool", found.serverId);
       },
-      (client) =>
-        client.callTool(
+      (client) => {
+        const request = client.callTool(
           { name: found.tool.name, arguments: args },
           undefined,
           // Built only when there is something to say: a `timeout: undefined` handed to the SDK is
@@ -2165,7 +2299,12 @@ export class McpPool {
                 ...(timeoutMs != null ? { timeout: timeoutMs } : {}),
               }
             : undefined,
-        ),
+        );
+        // Keyed by the very promise `track` holds as in flight, so `relayLog` can go from "the one
+        // request running here" to the call that made it.
+        if (sink) this.logSinks.set(request, sink);
+        return request;
+      },
     )
       .catch((error: unknown) => {
         // The SDK's own timeout, coded: a caller deciding whether to retry should not have to
@@ -2186,6 +2325,7 @@ export class McpPool {
       })
       .finally(() => {
         if (writes) results.clear(found.serverId);
+        if (sink) this.summarise(sink);
       });
 
     // The compatibility arm of the SDK's union is a pre-2024 server answering `toolResult`; it has
