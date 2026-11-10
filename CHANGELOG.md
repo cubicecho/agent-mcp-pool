@@ -1,3 +1,10 @@
+# [3.11.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.10.0...v3.11.0) (2026-11-10)
+
+
+### Features
+
+* carry each server's instructions on its catalog() entry ([103584a](https://github.com/cubicecho/agent-mcp-pool/commit/103584ac1e011eeac29e8a4bf38d430d6da9ecec)), closes [#107](https://github.com/cubicecho/agent-mcp-pool/issues/107)
+
 # [3.10.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.9.0...v3.10.0) (2026-11-10)
 
 
