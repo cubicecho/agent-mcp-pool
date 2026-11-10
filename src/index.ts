@@ -56,7 +56,7 @@ export type {
 export { McpPool } from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
 export type { ResultCacheOptions } from "./result-cache.ts";
-export { resultText, truncateText } from "./results.ts";
+export { resultLinks, resultText, truncateText } from "./results.ts";
 export { rankTools, type SearchableTool } from "./search.ts";
 export {
   fromMcpServersJson,
@@ -93,7 +93,9 @@ export type {
   McpStatus,
   PoolCloseReason,
   PoolEvent,
+  ResourceLink,
   StdioServerConfig,
+  ToolAnswer,
   ToolDefinition,
   ToolHook,
   ToolInfo,

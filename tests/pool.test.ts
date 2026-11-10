@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type OpenAI from "openai";
 import { afterAll, afterEach, expect, test, vi } from "vitest";
 import { McpPoolError } from "../src/errors.ts";
 import { qualify, SEPARATOR } from "../src/naming.ts";
+import type { CallOptions } from "../src/options.ts";
 import { McpPool } from "../src/pool.ts";
 import { probe } from "../src/probe.ts";
 import { makePool } from "../src/testing/index.ts";
@@ -1456,6 +1458,61 @@ test("call() keeps the text and uris a server answers with", async () => {
   expect(await pool.call("echo__echo", { structured: true })).toBe(
     '{"greeting":"hello","tools":3}',
   );
+});
+
+/**
+ * A host that keeps what a run made wants the links, and the model wants the text it always got.
+ * Before `links`, that was a `raw` call and `invoke`'s tail rebuilt outside the pool.
+ */
+test("links: true answers with the text call() returns and the result's links for the user", async () => {
+  await pool.sync([config()]);
+
+  const text = await pool.call("echo__echo", { made: true });
+  const answer = await pool.call("echo__echo", { made: true }, { links: true });
+
+  expect(answer.text).toBe(text);
+  // The model-only link is gone from `links` and still in the text; the embedded file is neither.
+  expect(answer.text).toContain("docs://notes/.scratch");
+  expect(answer.links).toEqual([
+    {
+      uri: "docs://notes/plan.md",
+      name: "plan.md",
+      title: "The plan",
+      mimeType: "text/markdown",
+      annotations: { audience: ["user", "assistant"], priority: 0.8 },
+    },
+  ]);
+  // Nothing to link is an empty list, not a missing one.
+  expect(await pool.call("echo__echo", { text: "hi" }, { links: true })).toEqual({
+    text: 'echo({"text":"hi"})',
+    links: [],
+  });
+});
+
+test("links: true still caps the text, says (no output), and throws a tool-error", async () => {
+  await pool.sync([config()]);
+
+  const cut = await pool.call("echo__echo", { made: true }, { links: true, maxResultChars: 40 });
+  expect(cut.text.length).toBeLessThanOrEqual(40);
+  expect(cut.links).toHaveLength(1);
+
+  expect(await pool.call("echo__echo", { empty: true }, { links: true })).toEqual({
+    text: "(no output)",
+    links: [],
+  });
+  await expect(pool.call("echo__echo", { fail: "nope" }, { links: true })).rejects.toMatchObject({
+    code: "tool-error",
+    message: "nope",
+  });
+});
+
+test("raw outranks links, and the raw result carries the links anyway", async () => {
+  await pool.sync([config()]);
+
+  const options: CallOptions = { raw: true, links: true };
+  const result = (await pool.call("echo__echo", { made: true }, options)) as CallToolResult;
+
+  expect(result.content).toHaveLength(4);
 });
 
 /**

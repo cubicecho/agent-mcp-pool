@@ -182,6 +182,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         },
       ],
     };
+  // What a write tool answers with: a sentence, the document it made, a link meant for the model
+  // alone, and the content of a file embedded rather than linked — only the second is the host's.
+  if (request.params.arguments?.made)
+    return {
+      content: [
+        { type: "text", text: "saved" },
+        {
+          type: "resource_link",
+          uri: "docs://notes/plan.md",
+          name: "plan.md",
+          title: "The plan",
+          mimeType: "text/markdown",
+          annotations: { audience: ["user", "assistant"], priority: 0.8 },
+        },
+        {
+          type: "resource_link",
+          uri: "docs://notes/.scratch",
+          name: ".scratch",
+          annotations: { audience: ["assistant"] },
+        },
+        {
+          type: "resource",
+          resource: { uri: "docs://notes/inline.md", mimeType: "text/markdown", text: "inline" },
+        },
+      ],
+    };
   // Structured output and no content at all — permitted, and what a server with an `outputSchema`
   // tends to answer with.
   if (request.params.arguments?.structured)

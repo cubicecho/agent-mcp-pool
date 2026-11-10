@@ -631,6 +631,25 @@ const result = await pool.call("charts__render", input, { servers, raw: true });
 Unlike `client()`, that keeps the scope and hiding checks, coercion and the timeout. Nothing is
 truncated, and an `isError` result is returned rather than thrown.
 
+A host that wants the text for the model *and* the links for itself — the document a run wrote,
+the file it saved — passes `links: true` and gets a `ToolAnswer` back:
+
+```ts
+const { text, links } = await pool.call("docs__write", input, { servers, links: true });
+// agent-core's dispatcher, in one line:
+dispatch: (call) => pool.call(call.name, call.args, { servers, links: true }),
+```
+
+`text` is exactly what `call()` returns without the option — capped, `(no output)` for nothing,
+answered from the cache where it would be — and `isError` still throws: a call that failed made
+nothing. `links` is the result's `resource_link` blocks less their `type`, in the server's order,
+and always an array. An embedded `resource` is not a link, since it is the content rather than a
+handle to it. A link whose `annotations.audience` is given and leaves out `"user"` is dropped: the
+spec's annotation says it is the model's, and its uri is in `text` as ever. `resultLinks(result)`
+is the same reading, exported. `ToolAnswer` and `ResourceLink` are declared structurally, with
+MCP's field names, so they are assignable to agent-core's own declaration of the same shape and
+neither package imports the other. `raw` outranks `links`.
+
 ### Calls a turn makes twice
 
 A local model often makes the same read twice in one turn, and each is a round trip and the same
@@ -656,7 +675,8 @@ believe, the same judgement as auto-approving on `destructiveHint`.
   for a hidden tool, because the lookup is not reached.
 - **Never a failure.** A `tool-error` is thrown as ever and asked again next time.
 - **Kept whole, cut on the way out**, so a hit obeys the `maxResultChars` of the call that asked.
-  A `raw` call is neither answered from the cache nor stored: what is kept is text.
+  A `raw` call is neither answered from the cache nor stored: what is kept is the text and the
+  links, so a hit answers a `links: true` call the same as the server did, whichever call stored it.
 - **Cleared per server** when its connection closes for any reason, when its tool list changes,
   and when any call that is not read-only reaches it — what was read before a write is not what
   would be read after it. An idempotent write is cached and clears the reads all the same.

@@ -315,6 +315,16 @@ export interface CallOptions {
    */
   raw?: boolean;
   /**
+   * Answer with a `ToolAnswer` — `{ text, links }` — rather than text alone.
+   *
+   * `text` is what `call()` returns without this, under every rule that applies to it: the cap,
+   * `"(no output)"`, the result cache. `links` is the result's `resource_link` blocks, for the host
+   * to keep — what a run made — and not for the model, which already has their uris in `text`. An
+   * `isError` result throws as it does without this: a call that failed made nothing. `raw`
+   * outranks it, since the raw result carries the links already.
+   */
+  links?: boolean;
+  /**
    * `false` asks the server whatever `resultCache` holds, and stores what it says — a refresh.
    *
    * There is no `true` that means more than the default: what may be cached is decided by the

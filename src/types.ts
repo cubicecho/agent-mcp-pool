@@ -587,6 +587,40 @@ export interface ToolDefinition {
 }
 
 /**
+ * A `resource_link` block a tool answered with, less its `type`: a handle to something the call
+ * made or found — a document it wrote, a file it saved.
+ *
+ * MCP's `ResourceLink`, declared structurally and with MCP's field names, for the reason
+ * `ToolDefinition` is: agent-core's `ToolAnswer` declares the same shape, and a dispatcher that
+ * returns this package's must be assignable to that one with neither importing the other.
+ */
+export interface ResourceLink {
+  uri: string;
+  name: string;
+  title?: string;
+  mimeType?: string;
+  description?: string;
+  /** Who the link is for, how much it matters, and when it last changed — the server's word. */
+  annotations?: { audience?: ("user" | "assistant")[]; priority?: number; lastModified?: string };
+  _meta?: Record<string, unknown>;
+}
+
+/**
+ * What `call(..., { links: true })` answers: the text a model is handed, and the result's links
+ * for the host.
+ */
+export interface ToolAnswer {
+  /** Exactly what `call()` returns without `links`: capped, and `"(no output)"` for nothing. */
+  text: string;
+  /**
+   * The result's `resource_link` blocks, in the order the server sent them, less any whose
+   * `annotations.audience` leaves out `"user"`. The pool always sets it, empty where there were
+   * none; optional so a dispatcher of another kind need not say so.
+   */
+  links?: ResourceLink[];
+}
+
+/**
  * Why a connection closed, on a `close` event.
  *
  * `idle` is a reap, `stop` is `stop()`, `reconnect` is `reconnect()`, `removed` and `changed` are a

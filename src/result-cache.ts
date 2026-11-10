@@ -6,9 +6,9 @@ export interface ResultCacheOptions {
   maxEntries?: number;
 }
 
-interface Held {
+interface Held<T> {
   serverId: string;
-  text: string;
+  answer: T;
   at: number;
 }
 
@@ -20,10 +20,12 @@ interface Held {
  * hundred files has asked for a hundred of them. The count is evicted least-recently-used.
  *
  * Deciding *what* may be cached is the pool's, not this class's; see `McpPool.call`.
+ *
+ * @typeParam T - What an answer is. The pool keeps a `ToolAnswer`, so a hit carries its links.
  */
-export class ResultCache {
+export class ResultCache<T> {
   /** In order of last use, oldest first — a `Map` keeps insertion order, and a hit re-inserts. */
-  private readonly held = new Map<string, Held>();
+  private readonly held = new Map<string, Held<T>>();
   private readonly ttlMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
@@ -42,13 +44,13 @@ export class ResultCache {
   }
 
   /** @returns The answer stored under `key`, or `undefined` if there is none or it has aged out. */
-  get(key: string): string | undefined {
+  get(key: string): T | undefined {
     const found = this.held.get(key);
     if (!found) return undefined;
     this.held.delete(key);
     if (this.ttlMs > 0 && this.now() - found.at >= this.ttlMs) return undefined;
     this.held.set(key, found);
-    return found.text;
+    return found.answer;
   }
 
   /**
@@ -56,9 +58,9 @@ export class ResultCache {
    *
    * @param serverId Whose answer it is, so `clear` can drop a server's without parsing keys.
    */
-  set(serverId: string, key: string, text: string) {
+  set(serverId: string, key: string, answer: T) {
     this.held.delete(key);
-    this.held.set(key, { serverId, text, at: this.now() });
+    this.held.set(key, { serverId, answer, at: this.now() });
     if (this.maxEntries <= 0) return;
     for (const oldest of this.held.keys()) {
       if (this.held.size <= this.maxEntries) break;
