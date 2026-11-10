@@ -6,6 +6,7 @@ import {
   ErrorCode,
   McpError,
   type Notification,
+  type ToolAnnotations,
 } from "@modelcontextprotocol/sdk/types.js";
 import { coerceArguments } from "./arguments.ts";
 import { copyConfig, inScope, reportedConfig, scope } from "./config.ts";
@@ -22,6 +23,7 @@ import type {
   McpPoolOptions,
   PoolLog,
   RunHooksOptions,
+  SafetyOptions,
   SearchOptions,
   StateOptions,
   ToolsOptions,
@@ -54,6 +56,7 @@ import type {
   ToolAnswer,
   ToolDefinition,
   ToolInfo,
+  ToolSafety,
 } from "./types.ts";
 import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
 
@@ -121,6 +124,31 @@ const elapsed = (started: number) => Math.round(performance.now() - started);
 /** Whether a row keeps one of its tools from the model. */
 const isHidden = (config: McpServerConfig, name: string) =>
   config.hiddenTools?.includes(name) ?? false;
+
+/**
+ * What a row lets the pool believe of one of its tools.
+ *
+ * The one reading of `trustAnnotations`: the result cache and `toolSafety()` both come here, so
+ * what is cached and what a host runs side by side cannot disagree about a tool. Annotations are
+ * the server's claims, so with no trust on the row — or no row, or no annotations — the answer is
+ * the worst case, which is what a host assumes without asking.
+ */
+function safetyOf(
+  config: McpServerConfig | undefined,
+  annotations: ToolAnnotations | undefined,
+): ToolSafety {
+  if (!config?.trustAnnotations || !annotations) {
+    return { readsOnly: false, idempotent: false, destructive: true };
+  }
+  const readsOnly = annotations.readOnlyHint === true;
+  return {
+    readsOnly,
+    // The spec reads `idempotentHint` and `destructiveHint` only beside a tool that writes; a
+    // read is idempotent and destroys nothing whatever else it says.
+    idempotent: readsOnly || annotations.idempotentHint === true,
+    destructive: !readsOnly && annotations.destructiveHint !== false,
+  };
+}
 
 /** What `call()` answers when a tool returned nothing: a model must be told something. */
 const NO_OUTPUT = "(no output)";
@@ -1427,6 +1455,53 @@ export class McpPool {
   }
 
   /**
+   * What a host may assume of a call to one tool: whether it only reads, whether repeating it
+   * does more than once, and whether it may destroy something.
+   *
+   * For agent-core's per-call `parallel` and `dedupeToolCalls` predicates, which otherwise each
+   * host answers by re-deriving the trust rule. Read off the annotations only where the row sets
+   * `trustAnnotations`, by the same reading the result cache makes, so the two cannot drift.
+   *
+   * Fails closed: an unknown name, one outside the scope, a hidden tool, a server that does not
+   * annotate and one whose annotations are not trusted all answer the worst case —
+   * `{ readsOnly: false, idempotent: false, destructive: true }`, which runs the call alone and
+   * every time. Synchronous and off the index, so it is cheap per call; a cold server answers from
+   * its last-known list, like `tools()`. Never connects.
+   *
+   * @param qualifiedName `<slug>__<tool>`, resolved whole.
+   * @param options `servers` is the run's scope.
+   */
+  toolSafety(qualifiedName: string, { servers }: SafetyOptions = {}): ToolSafety {
+    const found = this.index.get(qualifiedName);
+    const entry = found && this.entries.get(found.serverId);
+    // A hidden tool is assumed the worst of, as `describe()` denies it: to a run it does not exist.
+    if (
+      !found ||
+      !entry ||
+      !inScope(scope(servers), found.serverId) ||
+      isHidden(entry.config, found.tool.name)
+    ) {
+      return safetyOf(undefined, undefined);
+    }
+    return safetyOf(entry.config, found.tool.annotations);
+  }
+
+  /**
+   * Whether a call to this tool only reads: `readOnlyHint` on a server whose row sets
+   * `trustAnnotations`. False for anything else, including an unknown, hidden or out-of-scope
+   * name, a server that does not annotate, and one whose annotations are not trusted.
+   *
+   * `toolSafety(name, options).readsOnly`, for the predicate a host hands straight on:
+   * `const reads = (call) => pool.readsOnly(call.name, { servers })`.
+   *
+   * @param qualifiedName `<slug>__<tool>`, resolved whole.
+   * @param options `servers` is the run's scope.
+   */
+  readsOnly(qualifiedName: string, options?: SafetyOptions): boolean {
+    return this.toolSafety(qualifiedName, options).readsOnly;
+  }
+
+  /**
    * The connected MCP client for one server, by config id.
    *
    * Only the last mile of this pool is shaped for an agent loop; a consumer proxying the protocol
@@ -1769,13 +1844,12 @@ export class McpPool {
 
     // Only a tool that says repeating it is safe, on a row that says to believe it: annotations
     // are the server's claims, and a cache acting on a false one swallows a real side effect.
-    const { readOnlyHint = false, idempotentHint = false } =
-      (entry?.config.trustAnnotations && found.tool.annotations) || {};
+    const safety = safetyOf(entry?.config, found.tool.annotations);
     const results = this.results;
     // Not a `raw` call: what is kept is the text and the links, and the blocks are what that
     // caller wants.
     const key =
-      results && !raw && (readOnlyHint || idempotentHint)
+      results && !raw && safety.idempotent
         ? `${found.serverId}\n${found.tool.name}\n${canonicalJson(args)}`
         : undefined;
     // After the refusals and the coercion, so a hit is never an answer to a run that may not
@@ -1789,7 +1863,7 @@ export class McpPool {
     }
     // Anything else that reaches the server may have changed what its reads would say. Cleared
     // before and after: a read that lands while a write is in flight has cached one or the other.
-    const writes = results !== undefined && !readOnlyHint;
+    const writes = results !== undefined && !safety.readsOnly;
     if (writes) results.clear(found.serverId);
 
     // This call's own first — a hook's 3s on the path of a turn — then the row, then the pool's

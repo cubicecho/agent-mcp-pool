@@ -59,8 +59,9 @@ interface McpServerBase {
    */
   coerceArguments?: boolean | null;
   /**
-   * Whether the pool may act on what this server's tools say about themselves — today, whether a
-   * tool that declares `readOnlyHint` or `idempotentHint` may be answered from `resultCache`.
+   * Whether the pool may act on what this server's tools say about themselves: whether a tool
+   * that declares `readOnlyHint` or `idempotentHint` may be answered from `resultCache`, and what
+   * `McpPool.toolSafety` and `McpPool.readsOnly` tell a host deciding what to run in parallel.
    *
    * Off unless set. The spec calls annotations untrusted, and here that has teeth: a server that
    * marks a tool with side effects read-only gets its second call swallowed. An operator turns it
@@ -565,6 +566,28 @@ export interface ToolInfo {
   meta?: Record<string, unknown>;
   /** Whether the row's `hiddenTools` keeps it from the model. */
   hidden: boolean;
+}
+
+/**
+ * What a host may assume of a call to one tool, as `McpPool.toolSafety` returns it.
+ *
+ * Read off the tool's annotations only where its row sets `trustAnnotations`, and the worst case
+ * everywhere else — `false`, `false`, `true` — so a "don't know" runs a call alone and runs it
+ * every time it is asked for, which is what a host does without this.
+ */
+export interface ToolSafety {
+  /** `readOnlyHint`: the call changes nothing, so it may run beside others and be deduplicated. */
+  readsOnly: boolean;
+  /**
+   * Calling it twice with the same arguments does no more than once: `idempotentHint`, or a read.
+   * Safe to deduplicate, and not, on its own, safe to reorder — an idempotent write is a write.
+   */
+  idempotent: boolean;
+  /**
+   * The call may destroy something rather than only add to it: `destructiveHint`, which the spec
+   * defaults to true for a tool that is not read-only.
+   */
+  destructive: boolean;
 }
 
 /**

@@ -684,6 +684,28 @@ believe, the same judgement as auto-approving on `destructiveHint`.
 A hit is reported as `cached: true` on the `call` event. `ttlMs` is the bound on what the pool
 cannot see — a file edited by something else — so keep it at the length of a turn, not a session.
 
+### Which calls may run together
+
+A host running a step's tool calls has two questions the annotations answer: may these run side
+by side, and may a repeat be sent once. `toolSafety(qualified)` answers both, by the same rule the
+result cache uses, and `readsOnly(qualified)` is its first field on its own:
+
+```ts
+const reads = (call) => mcp.readsOnly(call.name, { servers });
+runAgentLoop({ parallel: reads, dedupeToolCalls: reads, ... });
+
+mcp.toolSafety("notes__put", { servers }); // { readsOnly: false, idempotent: true, destructive: true }
+```
+
+`readsOnly` is `readOnlyHint`. `idempotent` is `idempotentHint`, or a read — safe to send once,
+not on its own safe to reorder, since an idempotent write is a write. `destructive` is
+`destructiveHint`, which the spec defaults to true for anything that is not read-only. All three
+are read only where the row sets `trustAnnotations`, and everywhere else the answer is the worst
+case, `{ readsOnly: false, idempotent: false, destructive: true }`: an unknown name, one outside
+the scope, a hidden tool, a server that does not annotate, and one nobody has said to believe.
+That is sequential and not deduplicated — what a host does without asking. Both are synchronous
+off the index and never connect; a cold server answers from its last-known list.
+
 ## Arguments
 
 Local models get argument types wrong far more often than names. They send `"5"` for a number,
