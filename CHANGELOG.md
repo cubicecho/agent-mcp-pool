@@ -1,3 +1,10 @@
+# [3.10.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.9.0...v3.10.0) (2026-11-10)
+
+
+### Features
+
+* toolSafety() and readsOnly() read trusted annotations for a host ([1697fce](https://github.com/cubicecho/agent-mcp-pool/commit/1697fceda2f443724f6e7351ebacf8acc31258cd)), closes [#106](https://github.com/cubicecho/agent-mcp-pool/issues/106)
+
 # [3.9.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.8.0...v3.9.0) (2026-11-10)
 
 
