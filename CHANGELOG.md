@@ -1,3 +1,10 @@
+# [3.13.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.12.0...v3.13.0) (2026-11-10)
+
+
+### Features
+
+* relay a server's log to the call it belongs to, and set a level per row ([f309189](https://github.com/cubicecho/agent-mcp-pool/commit/f30918904a18f9fdbe8a0c09c3445a274cd42abd)), closes [#109](https://github.com/cubicecho/agent-mcp-pool/issues/109)
+
 # [3.12.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.11.0...v3.12.0) (2026-11-10)
 
 
