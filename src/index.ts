@@ -49,6 +49,7 @@ export type {
   McpPoolOptions,
   PoolLog,
   RunHooksOptions,
+  SafetyOptions,
   SearchOptions,
   StateOptions,
   ToolsOptions,
@@ -99,5 +100,6 @@ export type {
   ToolDefinition,
   ToolHook,
   ToolInfo,
+  ToolSafety,
   ToolsCache,
 } from "./types.ts";

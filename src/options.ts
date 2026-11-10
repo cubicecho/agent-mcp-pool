@@ -285,6 +285,12 @@ export interface DescribeOptions {
   hidden?: boolean;
 }
 
+/** What `toolSafety()` and `readsOnly()` take beside the name. */
+export interface SafetyOptions {
+  /** The run's scope, read as `call()` reads it: a tool outside it is assumed the worst of. */
+  servers?: Iterable<string>;
+}
+
 /**
  * How one `call()` is made, beyond its name and arguments.
  *

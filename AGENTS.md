@@ -95,7 +95,9 @@ list written against a server that can change under it; a name passed on unfilte
 `idempotentHint`, *and* `trustAnnotations` on the row; a caller's `cache: true` cannot stand in for
 either, since a caller cannot vouch for a tool. The lookup sits after the scope and hidden
 refusals and after coercion, and anything that is not read-only clears its server's entries —
-before and after, since a read can land while the write is in flight.
+before and after, since a read can land while the write is in flight. `toolSafety()` and
+`readsOnly()` read the annotations through the same `safetyOf`, so what is cached and what a host
+runs in parallel cannot disagree; every "don't know" there is the worst case.
 
 **The tools cache is written behind the connect, never in front of it.** `remember` is not
 awaited and its failure is a log line; a store that is slow or down costs the next cold start's

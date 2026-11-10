@@ -69,6 +69,7 @@ What a pool and its methods are told: the constructor's options and each call's.
 - `McpPoolOptions` (type) — How a pool is built: where its rows come from, how patient it is, and what it may spawn.
 - `PoolLog` (type) — Where the pool's own progress goes.
 - `RunHooksOptions` (type) — What `runHooks` takes beyond the event and its context.
+- `SafetyOptions` (type) — What `toolSafety()` and `readsOnly()` take beside the name.
 - `SearchOptions` (type) — What `search()` takes besides the query.
 - `StateOptions` (type) — What `state()` takes: whether the rows it reports come back with their credentials.
 - `ToolsOptions` (type) — What `tools()` takes: which tools to send, and which servers this run may reach.
@@ -143,6 +144,7 @@ Questions about server rows that need neither a connection nor Node — for the 
 - `ToolDefinition` (type) — One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's `ChatCompletionTool`, and assignable to it.
 - `ToolHook` (type) — One tool call a row wants made at a point in a session.
 - `ToolInfo` (type) — One tool in full, as `McpPool.describe` returns it: what `ToolDefinition` has no room for.
+- `ToolSafety` (type) — What a host may assume of a call to one tool, as `McpPool.toolSafety` returns it.
 - `ToolsCache` (type) — Where a lazy pool keeps each server's tool list between processes, keyed by server id.
 
 ## Subpath entries
