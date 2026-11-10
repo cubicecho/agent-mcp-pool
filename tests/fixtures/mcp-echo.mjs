@@ -3,7 +3,11 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
+  CompleteRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
   ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -75,7 +79,14 @@ const server = new Server(
   {
     // Resources as well as tools, because the pool's own surface reaches only the tools half and
     // a test for the raw client has to ask for something that surface cannot express.
-    capabilities: { tools: {}, resources: {} },
+    capabilities: {
+      tools: {},
+      resources: {},
+      // Off unless asked, so a server that offers no prompts — the ordinary case, and the one the
+      // pool must not ask — is what every other test talks to.
+      ...(process.env.MCP_ECHO_PROMPTS ? { prompts: {} } : {}),
+      ...(process.env.MCP_ECHO_COMPLETIONS ? { completions: {} } : {}),
+    },
     // What a server tells a model about itself, returned by `initialize` beside the capabilities.
     // Off unless a test asks, since most of them are not about it — and a server that sends none
     // is the ordinary case.
@@ -221,12 +232,118 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     ],
   };
 });
-server.setRequestHandler(ListResourcesRequestSchema, () => ({
-  resources: [{ uri: "echo://greeting", name: "greeting", mimeType: "text/plain" }],
-}));
-server.setRequestHandler(ReadResourceRequestSchema, (request) => ({
-  contents: [{ uri: request.params.uri, mimeType: "text/plain", text: "hello from a resource" }],
-}));
+/**
+ * One page of `items`, `MCP_ECHO_PAGE_SIZE` at a time — the same paging `tools/list` does, for
+ * the other lists. Unpaged when no size is set.
+ */
+const paged = (items, cursor) => {
+  if (!(pageSize > 0)) return { items };
+  const start = Number(cursor ?? 0);
+  const next = start + pageSize;
+  return {
+    items: items.slice(start, next),
+    ...(next < items.length ? { nextCursor: String(next) } : {}),
+  };
+};
+
+// Three, so a page size of one is three pages. The pixel is the one with no text, and its bytes
+// are what a reader has to be told about rather than handed.
+const resources = [
+  { uri: "echo://greeting", name: "greeting", mimeType: "text/plain" },
+  { uri: "echo://long", name: "long", mimeType: "text/plain" },
+  { uri: "echo://pixel", name: "pixel", mimeType: "image/png" },
+];
+server.setRequestHandler(ListResourcesRequestSchema, (request) => {
+  const { items, nextCursor } = paged(resources, request.params?.cursor);
+  return { resources: items, ...(nextCursor ? { nextCursor } : {}) };
+});
+server.setRequestHandler(ReadResourceRequestSchema, (request) => {
+  const { uri } = request.params;
+  if (uri === "echo://pixel") {
+    return { contents: [{ uri, mimeType: "image/png", blob: "aGk=" }] };
+  }
+  if (uri === "echo://long") {
+    return { contents: [{ uri, mimeType: "text/plain", text: "x".repeat(500) }] };
+  }
+  // Two parts that disagree on a type: what a directory read answers with.
+  if (uri === "echo://mixed") {
+    return {
+      contents: [
+        { uri: `${uri}/a.md`, mimeType: "text/markdown", text: "# a" },
+        { uri: `${uri}/b.txt`, mimeType: "text/plain", text: "b" },
+      ],
+    };
+  }
+  return { contents: [{ uri, mimeType: "text/plain", text: "hello from a resource" }] };
+});
+
+// Templates only on request: a server that declares `resources` and has no templates handler at
+// all answers "method not found", which is the case the pool has to read as no templates.
+if (process.env.MCP_ECHO_TEMPLATES) {
+  const templates = [
+    { uriTemplate: "echo://notes/{folder}/{note}", name: "note" },
+    { uriTemplate: "echo://users/{id}", name: "user" },
+  ];
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, (request) => {
+    const { items, nextCursor } = paged(templates, request.params?.cursor);
+    return { resourceTemplates: items, ...(nextCursor ? { nextCursor } : {}) };
+  });
+}
+
+if (process.env.MCP_ECHO_PROMPTS) {
+  const prompts = [
+    { name: "greet", arguments: [{ name: "name", required: true }] },
+    { name: "review", arguments: [{ name: "code" }] },
+    { name: "picture" },
+  ];
+  server.setRequestHandler(ListPromptsRequestSchema, (request) => {
+    // The cursor it was handed, for ever — the circle the walk's guard is for.
+    if (process.env.MCP_ECHO_STUCK_PROMPTS)
+      return { prompts: prompts.slice(0, 1), nextCursor: "stuck" };
+    const { items, nextCursor } = paged(prompts, request.params?.cursor);
+    return { prompts: items, ...(nextCursor ? { nextCursor } : {}) };
+  });
+  server.setRequestHandler(GetPromptRequestSchema, (request) => {
+    const args = request.params.arguments ?? {};
+    switch (request.params.name) {
+      case "greet":
+        return {
+          messages: [{ role: "user", content: { type: "text", text: `Hello, ${args.name}!` } }],
+        };
+      // A worked example: the question, and the answer the server wants the model to imitate.
+      case "review":
+        return {
+          messages: [
+            { role: "user", content: { type: "text", text: `Review ${args.code}` } },
+            { role: "assistant", content: { type: "text", text: "Looks fine." } },
+          ],
+        };
+      case "picture":
+        return {
+          messages: [
+            { role: "user", content: { type: "image", data: "aGk=", mimeType: "image/png" } },
+          ],
+        };
+      default:
+        throw new Error(`no prompt called ${request.params.name}`);
+    }
+  });
+}
+
+if (process.env.MCP_ECHO_COMPLETIONS) {
+  server.setRequestHandler(CompleteRequestSchema, (request) => {
+    const { ref, argument, context } = request.params;
+    // A note is completed inside the folder already chosen, which is what `context` is for.
+    if (ref.type === "ref/resource") {
+      const folder = context?.arguments?.folder ?? "inbox";
+      return { completion: { values: [`${folder}-a`, `${folder}-b`] } };
+    }
+    const names = ["Ada", "Alan", "Grace"];
+    return {
+      completion: { values: names.filter((name) => name.startsWith(argument.value)) },
+    };
+  });
+}
 
 // The SDK has one `oninitialized`, and two things here want it, so they queue rather than
 // overwrite each other — a test setting both env vars would otherwise silently get only one.

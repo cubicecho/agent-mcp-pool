@@ -1,5 +1,12 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { ServerCapabilities, Tool, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  Prompt,
+  Resource,
+  ResourceTemplate,
+  ServerCapabilities,
+  Tool,
+  ToolAnnotations,
+} from "@modelcontextprotocol/sdk/types.js";
 import type { McpPoolErrorCode } from "./errors.ts";
 
 /**
@@ -467,6 +474,58 @@ export interface McpServerState {
    * error round trip per server per surface, or not offering the surface at all.
    */
   capabilities?: ServerCapabilities;
+}
+
+/**
+ * One server's prompts, as `McpPool.prompts()` lists them.
+ *
+ * A server that did not declare `prompts` has no entry at all. One that did and could not be
+ * listed — down, in its backoff, or answering with an error — has an entry with no prompts and
+ * the reason in `error`, so a picker keeps the servers that answered and can still say why one is
+ * missing.
+ */
+export interface ServerPrompts {
+  /** The config id, which is what `expandPrompt` and `complete` address. */
+  serverId: string;
+  /** Every page of `prompts/list`, in the order the server sent them. */
+  prompts: Prompt[];
+  /** Why the listing failed. Absent when it did not. */
+  error?: string;
+}
+
+/** One server's resources and resource templates, as `McpPool.resources()` lists them. */
+export interface ServerResources {
+  /** The config id, which is what `readResource` and `complete` address. */
+  serverId: string;
+  /** Every page of `resources/list`. */
+  resources: Resource[];
+  /**
+   * Every page of `resources/templates/list`. Empty, not an error, for a server that declared
+   * `resources` and answers the templates request as a method it does not have — templates have no
+   * capability of their own to declare.
+   */
+  templates: ResourceTemplate[];
+  /** Why the listing failed, as for `ServerPrompts.error`. */
+  error?: string;
+}
+
+/** A resource read back as text, by `McpPool.readResource()`. */
+export interface ResourceText {
+  /** The uri that was asked for. */
+  uri: string;
+  /**
+   * The contents' mime type, where every part of the answer that gave one gave the same. A read
+   * can answer with several parts — a directory's files — and a type that held for one of them
+   * would be a claim about the rest.
+   */
+  mimeType?: string;
+  /**
+   * The contents as one string: text verbatim, binary named with its type and size the way
+   * `resultText` names it, parts joined by newlines, then cut to `maxChars`.
+   */
+  text: string;
+  /** Whether `maxChars` cut it. */
+  truncated: boolean;
 }
 
 /** What `probe` found: whether the config works, and what it offers if it does. */

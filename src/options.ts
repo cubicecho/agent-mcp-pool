@@ -256,6 +256,37 @@ export interface ToolsOptions {
   servers?: Iterable<string>;
 }
 
+/** What `prompts()` and `resources()` take. */
+export interface ListingOptions {
+  /**
+   * The run's or caller's scope, read the way `tools` reads it: absent is every server, empty is
+   * none.
+   */
+  servers?: Iterable<string>;
+}
+
+/** What a request addressed to one server's prompts or resources takes besides its arguments. */
+export interface ServerRequestOptions {
+  /**
+   * The scope to hold the request to. A server outside it is refused as one that is not
+   * configured, as `call()` refuses a tool outside it — a model handed a resource tool must not
+   * learn that a server it was not given exists. Absent is every server.
+   */
+  servers?: Iterable<string>;
+  /** Aborts the request. */
+  signal?: AbortSignal;
+}
+
+/** What `readResource()` takes besides the uri. */
+export interface ReadResourceOptions extends ServerRequestOptions {
+  /**
+   * The most characters of text to hand back, cut by `truncateText`. Absent, zero or negative is
+   * no cap. Applied to what is returned, not to what the server sends: `resources/read` has no
+   * way to ask for less.
+   */
+  maxChars?: number;
+}
+
 /** What `search()` takes besides the query. */
 export interface SearchOptions {
   /** The run's scope, read the way `catalog` reads it: absent is every server, empty is none. */
