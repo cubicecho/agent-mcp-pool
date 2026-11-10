@@ -120,8 +120,12 @@ something concrete to an operator: a pid finds a wedged child in `ps`, and a sta
 server that is quietly crash-looping is spotted, since `status` reads `ready` either side of a
 restart.
 
-`instructions` and `capabilities` are the rest of what `initialize` returned, and are absent for
-the same reason — a server that is not connected has no handshake to report:
+`instructions` and `capabilities` are the rest of what `initialize` returned. Unlike `pid` they
+outlive the connection: a reaped or stopped server reports what it said at its last connect, so a
+prompt built from them does not lose a server's section each time it goes idle, and a filter over
+`capabilities` does not skip it. They go where the list goes on a crash, on a failed dial, and when
+the row changes how the server is reached — what the last child said is not the next one's. A
+server never connected has none:
 
 ```ts
 const guidance = mcp
@@ -490,6 +494,11 @@ of the model from the first turn, by the server's own names. The row is where it
 consumer does not keep that list somewhere else. `alwaysLoaded()` answers with qualified names and
 only ones `tools()` would hand back — a name the server does not offer, or a hidden one, is left
 out rather than sent on to be skipped and logged.
+
+**`instructions`** rides on each `catalog()` entry, beside `instructionsTokens` counted the way
+`tokens` is: what the server told a model about its tools, under the catalogue's scope so a run is
+not told about a server it cannot reach, and kept on a `stale` entry. Absent where the server said
+nothing, so a prompt builder needs no `state()` read of its own to put them in the system prompt.
 
 **`search()`** returns `catalog()`'s shape holding only what matched, servers ordered by their best
 tool and tools best first. The ranking is word overlap — a query word scores once, by the best

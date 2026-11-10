@@ -444,8 +444,10 @@ export interface McpServerState {
    */
   startedAt?: string;
   /**
-   * The server's own `instructions` from the handshake. Absent while it is not connected, and
-   * where the server sent none.
+   * The server's own `instructions` from its last handshake. Absent where it sent none, and where
+   * there is no handshake to go on: never connected, failed or crashed, or its row changed how it
+   * is reached. Kept through a reap or a `stop`, beside `stale: true`, so a prompt built off this
+   * does not lose a server's section each time it goes idle.
    *
    * What the field is for is a system prompt — servers use it for what a tool description has no
    * room for ("resolve the library id before querying docs", "these are the roots I answer for").
@@ -455,7 +457,8 @@ export interface McpServerState {
    */
   instructions?: string;
   /**
-   * What the server declared it supports in the handshake. Absent while it is not connected.
+   * What the server declared it supports in its last handshake. Absent exactly where
+   * `instructions` is for want of a handshake, so a filter over it does not skip a reaped server.
    *
    * Reported even under `indexTools: false`, unlike `tools`: this is one field off a handshake the
    * pool made anyway, and the consumer that opted out of indexing — a gateway proxying the
@@ -509,6 +512,14 @@ export interface CatalogServer {
    * choosing how many schemas a small context window can afford, not for billing.
    */
   tools: (ToolSummary & { tokens: number })[];
+  /**
+   * What the server said about its tools when it last connected — `McpServerState.instructions`,
+   * under the catalogue's scope, so a run is not told about a server it cannot reach. Kept on a
+   * `stale` entry from that connect. Absent where it said nothing, an empty string included.
+   */
+  instructions?: string;
+  /** `instructions` in tokens, counted as `tokens` is. Present exactly when `instructions` is. */
+  instructionsTokens?: number;
   /** Set where the server is not connected and this is its last-known list. Absent otherwise. */
   stale?: boolean;
 }

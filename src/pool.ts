@@ -6,6 +6,7 @@ import {
   ErrorCode,
   McpError,
   type Notification,
+  type ServerCapabilities,
   type ToolAnnotations,
 } from "@modelcontextprotocol/sdk/types.js";
 import { coerceArguments } from "./arguments.ts";
@@ -33,7 +34,7 @@ import { ResultCache } from "./result-cache.ts";
 import { resultLinks, resultText, truncateText } from "./results.ts";
 import { rankTools } from "./search.ts";
 import { sameConnection } from "./servers.ts";
-import { canonicalJson, defined } from "./shape.ts";
+import { canonicalJson, defined, estimateTokens } from "./shape.ts";
 import {
   createTransport,
   readStderrTail,
@@ -102,6 +103,18 @@ interface Entry {
   pid?: number;
   /** When this connection became ready, as a `Date.now()` stamp. Cleared with the client. */
   startedAt?: number;
+  /**
+   * What the server said about itself at its last connect. Kept through a reap, a stop and a
+   * redial of the same connection, and dropped by a crash, a failed dial, or a row that now
+   * reaches somewhere else — the rule mcp-router's gateway keeps for its own copy.
+   */
+  handshake?: Handshake;
+}
+
+/** The half of `initialize` a consumer reads back: what a server says it is for, and supports. */
+interface Handshake {
+  instructions?: string;
+  capabilities?: ServerCapabilities;
 }
 
 /** What a server sends when the set of tools it offers has changed. */
@@ -716,6 +729,10 @@ export class McpPool {
     // the same server: the list a redial of a cold server is compared against.
     const prior = this.entries.get(config.id);
     const known = prior && sameConnection(prior.config, config) ? prior : undefined;
+    // Carried over for the length of the dial, so a system prompt built while a reaped server
+    // wakes still has its section. A changed row starts with none: the old handshake was another
+    // server's.
+    entry.handshake = known?.handshake;
     this.entries.set(config.id, entry);
     // Registered but not dialled: a lazy pool still reconciles the entry set on `sync`, so
     // `state()` is complete and a later use has something to connect. Only the child is deferred.
@@ -761,6 +778,10 @@ export class McpPool {
       const pid = "pid" in transport ? transport.pid : undefined;
       entry.pid = typeof pid === "number" ? pid : undefined;
       entry.startedAt = Date.now();
+      entry.handshake = {
+        instructions: client.getInstructions(),
+        capabilities: client.getServerCapabilities(),
+      };
       this.adopt(entry, tools);
       this.remember(entry, tools);
       // Installed only once the server is up: a child that dies mid-handshake is reported by
@@ -979,7 +1000,13 @@ export class McpPool {
     this.emit({ type: "close", serverId: entry.config.id, reason: "crash", error: reason });
   }
 
-  /** Forgets what a server offered, list and fingerprint together. The caller reindexes. */
+  /**
+   * Forgets what a server offered, list and fingerprint together. The caller reindexes.
+   *
+   * Not the handshake: a reap goes through here for a server that lists nothing — every server
+   * under `indexTools: false` — and that consumer is the one reading `capabilities`. A failure
+   * drops it in `fail`, and a disabled entry never had one.
+   */
   private unlist(entry: Entry) {
     entry.tools = [];
     entry.fingerprint = undefined;
@@ -996,6 +1023,8 @@ export class McpPool {
    */
   private fail(entry: Entry, fallback: string) {
     entry.status = "error";
+    // A failed dial carried the last connection's handshake in; an error row has none to report.
+    entry.handshake = undefined;
     entry.error = entry.stderrTail?.() || fallback;
     entry.failedAt = Date.now();
     return entry.error;
@@ -1364,9 +1393,13 @@ export class McpPool {
 
   /** One server's catalogue entry, over the tools given. */
   private listing(entry: Entry, tools: readonly PooledTool[]): CatalogServer {
+    const instructions = entry.handshake?.instructions;
     return {
       id: entry.config.id,
       label: labelOf(entry.config),
+      // An empty string is a server that said nothing, and a heading over nothing is worse than
+      // no heading.
+      ...(instructions ? { instructions, instructionsTokens: estimateTokens(instructions) } : {}),
       tools: tools.map(({ qualified, description, title, annotations, tokens }) => ({
         name: qualified,
         description,
@@ -2057,13 +2090,12 @@ export class McpPool {
       pid: entry.pid,
       startedAt:
         entry.startedAt === undefined ? undefined : new Date(entry.startedAt).toISOString(),
-      // Read off the client rather than held on the entry: both are cached reads of the handshake
-      // the SDK already made, and the client is what `forget()` clears — so they are absent while
-      // the server is down for the same reason `pid` is, without a second thing to remember to
-      // clear. Not gated on `indexTools`: these cost no round trip, and the consumer that turned
-      // indexing off is the one proxying the protocol.
-      instructions: entry.client?.getInstructions(),
-      capabilities: entry.client?.getServerCapabilities(),
+      // Held on the entry rather than read off the client, which a reap clears: a prompt built off
+      // `state()` would lose a server's section every time it went idle, and a capability filter
+      // would skip it. Not gated on `indexTools`: these cost no round trip, and the consumer that
+      // turned indexing off is the one proxying the protocol.
+      instructions: entry.handshake?.instructions,
+      capabilities: entry.handshake?.capabilities,
     }));
   }
 
