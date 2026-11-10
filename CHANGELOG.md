@@ -1,3 +1,10 @@
+# [3.12.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.11.0...v3.12.0) (2026-11-10)
+
+
+### Features
+
+* list, expand and read prompts and resources through the pool ([c6f8b71](https://github.com/cubicecho/agent-mcp-pool/commit/c6f8b715e49d1d8b9c89467eee316117cc17cf09)), closes [#108](https://github.com/cubicecho/agent-mcp-pool/issues/108)
+
 # [3.11.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.10.0...v3.11.0) (2026-11-10)
 
 
