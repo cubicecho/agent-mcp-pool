@@ -146,7 +146,11 @@ placeholder is where the model loses them for good.
 **What the handshake already returned is reported, not re-fetched.** `instructions` and
 `capabilities` reach a consumer through `state()`, synchronously and off the cached `initialize`.
 The other door, `client()`, *dials* — so routing a system prompt through it spawns children under
-`lazy` or after a reap, which is the opposite of what reading a string should cost.
+`lazy` or after a reap, which is the opposite of what reading a string should cost. They are held on
+the entry, not read off the client a reap clears: kept through a reap, a stop and a redial of the
+same connection, dropped by a crash, a failed dial or a changed connection — mcp-router's rule. Not
+in `unlist`, which a reap of a server listing nothing goes through. `catalog()` carries
+`instructions` too, so agent-core can render them without a `state()` read per host.
 
 **The pool holds its own copy of every row, and `state()` hands back another.** An entry aliasing
 the caller's object makes `sameConnection` compare a row against itself, so an in-place edit never

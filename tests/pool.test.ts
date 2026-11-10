@@ -1542,22 +1542,103 @@ test("a server that sends no instructions reports none rather than an empty stri
   expect(pool.state()[0]?.capabilities).toMatchObject({ tools: {} });
 });
 
-test("both describe the connection, so they go when it does", async () => {
+test("a server never connected has no handshake to report", async () => {
   pool = makePool({ lazy: true });
-  const row = config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } });
-  await pool.sync([row]);
+  await pool.sync([config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } })]);
 
-  // Registered and not dialled: there is no handshake to report, and reporting one from a
-  // previous connection would name a server that is not running.
+  // Registered and not dialled: there is nothing the server has said yet.
   expect(pool.state()[0]).toMatchObject({ status: "idle" });
   expect(pool.state()[0]?.instructions).toBeUndefined();
   expect(pool.state()[0]?.capabilities).toBeUndefined();
 
   await pool.call("echo__ping", {});
   expect(pool.state()[0]?.instructions).toBe("resolve ids first");
+});
 
+/**
+ * A prompt built off `state()` used to lose a server's section every time it was reaped, and a
+ * capability filter over it skipped the server — both read the client, which a reap clears.
+ */
+test("the handshake outlives a reap and a stop, and spawns nothing to report", async () => {
+  pool = makePool({ idleTimeoutMs: 50 });
+  await pool.sync([
+    config({ env: { ...config().env, MCP_ECHO_INSTRUCTIONS: "resolve ids first" } }),
+  ]);
+
+  await until(() => pool.state()[0]?.status === "idle", "the idle reap");
+  expect(pool.state()[0]).toMatchObject({
+    stale: true,
+    instructions: "resolve ids first",
+    capabilities: { resources: {} },
+  });
+
+  await pool.call("echo__ping", {});
   await pool.stop("echo-1");
+  expect(pool.state()[0]).toMatchObject({ status: "idle", instructions: "resolve ids first" });
+  // One child for the first connect and one for the call: reading the handshake dialled nothing.
+  expect(spawned()).toBe(2);
+});
+
+test("a crash drops the handshake with the list", async () => {
+  pool = makePool({ crashBackoffMs: 60_000 });
+  await pool.sync([
+    config({ env: { ...config().env, MCP_ECHO_INSTRUCTIONS: "resolve ids first" } }),
+  ]);
+  process.kill(spawnedPids()[0] as number, "SIGKILL");
+  await until(() => pool.state()[0]?.status === "error", "the pool to notice the child died");
+
   expect(pool.state()[0]?.instructions).toBeUndefined();
+  expect(pool.state()[0]?.capabilities).toBeUndefined();
+});
+
+test("a row that now reaches another server forgets what the old one said", async () => {
+  pool = makePool({ lazy: true });
+  await pool.sync([config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } })]);
+  await pool.call("echo__ping", {});
+  await pool.sync([config({ env: { MCP_ECHO_INSTRUCTIONS: "pass the folder" } })]);
+
+  // A different environment is a different child, and what the last one said is not its.
+  expect(pool.state()[0]).toMatchObject({ status: "idle" });
+  expect(pool.state()[0]?.instructions).toBeUndefined();
+  await pool.call("echo__ping", {});
+  expect(pool.state()[0]?.instructions).toBe("pass the folder");
+});
+
+test("a relabel keeps the handshake, since the same child is still answering", async () => {
+  await pool.sync([config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } })]);
+  await pool.sync([
+    config({ label: "Renamed", env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } }),
+  ]);
+
+  expect(pool.state()[0]).toMatchObject({ label: "Renamed", instructions: "resolve ids first" });
+});
+
+test("catalog() carries each server's instructions and what they cost", async () => {
+  await pool.sync([
+    config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } }),
+    config({ id: "echo-2", slug: "quiet" }),
+  ]);
+
+  const [said, quiet] = pool.catalog();
+  // Four characters a token, rounded up, the way every tool's `tokens` is counted.
+  expect(said).toMatchObject({ instructions: "resolve ids first", instructionsTokens: 5 });
+  // A server that said nothing has no field at all, so a prompt builder can skip it on presence.
+  expect(quiet).not.toHaveProperty("instructions");
+  expect(quiet).not.toHaveProperty("instructionsTokens");
+});
+
+test("catalog() keeps the instructions of a stale server and leaves out-of-scope ones", async () => {
+  pool = makePool({ idleTimeoutMs: 50 });
+  await pool.sync([
+    config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } }),
+    config({ id: "echo-2", slug: "other", env: { MCP_ECHO_INSTRUCTIONS: "pass the folder" } }),
+  ]);
+  await until(() => pool.state().every((s) => s.status === "idle"), "the idle reap");
+
+  expect(pool.catalog(["echo-1"])).toEqual([
+    expect.objectContaining({ id: "echo-1", stale: true, instructions: "resolve ids first" }),
+  ]);
+  expect(pool.catalog([])).toEqual([]);
 });
 
 /**
@@ -1570,6 +1651,18 @@ test("indexTools: false keeps the tool index empty and still reports the handsha
 
   expect(pool.state()[0]).toMatchObject({
     tools: [],
+    instructions: "resolve ids first",
+    capabilities: { resources: {} },
+  });
+});
+
+test("a reaped server that lists nothing still reports its handshake", async () => {
+  // Every server is one under `indexTools: false`, and that consumer is the one reading it.
+  pool = makePool({ indexTools: false, idleTimeoutMs: 50 });
+  await pool.sync([config({ env: { MCP_ECHO_INSTRUCTIONS: "resolve ids first" } })]);
+  await until(() => pool.state()[0]?.status === "idle", "the idle reap");
+
+  expect(pool.state()[0]).toMatchObject({
     instructions: "resolve ids first",
     capabilities: { resources: {} },
   });
