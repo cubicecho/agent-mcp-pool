@@ -6,6 +6,8 @@ import {
   ErrorCode,
   McpError,
   type Notification,
+  type PromptReference,
+  type ResourceTemplateReference,
   type ServerCapabilities,
   type ToolAnnotations,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -15,23 +17,38 @@ import { dial } from "./dial.ts";
 import { errorMessage, McpPoolError } from "./errors.ts";
 import { connectionFingerprint, toolsFingerprint } from "./fingerprint.ts";
 import { runHooks } from "./hook-runner.ts";
-import { type ListedTool, listAllTools } from "./listing.ts";
+import {
+  type ListedTool,
+  listAllPrompts,
+  listAllResources,
+  listAllResourceTemplates,
+  listAllTools,
+} from "./listing.ts";
 import { labelOf, namespaceOwners, slugOf } from "./namespace.ts";
 import { couldQualify, type PooledTool, pooledTool } from "./naming.ts";
 import type {
   CallOptions,
   DescribeOptions,
+  ListingOptions,
   McpPoolOptions,
   PoolLog,
+  ReadResourceOptions,
   RunHooksOptions,
   SafetyOptions,
   SearchOptions,
+  ServerRequestOptions,
   StateOptions,
   ToolsOptions,
 } from "./options.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { ResultCache } from "./result-cache.ts";
-import { resultLinks, resultText, truncateText } from "./results.ts";
+import {
+  promptText,
+  resourceContentsText,
+  resultLinks,
+  resultText,
+  truncateText,
+} from "./results.ts";
 import { rankTools } from "./search.ts";
 import { sameConnection } from "./servers.ts";
 import { canonicalJson, defined, estimateTokens } from "./shape.ts";
@@ -54,6 +71,9 @@ import type {
   McpStatus,
   PoolCloseReason,
   PoolEvent,
+  ResourceText,
+  ServerPrompts,
+  ServerResources,
   ToolAnswer,
   ToolDefinition,
   ToolInfo,
@@ -1606,6 +1626,221 @@ export class McpPool {
    */
   use<T>(id: string, run: (client: Client) => Promise<T>): Promise<T> {
     return this.client(id).then((client) => this.attempt(id, client, () => this.client(id), run));
+  }
+
+  /**
+   * Every prompt the servers in scope offer, each server's list read to its last page.
+   *
+   * Prompts are the user-controlled half of the protocol — a menu a person picks from, not a tool
+   * a model calls — so this is for a host's picker. Only servers whose handshake declared
+   * `prompts` are asked: the SDK sends the request to one that did not, and the "method not
+   * found" that comes back would be an error per server per listing, indistinguishable from a
+   * broken one. The handshake is the one kept through a reap, so a reaped server is still asked —
+   * and, like `client()`, is dialled to answer. A server never connected has said nothing yet and
+   * is left out.
+   *
+   * @param options `servers` is the scope: absent is every server, empty is none.
+   * @returns One entry per server asked, in configuration order. A server that did not declare
+   *   `prompts`, is disabled or is out of scope has no entry; one that failed to answer has an
+   *   empty list and `error`, so one broken server does not empty a picker of the rest.
+   */
+  prompts({ servers }: ListingOptions = {}): Promise<ServerPrompts[]> {
+    return Promise.all(
+      this.declaring("prompts", servers).map(async (entry) => {
+        const serverId = entry.config.id;
+        try {
+          const prompts = await this.use(serverId, (client) =>
+            listAllPrompts(client, this.requestOptions(serverId)),
+          );
+          return { serverId, prompts };
+        } catch (error) {
+          return { serverId, prompts: [], error: errorMessage(error) };
+        }
+      }),
+    );
+  }
+
+  /**
+   * Every resource and resource template the servers in scope offer, each list read to its last
+   * page. Asked of the servers `prompts()` would ask, by `resources` instead.
+   *
+   * @param options `servers` is the scope.
+   * @returns One entry per server asked, in configuration order, as `prompts()` returns them. A
+   *   server that answers `resources/templates/list` as a method it does not have lists no
+   *   templates rather than failing: templates have no capability of their own to declare.
+   */
+  resources({ servers }: ListingOptions = {}): Promise<ServerResources[]> {
+    return Promise.all(
+      this.declaring("resources", servers).map(async (entry) => {
+        const serverId = entry.config.id;
+        try {
+          const [resources, templates] = await this.use(serverId, (client) => {
+            const options = this.requestOptions(serverId);
+            return Promise.all([
+              listAllResources(client, options),
+              listAllResourceTemplates(client, options).catch((error: unknown) => {
+                if (error instanceof McpError && error.code === ErrorCode.MethodNotFound) return [];
+                throw error;
+              }),
+            ]);
+          });
+          return { serverId, resources, templates };
+        } catch (error) {
+          return { serverId, resources: [], templates: [], error: errorMessage(error) };
+        }
+      }),
+    );
+  }
+
+  /**
+   * One prompt expanded with its arguments, flattened to a single string by `promptText`.
+   *
+   * The string rather than the messages because every host that has asked for a prompt puts it in
+   * one box — a task's prompt, a composer's draft. A host that wants the messages themselves has
+   * `use()`.
+   *
+   * @param serverId The config id of the server that offers it.
+   * @param name The prompt's name.
+   * @param args Its arguments, as typed.
+   * @param options `servers` refuses a server outside it; `signal` aborts.
+   * @returns The expansion.
+   * @throws {McpPoolError} `unsupported` for a server that did not declare `prompts`,
+   *   `out-of-scope`, or whatever `client()` throws. The server's own refusal — a prompt it does not
+   *   have, an argument missing — is passed through.
+   */
+  async expandPrompt(
+    serverId: string,
+    name: string,
+    args?: Record<string, string>,
+    options: ServerRequestOptions = {},
+  ): Promise<string> {
+    const result = await this.declared(serverId, "prompts", options, (client) =>
+      client.getPrompt({ name, arguments: args }, this.requestOptions(serverId, options.signal)),
+    );
+    return promptText(result);
+  }
+
+  /**
+   * One resource read back as text: text parts verbatim, binary named with its type and size,
+   * the whole cut to `maxChars`.
+   *
+   * A string because the two readers are a model, which has a tool message to put it in, and a
+   * preview, which has a text box. A host that wants the bytes has `use()`.
+   *
+   * @param serverId The config id of the server that offers it.
+   * @param uri The resource's uri, or a template's once its variables are filled in.
+   * @param options `maxChars` caps the text; `servers` and `signal` as for `expandPrompt`.
+   * @returns The text, the mime type the parts agree on, and whether the cap cut it.
+   * @throws {McpPoolError} As `expandPrompt` throws, for `resources`.
+   */
+  async readResource(
+    serverId: string,
+    uri: string,
+    options: ReadResourceOptions = {},
+  ): Promise<ResourceText> {
+    const { contents } = await this.declared(serverId, "resources", options, (client) =>
+      client.readResource({ uri }, this.requestOptions(serverId, options.signal)),
+    );
+    const { text, mimeType } = resourceContentsText(contents);
+    const cut = truncateText(text, options.maxChars);
+    return { uri, ...defined({ mimeType }), text: cut, truncated: cut !== text };
+  }
+
+  /**
+   * What a server suggests for one argument of a prompt, or one variable of a resource template,
+   * given what has been typed so far — the spec's `completion/complete`.
+   *
+   * Never an error for a server that cannot complete: one that did not declare `completions`
+   * answers `[]`, without a round trip where the kept handshake already says so, so a UI can ask
+   * on every keystroke without first finding out which servers are worth asking.
+   *
+   * @param serverId The config id of the server that offers the prompt or template.
+   * @param ref `{ type: "ref/prompt", name }` or `{ type: "ref/resource", uri }`, the uri being
+   *   the template's own.
+   * @param argument The argument being filled in, and what is in it now.
+   * @param context The arguments already filled in, which a server may narrow by — a repository's
+   *   branches once its owner is known.
+   * @param options `servers` and `signal` as for `expandPrompt`.
+   * @returns The suggestions in the server's order; at most a hundred, by the spec.
+   * @throws {McpPoolError} `out-of-scope`, or whatever `client()` throws. The server's own
+   *   refusal is passed through.
+   */
+  async complete(
+    serverId: string,
+    ref: PromptReference | ResourceTemplateReference,
+    argument: { name: string; value: string },
+    context?: Record<string, string>,
+    options: ServerRequestOptions = {},
+  ): Promise<string[]> {
+    this.inScopeOrRefuse(serverId, options.servers);
+    const handshake = this.entries.get(serverId)?.handshake;
+    if (handshake && !handshake.capabilities?.completions) return [];
+    return this.use(serverId, async (client) => {
+      // Read again off the connection: a server never connected had no handshake to go on, and a
+      // redial may have answered differently from the one that was kept.
+      if (!client.getServerCapabilities()?.completions) return [];
+      const { completion } = await client.complete(
+        { ref, argument, ...(context ? { context: { arguments: context } } : {}) },
+        this.requestOptions(serverId, options.signal),
+      );
+      return completion.values;
+    });
+  }
+
+  /** The entries a listing asks: enabled, in scope, and declaring `capability` when last seen. */
+  private declaring(capability: keyof ServerCapabilities, servers?: Iterable<string>): Entry[] {
+    const allowed = scope(servers);
+    return [...this.entries.values()].filter(
+      (entry) =>
+        entry.config.enabled &&
+        inScope(allowed, entry.config.id) &&
+        entry.handshake?.capabilities?.[capability],
+    );
+  }
+
+  /**
+   * Refuses a server outside a request's scope with the words for one that is not configured —
+   * `call()`'s rule for a tool, and for the same reason.
+   */
+  private inScopeOrRefuse(serverId: string, servers: Iterable<string> | undefined) {
+    if (inScope(scope(servers), serverId)) return;
+    throw new McpPoolError("out-of-scope", `no MCP server is configured with id "${serverId}"`, {
+      serverId,
+    });
+  }
+
+  /**
+   * One request to a server that must have declared `capability`, checked on the connection it
+   * is about to be sent on rather than off the kept handshake — a server never connected has none
+   * yet, and the request needs the dial anyway.
+   */
+  private declared<T>(
+    serverId: string,
+    capability: "prompts" | "resources",
+    options: ServerRequestOptions,
+    run: (client: Client) => Promise<T>,
+  ): Promise<T> {
+    this.inScopeOrRefuse(serverId, options.servers);
+    return this.use(serverId, (client) => {
+      if (!client.getServerCapabilities()?.[capability]) {
+        const entry = this.entries.get(serverId);
+        const slug = entry ? slugOf(entry.config) : serverId;
+        throw new McpPoolError("unsupported", `the MCP server "${slug}" offers no ${capability}`, {
+          serverId,
+        });
+      }
+      return run(client);
+    });
+  }
+
+  /**
+   * The SDK options for a request to one server's prompts or resources: its call timeout, read as
+   * `call()` reads it, and the caller's signal. Built only from what is set, since a
+   * `timeout: undefined` is not the same to the SDK as none.
+   */
+  private requestOptions(serverId: string, signal?: AbortSignal) {
+    const timeout = this.entries.get(serverId)?.config.callTimeoutMs ?? this.callTimeoutMs;
+    return { ...(timeout != null ? { timeout } : {}), ...(signal ? { signal } : {}) };
   }
 
   /**

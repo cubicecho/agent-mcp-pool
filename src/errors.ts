@@ -33,6 +33,10 @@ export const errorMessage = (error: unknown): string =>
  *
  * `timeout` is a call, or a hook's wait for one, that ran out of time. It was a plain `Error`
  * whose only mark was its wording, and it is the one failure a caller most wants to retry.
+ *
+ * `unsupported` is a request for prompts or resources from a server whose handshake did not
+ * declare them. The SDK sends such a request anyway unless told to be strict, and the server's
+ * "method not found" reads like a broken server rather than one that never offered the thing.
  */
 export type McpPoolErrorCode =
   | "unknown-server"
@@ -44,7 +48,8 @@ export type McpPoolErrorCode =
   | "no-configs"
   | "tool-error"
   | "invalid-arguments"
-  | "timeout";
+  | "timeout"
+  | "unsupported";
 
 /** What an `McpPoolError` carries beyond its message. */
 export interface McpPoolErrorOptions {
@@ -100,9 +105,10 @@ export class McpPoolError extends Error {
  *
  * Every consumer in front of an HTTP API wrote this table, and the copies disagreed at the edges.
  * A tool or server that does not exist is `404`, out of scope included, since to that caller it
- * does not exist; a failure on the far side of the pool is `502`; a backoff, which will clear on
- * its own, is `503`; a timeout `504`; arguments the model got wrong `400`; and a pool with nothing
- * to reconcile is the host's own misconfiguration, `500`.
+ * does not exist, and so are prompts or resources a server never declared; a failure on the far
+ * side of the pool is `502`; a backoff, which will clear on its own, is `503`; a timeout `504`;
+ * arguments the model got wrong `400`; and a pool with nothing to reconcile is the host's own
+ * misconfiguration, `500`.
  *
  * @param code An `McpPoolError`'s code.
  * @returns The status to answer with.
@@ -122,4 +128,5 @@ const HTTP_STATUS: Record<McpPoolErrorCode, number> = {
   "tool-error": 502,
   "invalid-arguments": 400,
   timeout: 504,
+  unsupported: 404,
 };

@@ -584,6 +584,57 @@ stderr tail, backoff, retry-on-use. A server that is merely down is retried firs
 bypasses the scope check by construction:** that guard defends against a model calling a name it
 remembers, and a caller holding a server id is not a model.
 
+### Prompts, resources and completion
+
+A host that shows a person a prompt picker, previews a resource or hands a model resource tools
+wrote the same three things each time: ask only the servers that declared the capability, list
+them, and flatten the answer into a string. Every copy read one page. The pool does it once, under
+the same scope `tools()` takes:
+
+```ts
+const listed = await pool.prompts({ servers });           // [{ serverId, prompts, error? }]
+const text = await pool.expandPrompt(serverId, "greet", { name: "Ada" });
+const found = await pool.resources({ servers });          // [{ serverId, resources, templates, error? }]
+const read = await pool.readResource(serverId, uri, { maxChars: 20_000 });
+const values = await pool.complete(serverId, { type: "ref/prompt", name: "greet" }, {
+  name: "name",
+  value: "A",
+});
+```
+
+- **Only servers that declared it are asked.** The SDK sends `prompts/list` to a server that never
+  offered prompts, and "method not found" coming back is an error per server per listing that
+  looks like a broken one. The capability is read off the handshake `state()` reports, which a
+  reap keeps — so a reaped server is still listed, and is dialled to answer as `client()` would
+  dial it. A server never connected has said nothing yet and has no entry; nor does a disabled
+  one, or one outside `servers`.
+- **Every page.** Each list is walked with `listAllTools`' guards: a repeated cursor or more than a
+  thousand pages is a failure rather than a short list.
+- **One server failing does not empty the rest.** Its entry is kept with an empty list and the
+  reason in `error`. A server that declared `resources` and has no `resources/templates/list` at
+  all lists no templates, since templates have no capability of their own.
+- **`expandPrompt`** flattens the messages by `promptText`: one message arrives verbatim, several
+  are joined with their roles in front, and non-text content is named in brackets the way
+  `resultText` names it. A server that did not declare `prompts` is an `unsupported` refusal.
+- **`readResource`** returns `{ uri, mimeType?, text, truncated }`: text parts verbatim, a blob as
+  `[resource <uri> <mime>, <size> omitted]`, the parts joined and cut to `maxChars` by
+  `truncateText`. `mimeType` is there when every part that gave one gave the same.
+- **`complete`** is the spec's `completion/complete`, for a prompt's argument or a template's
+  variable, with the arguments already filled in as `context`. A server without the `completions`
+  capability answers `[]` — without a round trip, where the kept handshake already says so — so
+  a form can ask on every keystroke.
+
+The three that address one server take `servers` too, and refuse one outside it in the words for
+a server that is not configured, as `call()` refuses a tool outside its scope: a model handed a
+resource tool must not learn which servers it was not given. Requests go through `use()`, so a
+dropped session is redialled once, and carry the row's `callTimeoutMs` as a list's walk budget or
+a single request's timeout.
+
+A consumer holding a client of its own — a gateway proxying the protocol — has the walks as free
+functions, shaped like `listAllTools`: `listAllPrompts(client)`, `listAllResources(client)` and
+`listAllResourceTemplates(client)`, with `promptText` and `resourceContentsText` for the
+flattening.
+
 ### What a definition has no room for
 
 An OpenAI definition is a name, a description and a schema. A server says more than that about a

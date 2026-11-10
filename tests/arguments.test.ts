@@ -111,6 +111,7 @@ test("httpStatusFor maps every code", () => {
     "tool-error": 502,
     "invalid-arguments": 400,
     timeout: 504,
+    unsupported: 404,
   };
   for (const [code, status] of Object.entries(codes)) {
     expect(httpStatusFor(code as McpPoolErrorCode)).toBe(status);

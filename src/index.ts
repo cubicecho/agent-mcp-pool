@@ -15,6 +15,11 @@ export type {
   ElicitRequestParams,
   ElicitResult,
   Notification,
+  Prompt,
+  PromptReference,
+  Resource,
+  ResourceTemplate,
+  ResourceTemplateReference,
   ServerCapabilities,
   Tool,
   ToolAnnotations,
@@ -42,22 +47,40 @@ export {
   VETO_EVENTS,
   validateHooks,
 } from "./hooks.ts";
-export { listAllTools } from "./listing.ts";
+export {
+  type ListedPrompt,
+  type ListedResource,
+  type ListedResourceTemplate,
+  type ListedTool,
+  listAllPrompts,
+  listAllResources,
+  listAllResourceTemplates,
+  listAllTools,
+} from "./listing.ts";
 export type {
   CallOptions,
   DescribeOptions,
+  ListingOptions,
   McpPoolOptions,
   PoolLog,
+  ReadResourceOptions,
   RunHooksOptions,
   SafetyOptions,
   SearchOptions,
+  ServerRequestOptions,
   StateOptions,
   ToolsOptions,
 } from "./options.ts";
 export { McpPool } from "./pool.ts";
 export { type ProbeOptions, probe } from "./probe.ts";
 export type { ResultCacheOptions } from "./result-cache.ts";
-export { resultLinks, resultText, truncateText } from "./results.ts";
+export {
+  promptText,
+  resourceContentsText,
+  resultLinks,
+  resultText,
+  truncateText,
+} from "./results.ts";
 export { rankTools, type SearchableTool } from "./search.ts";
 export {
   fromMcpServersJson,
@@ -95,6 +118,9 @@ export type {
   PoolCloseReason,
   PoolEvent,
   ResourceLink,
+  ResourceText,
+  ServerPrompts,
+  ServerResources,
   StdioServerConfig,
   ToolAnswer,
   ToolDefinition,

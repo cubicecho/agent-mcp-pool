@@ -121,8 +121,19 @@ handle to close it.
 
 **`tools/list` is drained, never read one page deep.** Page size is the server's choice, and a
 tool left on page two is not merely unlisted — it is absent from `index`, so `call()` refuses it
-as one that does not exist. `listAllTools` is the one walk; a `resources/list` or `prompts/list`
-added later paginates the same way.
+as one that does not exist. `drain` in `listing.ts` is the one walk, behind `listAllTools`,
+`listAllPrompts`, `listAllResources` and `listAllResourceTemplates`; a fifth list goes through it
+rather than growing its own loop without the guards.
+
+**Prompts and resources are asked of the servers that declared them, off the kept handshake.**
+The SDK is not strict about capabilities, so a request to a server that never declared `prompts`
+goes out and comes back "method not found" — a broken server, to anyone reading it. `prompts()`
+and `resources()` read the capability off `entry.handshake`, which a reap keeps; a server never
+connected is not dialled to ask. A server that fails is an entry with `error`, never a rejection
+of the whole listing, since a picker wants the servers that answered. `expandPrompt` and
+`readResource` check the live client and refuse `unsupported`; `complete` answers `[]` instead,
+because a form calls it on every keystroke. `promptText` is the one expansion rule — hosts had two
+copies of it.
 
 **A re-list swaps the list where the entry stands.** `tools()` answers in configuration order and
 then the server's own, and that order is what a prompt cache's prefix is made of — so a

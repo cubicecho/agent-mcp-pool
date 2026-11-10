@@ -87,6 +87,57 @@ export function resultLinks(result: { content?: unknown; [key: string]: unknown 
   return links;
 }
 
+/**
+ * A `prompts/get` answer flattened to the one string a prompt box, a composer or a task's prompt
+ * is.
+ *
+ * The rule two hosts kept a copy of each, moved here so the copies cannot drift. One message
+ * arrives verbatim — the common case, a template that expands to a single user turn. Several are
+ * joined with their roles in front, which is lossy: an `assistant` turn is a worked example the
+ * server wanted in the history, and as a line of one message it is a quotation of one. Labelled,
+ * the model can still read it as one, where dropping the roles would not let it.
+ *
+ * Each message's content is one block of the kind a tool result carries, so it is flattened by
+ * `resultText`: a person reading the box sees the placeholder a model reads in a tool result, and
+ * a `resource_link` keeps the uri and name that make it worth following.
+ *
+ * @param result A `prompts/get` result. Only `messages` is read.
+ * @returns The expansion. No messages is the empty string.
+ */
+export function promptText(result: {
+  messages: readonly { role: string; content: unknown }[];
+}): string {
+  const { messages } = result;
+  if (messages.length === 1) return messageText(messages[0]?.content);
+  return messages
+    .map((message) => `${message.role}: ${messageText(message.content)}`)
+    .join("\n\n")
+    .trim();
+}
+
+/** One prompt message's content as text, with what has none named rather than dropped. */
+const messageText = (content: unknown) => resultText({ content: [content] });
+
+/**
+ * A `resources/read` answer as text, with what has none named the way `resultText` names it.
+ *
+ * Each part is read as the embedded `resource` block it would be inside a tool result, so a text
+ * part is its text and a blob is `[resource <uri> image/png, 2 KB omitted]` — the same words a
+ * model sees for the same bytes arriving by the other route.
+ *
+ * @param contents A `resources/read` result's `contents`.
+ * @returns The parts joined by newlines and trimmed, and the mime type they agree on, if any.
+ */
+export function resourceContentsText(
+  contents: readonly { uri: string; mimeType?: string; text?: string; blob?: string }[],
+): { text: string; mimeType?: string } {
+  const text = resultText({
+    content: contents.map((resource) => ({ type: "resource", resource })),
+  });
+  const types = new Set(contents.flatMap(({ mimeType }) => (mimeType ? [mimeType] : [])));
+  return types.size === 1 ? { text, mimeType: [...types][0] } : { text };
+}
+
 /** Whether `text` is `structured` re-serialised, and so says nothing the compact form does not. */
 function mirrors(text: string, structured: string): boolean {
   try {

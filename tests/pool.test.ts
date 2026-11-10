@@ -1423,7 +1423,11 @@ test("client() reaches protocol the agent surface cannot express", async () => {
 
   // Resources, prompts, subscriptions and logging have no route through `tools`/`call` at all.
   const { resources } = await client.listResources();
-  expect(resources.map((resource) => resource.uri)).toEqual(["echo://greeting"]);
+  expect(resources.map((resource) => resource.uri)).toEqual([
+    "echo://greeting",
+    "echo://long",
+    "echo://pixel",
+  ]);
   const read = await client.readResource({ uri: "echo://greeting" });
   expect(read.contents[0]).toMatchObject({ text: "hello from a resource" });
 });
@@ -1942,7 +1946,7 @@ test("a server that wedges on tools/list is still connected when nothing lists t
 
   expect(pool.state()).toMatchObject([{ status: "ready", error: "" }]);
   const { resources } = await (await pool.client("echo-1")).listResources();
-  expect(resources).toMatchObject([{ uri: "echo://greeting" }]);
+  expect(resources[0]).toMatchObject({ uri: "echo://greeting" });
 });
 
 /**
