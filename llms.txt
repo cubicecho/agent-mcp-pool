@@ -88,6 +88,7 @@ What a pool and its methods are told: the constructor's options and each call's.
 
 ### results
 
+- `resultLinks` — The links a tool result hands its host: its `resource_link` blocks, less their `type`.
 - `resultText` — What a tool call is worth as a tool message.
 - `truncateText` — Text cut to fit a character budget, keeping its head and its tail.
 
@@ -136,7 +137,9 @@ Questions about server rows that need neither a connection nor Node — for the 
 - `McpStatus` (type) — `idle` is registered-but-not-connected, and where an idle-reaped server goes — a success state: nothing is wrong, there is simply no child right now.
 - `PoolCloseReason` (type) — Why a connection closed, on a `close` event.
 - `PoolEvent` (type) — Something the pool did, as `McpPool.onEvent` reports it.
+- `ResourceLink` (type) — A `resource_link` block a tool answered with, less its `type`: a handle to something the call made or found — a document it wrote, a file it saved.
 - `StdioServerConfig` (type) — A server reached by spawning a child process and speaking MCP over its stdio.
+- `ToolAnswer` (type) — What `call(..., { links: true })` answers: the text a model is handed, and the result's links for the host.
 - `ToolDefinition` (type) — One tool as an OpenAI-compatible model is offered it — the function arm of OpenAI's `ChatCompletionTool`, and assignable to it.
 - `ToolHook` (type) — One tool call a row wants made at a point in a session.
 - `ToolInfo` (type) — One tool in full, as `McpPool.describe` returns it: what `ToolDefinition` has no room for.

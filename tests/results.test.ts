@@ -1,5 +1,7 @@
+import type { ResourceLink as SdkResourceLink } from "@modelcontextprotocol/sdk/types.js";
 import { expect, test } from "vitest";
-import { resultText, truncateText } from "../src/results.ts";
+import { resultLinks, resultText, truncateText } from "../src/results.ts";
+import type { ResourceLink } from "../src/types.ts";
 
 /**
  * The flattening every tool result goes through on its way into a message array. Exercising these
@@ -96,6 +98,48 @@ test("a resource link keeps the uri that makes it followable", () => {
   expect(resultText({ content: [{ type: "resource_link", name: "notes" }] })).toBe(
     "[resource_link content]",
   );
+});
+
+test("resultLinks keeps the resource links meant for the user, in order, less their type", () => {
+  const forBoth: SdkResourceLink = {
+    type: "resource_link",
+    uri: "docs://a.md",
+    name: "a.md",
+    annotations: { audience: ["assistant", "user"] },
+    _meta: { size: 3 },
+  };
+  expect(
+    resultLinks({
+      content: [
+        { type: "text", text: "made two" },
+        forBoth,
+        // The spec's annotation says this one is for the model; its uri is in `resultText` still.
+        {
+          type: "resource_link",
+          uri: "docs://b.md",
+          name: "b.md",
+          annotations: { audience: ["assistant"] },
+        },
+        { type: "resource", resource: { uri: "docs://c.md", text: "embedded is not a link" } },
+        { type: "resource_link", uri: "docs://d.md", name: "d.md", annotations: { priority: 1 } },
+        { type: "resource_link", name: "no uri" },
+      ],
+    }),
+  ).toEqual([
+    {
+      uri: "docs://a.md",
+      name: "a.md",
+      annotations: { audience: ["assistant", "user"] },
+      _meta: { size: 3 },
+    },
+    { uri: "docs://d.md", name: "d.md", annotations: { priority: 1 } },
+  ]);
+  expect(resultLinks({})).toEqual([]);
+
+  // What the SDK hands back must fit the structural type, or a host would need a cast to keep it.
+  const { type: _type, ...link } = forBoth;
+  const ours: ResourceLink = link;
+  expect(ours.uri).toBe("docs://a.md");
 });
 
 /**

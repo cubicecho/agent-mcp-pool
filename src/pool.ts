@@ -28,7 +28,7 @@ import type {
 } from "./options.ts";
 import { probe as probeConfig } from "./probe.ts";
 import { ResultCache } from "./result-cache.ts";
-import { resultText, truncateText } from "./results.ts";
+import { resultLinks, resultText, truncateText } from "./results.ts";
 import { rankTools } from "./search.ts";
 import { sameConnection } from "./servers.ts";
 import { canonicalJson, defined } from "./shape.ts";
@@ -51,6 +51,7 @@ import type {
   McpStatus,
   PoolCloseReason,
   PoolEvent,
+  ToolAnswer,
   ToolDefinition,
   ToolInfo,
 } from "./types.ts";
@@ -195,7 +196,7 @@ export class McpPool {
   private readonly createTransport: TransportFactory;
   private readonly toolsCache?: McpPoolOptions["toolsCache"];
   /** Recent answers of tools that are safe to repeat, where the consumer asked for one. */
-  private readonly results?: ResultCache;
+  private readonly results?: ResultCache<Required<ToolAnswer>>;
 
   /**
    * @param options See `McpPoolOptions`. All optional: a pool with no `load` is one driven by
@@ -1586,7 +1587,9 @@ export class McpPool {
    * @param input The tool's arguments. Null or undefined is sent as `{}`.
    * @param options `CallOptions`, or the run's scope on its own as before. A tool outside the
    *   scope is refused as one that does not exist, and so is a hidden one unless `hidden` is set.
-   * @returns With `raw`, the server's result as it came. Otherwise the result as text, cut to
+   * @returns With `raw`, the server's result as it came. With `links`, a `ToolAnswer`: the text
+   *   below as `text`, and the result's `resource_link` blocks — see `resultLinks` — as `links`,
+   *   from the cache as from the server. Otherwise the result as text, cut to
    *   `maxResultChars` where one is set — see `resultText` for what each kind of content block flattens
    *   to, including a server that answers with `structuredContent` and no blocks at all — or
    *   `"(no output)"` when the server returned nothing whatsoever. A tool that answers with
@@ -1606,18 +1609,23 @@ export class McpPool {
   call(
     qualifiedName: string,
     input: unknown,
-    options?: Iterable<string> | (CallOptions & { raw?: false }),
+    options: CallOptions & { links: true; raw?: false },
+  ): Promise<ToolAnswer>;
+  call(
+    qualifiedName: string,
+    input: unknown,
+    options?: Iterable<string> | (CallOptions & { raw?: false; links?: false }),
   ): Promise<string>;
   call(
     qualifiedName: string,
     input: unknown,
     options?: Iterable<string> | CallOptions,
-  ): Promise<string | CallToolResult>;
+  ): Promise<string | CallToolResult | ToolAnswer>;
   async call(
     qualifiedName: string,
     input: unknown,
     options?: Iterable<string> | CallOptions,
-  ): Promise<string | CallToolResult> {
+  ): Promise<string | CallToolResult | ToolAnswer> {
     return this.traced(qualifiedName, input, callOptions(options), {});
   }
 
@@ -1632,7 +1640,7 @@ export class McpPool {
     input: unknown,
     parsed: CallOptions,
     trace: CallTrace,
-  ): Promise<string | CallToolResult> {
+  ): Promise<string | CallToolResult | ToolAnswer> {
     // Nobody listening is the ordinary case, and it should cost a call nothing.
     if (this.eventListeners.size === 0) return this.invoke(qualifiedName, input, parsed, trace);
     const started = performance.now();
@@ -1640,7 +1648,8 @@ export class McpPool {
     const base = { type: "call" as const, qualified: qualifiedName, hidden, raw };
     try {
       const out = await this.invoke(qualifiedName, input, parsed, trace);
-      const failed = typeof out !== "string" && out.isError === true;
+      // Only a raw answer can carry `isError`; every other shape threw it.
+      const failed = raw && (out as CallToolResult).isError === true;
       this.emit({
         ...base,
         ...trace,
@@ -1673,7 +1682,7 @@ export class McpPool {
     input: unknown,
     options: CallOptions,
     trace: CallTrace,
-  ): Promise<string | CallToolResult> {
+  ): Promise<string | CallToolResult | ToolAnswer> {
     const {
       servers,
       signal,
@@ -1682,6 +1691,7 @@ export class McpPool {
       coerce: ownCoerce,
       maxResultChars: ownMaxResultChars,
       raw = false,
+      links: withLinks = false,
       cache: useCache = true,
     } = options;
     const allowed = scope(servers);
@@ -1749,12 +1759,12 @@ export class McpPool {
 
     const cap = ownMaxResultChars ?? entry?.config.maxResultChars ?? this.maxResultChars;
     /** What a successful call answers with, from the server or from memory. */
-    const answer = (text: string) => {
+    const answer = ({ text, links }: Required<ToolAnswer>): string | ToolAnswer => {
       trace.chars = text.length;
       const shown = text || NO_OUTPUT;
       const out = truncateText(shown, cap);
       trace.truncated = out.length < shown.length;
-      return out;
+      return withLinks ? { text: out, links } : out;
     };
 
     // Only a tool that says repeating it is safe, on a row that says to believe it: annotations
@@ -1762,7 +1772,8 @@ export class McpPool {
     const { readOnlyHint = false, idempotentHint = false } =
       (entry?.config.trustAnnotations && found.tool.annotations) || {};
     const results = this.results;
-    // Not a `raw` call: what is kept is the text, and its blocks are what that caller wants.
+    // Not a `raw` call: what is kept is the text and the links, and the blocks are what that
+    // caller wants.
     const key =
       results && !raw && (readOnlyHint || idempotentHint)
         ? `${found.serverId}\n${found.tool.name}\n${canonicalJson(args)}`
@@ -1852,9 +1863,11 @@ export class McpPool {
       });
     }
     // Whole, before the cap: the next caller may have another one. Never a failure — the throw
-    // above is every `isError`, and a refusal never got this far.
-    if (key !== undefined) results?.set(found.serverId, key, text);
-    return answer(text);
+    // above is every `isError`, and a refusal never got this far. The links are read whether this
+    // call wants them or not, so a hit answers a later `links` call the way the server would have.
+    const held = { text, links: resultLinks(result) };
+    if (key !== undefined) results?.set(found.serverId, key, held);
+    return answer(held);
   }
 
   /**

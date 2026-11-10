@@ -1,3 +1,5 @@
+import type { ResourceLink } from "./types.ts";
+
 /**
  * What this reads off one content block. Structural rather than the SDK's union: three of MCP's
  * block types carry text, and each of them keeps it somewhere else.
@@ -57,6 +59,32 @@ export function resultText(result: {
     return structured;
   }
   return text;
+}
+
+/**
+ * The links a tool result hands its host: its `resource_link` blocks, less their `type`.
+ *
+ * Only that block type. An embedded `resource` is the content itself, not a handle to something
+ * the call made, and its text is already the answer. A link whose `annotations.audience` is given
+ * and leaves out `"user"` is the model's alone, by the spec's own reading of the annotation, so it
+ * is dropped here; its uri is still in `resultText`.
+ *
+ * @param result A `tools/call` result. A missing `content` is no links, not an error.
+ * @returns The links in the order the server sent them. A block with no string `uri` or `name` is
+ *   skipped: the SDK refuses one before it gets here, and a host cannot follow it anyway.
+ */
+export function resultLinks(result: { content?: unknown; [key: string]: unknown }): ResourceLink[] {
+  const content = Array.isArray(result.content) ? (result.content as ContentBlock[]) : [];
+  const links: ResourceLink[] = [];
+  for (const block of content) {
+    if (block?.type !== "resource_link") continue;
+    const { type: _type, ...link } = block;
+    if (typeof link.uri !== "string" || typeof link.name !== "string") continue;
+    const audience = (link as ResourceLink).annotations?.audience;
+    if (Array.isArray(audience) && !audience.includes("user")) continue;
+    links.push(link as ResourceLink);
+  }
+  return links;
 }
 
 /** Whether `text` is `structured` re-serialised, and so says nothing the compact form does not. */

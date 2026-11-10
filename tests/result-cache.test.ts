@@ -41,8 +41,9 @@ function numbering(tools: Tool[] = TOOLS) {
     server.setRequestHandler(CallToolRequestSchema, (request) => {
       asked.push(request.params.name);
       const text = `${request.params.name}#${asked.length}`;
+      const link = { type: "resource_link" as const, uri: `notes://${text}`, name: text };
       return {
-        content: [{ type: "text", text }],
+        content: [{ type: "text", text }, ...(request.params.arguments?.link ? [link] : [])],
         isError: Boolean(request.params.arguments?.fail),
       };
     });
@@ -143,6 +144,21 @@ test("a raw call is neither answered from memory nor kept in it", async () => {
   expect(asked).toHaveLength(2);
 });
 
+test("a hit answers a links call with the links the server gave, whichever call stored it", async () => {
+  const { pool, asked } = await cached();
+  const link = { uri: "notes://read#1", name: "read#1" };
+
+  // Stored by a plain call, which never asked for the links.
+  const text = await pool.call("notes__read", { link: true });
+  expect(await pool.call("notes__read", { link: true }, { links: true })).toEqual({
+    text,
+    links: [link],
+  });
+  expect(await pool.call("notes__read", { link: true })).toBe(text);
+
+  expect(asked).toHaveLength(1);
+});
+
 test("a call that is not read-only clears what was read before it", async () => {
   const { pool, asked } = await cached();
   await pool.call("notes__read", {});
@@ -227,7 +243,7 @@ test("an answer ages out", async () => {
 
 test("the cache is bounded by age and by count, least recently used first", () => {
   let now = 0;
-  const cache = new ResultCache({ ttlMs: 100, maxEntries: 2 }, () => now);
+  const cache = new ResultCache<string>({ ttlMs: 100, maxEntries: 2 }, () => now);
   cache.set("a", "one", "1");
   cache.set("a", "two", "2");
   // Used, so it is `two` that is oldest when a third arrives.
@@ -245,7 +261,7 @@ test("the cache is bounded by age and by count, least recently used first", () =
   expect(cache.size).toBe(0);
 
   // 0 is no bound, on either.
-  const unbounded = new ResultCache({ ttlMs: 0, maxEntries: 0 }, () => now);
+  const unbounded = new ResultCache<string>({ ttlMs: 0, maxEntries: 0 }, () => now);
   for (let i = 0; i < 500; i++) unbounded.set("a", String(i), "x");
   now = 1e12;
   expect(unbounded.size).toBe(500);
