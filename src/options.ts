@@ -212,6 +212,44 @@ export interface McpPoolOptions {
    */
   idleTimeoutMs?: number;
   /**
+   * List a connected server's tools again once its list is older than this, on the next
+   * `tools()`, `catalog()`, `search()` or `call()` that touches it. 15 minutes unless set; `0` is
+   * never. `McpServerConfig.refreshMs` overrides it for one server.
+   *
+   * For a server that never sends `tools/list_changed`, whose tool added on upgrade is otherwise
+   * invisible until a restart and whose removed one is offered until a call to it fails. Run on
+   * use rather than on a timer, so a reaped or idle server is never woken to be asked, and in the
+   * background, so the use that noticed is not held up. A list that comes back the same moves
+   * nothing — no reindex, no save, no event — so a host's prompt cache holds.
+   */
+  refreshMs?: number;
+  /**
+   * Send a `ping` before a request on a connection that has heard nothing from its server for
+   * this long, and redial where it goes unanswered. 5 minutes unless set; `0` is never.
+   * `McpServerConfig.pingAfterMs` overrides it for one server.
+   *
+   * For a connection that has died without closing — an http session a proxy dropped, a stdio
+   * child wedged but not exited — which would otherwise cost the next call its whole timeout and
+   * a "timed out" for a server a redial brings straight back. On by default because it is cheap
+   * where it is not needed: one round trip, only after a quiet stretch, and never while anything
+   * is in flight on the connection, since a server busy answering is not a quiet one. Anything
+   * the server answers counts as alive, an error included; only silence, or a closed pipe, fails.
+   */
+  pingAfterMs?: number;
+  /** How long a liveness `ping` waits for its answer. 5 seconds unless set. */
+  pingTimeoutMs?: number;
+  /**
+   * Replace a connection older than this, at the first moment nothing is in flight on it. Off
+   * unless set. `McpServerConfig.maxConnectionAgeMs` overrides it for one server.
+   *
+   * For a stdio child that leaks memory over days, and an http session a gateway expires on a
+   * clock of its own. Checked as a request is about to go out and as the last one in flight
+   * settles, so a call is never cut off for it: one arriving at an old, quiet connection is sent
+   * on the new one, and one arriving while others run goes out on the old one, which is replaced
+   * once they are done.
+   */
+  maxConnectionAgeMs?: number;
+  /**
    * List a server's tools when it connects, so the pool can offer them to a model. On by default.
    *
    * Off is for the other shape of consumer: a gateway proxying `tools/list` straight through from

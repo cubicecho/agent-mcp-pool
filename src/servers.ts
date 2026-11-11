@@ -302,6 +302,9 @@ export function validateServerConfig(row: unknown): string[] {
   optional("idleTimeoutMs", (value) => wholeNumber(value, 0), "a whole number, 0 or more");
   optional("connectTimeoutMs", (value) => wholeNumber(value, 1), "a positive whole number");
   optional("callTimeoutMs", (value) => wholeNumber(value, 1), "a positive whole number");
+  optional("refreshMs", (value) => wholeNumber(value, 0), "a whole number, 0 or more");
+  optional("pingAfterMs", (value) => wholeNumber(value, 0), "a whole number, 0 or more");
+  optional("maxConnectionAgeMs", (value) => wholeNumber(value, 0), "a whole number, 0 or more");
   optional("maxResultChars", (value) => wholeNumber(value, 0), "a whole number, 0 or more");
   optional("coerceArguments", (value) => typeof value === "boolean", "true or false");
   optional("trustAnnotations", (value) => typeof value === "boolean", "true or false");

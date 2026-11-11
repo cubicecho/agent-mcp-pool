@@ -451,6 +451,46 @@ call spawned a child. Which of the two things the method did depended on a const
 somewhere else entirely; now the two pools mean the same by it. A disabled row is still not
 started: it is off for a reason a reconnect does not overrule.
 
+### Keeping a long-lived pool current
+
+A host keeps its pool open for weeks, and what it holds goes stale in ways no notification
+reports: a server that never sends `tools/list_changed`, a connection that died without closing,
+a child that grows. Three clocks renew it, each with a pool default and a per-row override where
+`null` is "use the pool's" and `0` is off:
+
+```ts
+new McpPool({
+  load,
+  refreshMs: 15 * 60_000,         // the default: re-list a tool list older than this, on use
+  pingAfterMs: 5 * 60_000,        // the default: ping a connection quiet for this long first
+  pingTimeoutMs: 5000,            // the default: how long that ping waits
+  maxConnectionAgeMs: 86_400_000, // off unless set: replace a connection older than this
+});
+```
+
+**`refreshMs`** re-lists a connected server whose list is older than this, from the next
+`tools()`, `catalog()`, `search()` or `call()` that touches it. It runs behind that use rather
+than in front of it, and on use rather than on a timer, so a reaped or idle server is never woken
+to be asked. A list that comes back the same moves nothing — no reindex, no save, no event — so
+a host's prompt cache holds; one that moved fires `tools-changed` with `cause: "refresh"`. A
+server that does send `tools/list_changed` can have it turned off on its row.
+
+**`pingAfterMs`** is a liveness check with the spec's `ping`. Before a request on a connection
+that has heard nothing from its server for this long — no answer, no notification — the pool
+pings it, and one that does not answer within `pingTimeoutMs` is redialled and the request sent
+on the new connection, instead of spending its whole timeout on a pipe that will never answer.
+Anything the server says counts as alive, an error included. It is never sent while something is
+in flight on the connection, since a server busy with a long call is not a quiet one, and a burst
+of requests shares one ping. A refresh pings the same way first. It is on by default because it
+costs one round trip after a quiet stretch and nothing otherwise, against a "timed out" handed to
+a model for a server a redial would have brought straight back. Each failure fires `ping-failed`.
+
+**`maxConnectionAgeMs`** recycles a connection older than this — a stdio child that leaks, an
+http session a gateway expires — at the first moment nothing is in flight on it: a request
+arriving at an old, quiet connection goes out on the new one, and one arriving while others run
+goes out on the old one, which is replaced as the last of them settles. Its close has reason
+`recycle`. Off by default, since a healthy child is not restarted for nothing.
+
 ### Not indexing at all
 
 The drain that fills the index is the pool doing its job for an agent loop, and pure cost for a
@@ -1063,16 +1103,18 @@ const stop = pool.onEvent((event) => {
 | `connect` | `serverId`, `ms`, and the number of `tools` it listed |
 | `connect-failed` | `serverId`, `ms`, and the `error` the row now reports |
 | `close` | `serverId` and a `reason`, plus the `error` for a crash |
-| `tools-changed` | `serverId`, the `before` and `after` fingerprints, the number of `tools` now, and the names `added` and `removed` |
+| `tools-changed` | `serverId`, the `cause`, the `before` and `after` fingerprints, the number of `tools` now, and the names `added` and `removed` |
+| `ping-failed` | `serverId`, `ms`, and the `error` — a quiet connection that did not answer its `ping`; the redial follows |
 | `call` | `qualified`, `serverId` and `toolName` once resolved, `ms`, `ok`, the refusal `code` and `error`, `chars` before any cap, `truncated`, `hidden`, `raw`, and `cached` where `resultCache` answered |
 
 A close's `reason` is one of `idle`, `stop`, `reconnect`, `removed`, `changed`, `redial`,
-`shutdown` or `crash`. It fires only for a connection that was open, and after `state()` already
+`recycle`, `shutdown` or `crash`. It fires only for a connection that was open, and after `state()` already
 shows where the close left the server.
 
-`tools-changed` follows a `tools/list_changed` that moved the fingerprint; one that changed
-nothing is not reported. So does a cold server that comes back offering other tools than its
-last-known list. A tool whose description or schema changed is in neither `added` nor
+`tools-changed` follows a `tools/list_changed` that moved the fingerprint (`cause:
+"notification"`); one that changed nothing is not reported. So does a `refreshMs` re-list that
+found something new (`"refresh"`), and a server that comes back from a reap or a redial offering
+other tools than its last-known list (`"reconnect"`). A tool whose description or schema changed is in neither `added` nor
 `removed`, so the fingerprints are what say a change happened.
 
 Listeners run synchronously as each thing happens. One that throws is logged and skipped, since a
