@@ -123,7 +123,10 @@ handle to close it.
 tool left on page two is not merely unlisted — it is absent from `index`, so `call()` refuses it
 as one that does not exist. `drain` in `listing.ts` is the one walk, behind `listAllTools`,
 `listAllPrompts`, `listAllResources` and `listAllResourceTemplates`; a fifth list goes through it
-rather than growing its own loop without the guards.
+rather than growing its own loop without the guards. And only where the handshake declared the
+capability: a prompts-only server answers `tools/list` with Method not found, so `dial` and
+`relist` read `getServerCapabilities()?.tools` first and index nothing without it — asking anyway
+failed the connect and left the half the server does offer unreachable.
 
 **Prompts and resources are asked of the servers that declared them, off the kept handshake.**
 The SDK is not strict about capabilities, so a request to a server that never declared `prompts`

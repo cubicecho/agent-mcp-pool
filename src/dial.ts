@@ -17,7 +17,8 @@ import { listAllTools } from "./listing.ts";
  * @param options `timeoutMs` bounds the handshake and every page together; absent or `null` leaves
  *   each request the SDK's own default. `listTools: false` stops at the handshake, for a pool that
  *   does not index — see `McpPoolOptions.indexTools`.
- * @returns Every page of the server's tools, or none where the list was not asked for.
+ * @returns Every page of the server's tools, or none where the list was not asked for or the
+ *   handshake declared no `tools`.
  */
 export async function dial(
   client: Client,
@@ -28,6 +29,9 @@ export async function dial(
   await client.connect(transport, remaining());
   // Every page: a tool that landed on page two is missing from the index, and `call()` then
   // refuses it as a tool that does not exist — and a probe that under-reports shows a person
-  // fewer tools than the server has.
-  return listTools ? listAllTools(client, remaining()) : [];
+  // fewer tools than the server has. Only where the handshake declared `tools`: a server offering
+  // only prompts or resources answers `tools/list` with Method not found, and asking it anyway
+  // failed the whole connect, leaving the half it does offer unreachable.
+  if (!listTools || !client.getServerCapabilities()?.tools) return [];
+  return listAllTools(client, remaining());
 }

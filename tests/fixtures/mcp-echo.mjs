@@ -75,14 +75,18 @@ if (process.env.MCP_ECHO_ODD_NAMES) {
   );
 }
 
+// Capabilities left out of the handshake, comma-separated: `tools` for a server that offers only
+// prompts or resources, which is a whole server and not a broken one.
+const without = new Set((process.env.MCP_ECHO_WITHOUT ?? "").split(",").filter(Boolean));
+
 const server = new Server(
   { name: "echo", version: "0.0.1" },
   {
     // Resources as well as tools, because the pool's own surface reaches only the tools half and
     // a test for the raw client has to ask for something that surface cannot express.
     capabilities: {
-      tools: {},
-      resources: {},
+      ...(without.has("tools") ? {} : { tools: {} }),
+      ...(without.has("resources") ? {} : { resources: {} }),
       // Off unless asked, so a server that offers no prompts — the ordinary case, and the one the
       // pool must not ask — is what every other test talks to.
       ...(process.env.MCP_ECHO_PROMPTS ? { prompts: {} } : {}),
@@ -97,6 +101,18 @@ const server = new Server(
     instructions: process.env.MCP_ECHO_INSTRUCTIONS || undefined,
   },
 );
+// The SDK refuses a handler for a capability the server did not declare, so one left out is not
+// registered at all — and the method then answers Method not found, as on a server that never had
+// it.
+const register = server.setRequestHandler.bind(server);
+server.setRequestHandler = (schema, handler) => {
+  try {
+    register(schema, handler);
+  } catch (error) {
+    if (without.size === 0 || !/does not support/.test(String(error))) throw error;
+  }
+};
+
 // A server that connects cleanly and offers nothing. Rarer than a broken one and easier to miss,
 // because every status the pool reports about it says it is fine.
 const offered = process.env.MCP_ECHO_NO_TOOLS ? [] : tools;
