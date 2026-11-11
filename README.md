@@ -894,7 +894,10 @@ a tool that rejected its arguments does not. The message is unchanged, so anythi
 
 `invalid-arguments` is the pool refusing a call before the server sees it, because the arguments
 still failed the tool's schema after coercion. See [arguments](#arguments). `timeout` is a call
-that ran out of time. See [timeouts](#timeouts).
+that ran out of time. See [timeouts](#timeouts). `aborted` is a request its caller's `signal`
+stopped — a `call()`, `expandPrompt()`, `readResource()` or `complete()` — with the signal's
+`reason` as `cause`. The SDK rejects an abort with the code its own timer uses, so it used to
+arrive as a `timeout`, after a number that never ran out.
 
 A gateway answering over HTTP wants a status for each code, and every one that sat in front of
 this pool wrote the same table. `httpStatusFor(code)` is that table:
@@ -907,6 +910,7 @@ this pool wrote the same table. `httpStatusFor(code)` is that table:
 | `connect-failed`, `tool-error` | 502 |
 | `backoff` | 503 |
 | `timeout` | 504 |
+| `aborted` | 499 |
 
 A failed server is then retried, which is the other half: `sync` leaves a *healthy* unchanged
 server alone but treats a failed one as work to do, and `call` brings back a server that is
