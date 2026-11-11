@@ -1,3 +1,10 @@
+# [3.14.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.13.0...v3.14.0) (2026-11-11)
+
+
+### Features
+
+* route an elicitation to the call that caused it ([24fc4c6](https://github.com/cubicecho/agent-mcp-pool/commit/24fc4c66e0112f975fc2bd14f5b3ef50ad1ede27)), closes [#110](https://github.com/cubicecho/agent-mcp-pool/issues/110)
+
 # [3.13.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.12.0...v3.13.0) (2026-11-10)
 
 
