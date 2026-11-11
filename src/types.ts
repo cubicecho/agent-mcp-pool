@@ -240,6 +240,21 @@ export interface HookContext {
   vars?: Record<string, unknown>;
 }
 
+/**
+ * Runs one event's hooks, as `McpPool.hookRunner` hands it back — agent-core's `HookRunner`, and
+ * assignable to it.
+ *
+ * Declared here rather than imported for the reason `ToolDefinition` is: neither package depends
+ * on the other, and TypeScript is structural. `options` is optional here and required there, which
+ * still assigns, so a host can call this directly for an event no loop fires — a `sessionDelete`.
+ * A test typechecks the two together.
+ */
+export type HookRunner = (
+  event: HookEvent,
+  context: HookContext,
+  options?: { signal?: AbortSignal },
+) => Promise<HookOutcome[]>;
+
 /** What one hook did. `runHooks` returns one per hook it considered, in configuration order. */
 export interface HookOutcome {
   serverId: string;

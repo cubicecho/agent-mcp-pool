@@ -499,3 +499,9 @@ export interface RunHooksOptions {
    */
   onNotice?: (notice: string, outcome: HookOutcome) => void;
 }
+
+/**
+ * What `hookRunner` binds for the life of the runner: everything `runHooks` takes but the signal,
+ * which belongs to each call.
+ */
+export type HookRunnerOptions = Omit<RunHooksOptions, "signal">;

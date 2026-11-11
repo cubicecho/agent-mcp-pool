@@ -33,6 +33,7 @@ import type {
   CallOptions,
   DescribeOptions,
   ElicitHandler,
+  HookRunnerOptions,
   ListingOptions,
   McpPoolOptions,
   PoolLog,
@@ -68,6 +69,7 @@ import type {
   HookContext,
   HookEvent,
   HookOutcome,
+  HookRunner,
   McpConnection,
   McpProbe,
   McpServerConfig,
@@ -2719,6 +2721,27 @@ export class McpPool {
       context,
       options,
     );
+  }
+
+  /**
+   * `runHooks` with the run's scope and listener bound, as agent-core's `HookRunner` — what
+   * `gather`, `notify`, `consult` and `runAgentLoop`'s hooks are handed.
+   *
+   * Every host wrote this adapter, and it is where scope got forgotten: a runner built without
+   * `servers` fires every server's hooks for a run scoped to a few, and nothing downstream can
+   * tell. Binding it once at creation leaves each call only the signal, which is the turn's.
+   *
+   * The scope is copied as it stands now. An `Iterable` may be a generator, spent by the first
+   * event, or a set the host goes on editing; either would move the scope partway through a run.
+   * The rows are not copied — each event runs the pool's current ones, as `runHooks` does.
+   *
+   * @param options The run's scope — absent is every server, empty is none — and `onNotice`.
+   * @returns A runner that, like `runHooks`, never rejects.
+   */
+  hookRunner({ servers, onNotice }: HookRunnerOptions = {}): HookRunner {
+    const scoped = servers === undefined ? undefined : [...servers];
+    return (event, context, { signal } = {}) =>
+      this.runHooks(event, context, { servers: scoped, signal, onNotice });
   }
 
   /**
