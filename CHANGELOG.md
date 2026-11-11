@@ -1,3 +1,10 @@
+## [3.16.2](https://github.com/cubicecho/agent-mcp-pool/compare/v3.16.1...v3.16.2) (2026-11-11)
+
+
+### Bug Fixes
+
+* report a request stopped by its signal as aborted, not timeout ([301f6cd](https://github.com/cubicecho/agent-mcp-pool/commit/301f6cdb38720e281dc09b48a4f5d7f88b330309)), closes [#122](https://github.com/cubicecho/agent-mcp-pool/issues/122)
+
 ## [3.16.1](https://github.com/cubicecho/agent-mcp-pool/compare/v3.16.0...v3.16.1) (2026-11-11)
 
 
