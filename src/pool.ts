@@ -123,6 +123,23 @@ function answered(error: unknown) {
   );
 }
 
+/**
+ * Whether a request failed because its caller's `signal` aborted, rather than for anything the
+ * server or the SDK's own timer did.
+ *
+ * The SDK rejects an aborted request with `McpError(RequestTimeout, String(reason))` for any
+ * reason that is not already an `McpError` — the code its timer rejects with — and with the reason
+ * itself where the signal aborted before the request went out. Read off the code alone, a run a
+ * person stopped reported its tool as timed out, after a number that never ran out.
+ */
+function abortedBy(signal: AbortSignal | undefined, error: unknown): signal is AbortSignal {
+  if (!signal?.aborted) return false;
+  return (
+    error === signal.reason ||
+    (error instanceof McpError && error.code === ErrorCode.RequestTimeout)
+  );
+}
+
 /** Why `renew` is replacing a connection, which decides what it logs and reports. */
 type RenewReason = "session" | "unresponsive" | "recycle";
 
@@ -2035,8 +2052,9 @@ export class McpPool {
    * @param options `servers` refuses a server outside it; `signal` aborts.
    * @returns The expansion.
    * @throws {McpPoolError} `unsupported` for a server that did not declare `prompts`,
-   *   `out-of-scope`, or whatever `client()` throws. The server's own refusal — a prompt it does not
-   *   have, an argument missing — is passed through.
+   *   `out-of-scope`, `aborted` where `signal` stopped the request, or whatever `client()` throws.
+   *   The server's own refusal — a prompt it does not have, an argument missing — is passed
+   *   through.
    */
   async expandPrompt(
     serverId: string,
@@ -2092,8 +2110,8 @@ export class McpPool {
    *   branches once its owner is known.
    * @param options `servers` and `signal` as for `expandPrompt`.
    * @returns The suggestions in the server's order; at most a hundred, by the spec.
-   * @throws {McpPoolError} `out-of-scope`, or whatever `client()` throws. The server's own
-   *   refusal is passed through.
+   * @throws {McpPoolError} `out-of-scope`, `aborted` as for `expandPrompt`, or whatever
+   *   `client()` throws. The server's own refusal is passed through.
    */
   async complete(
     serverId: string,
@@ -2105,7 +2123,7 @@ export class McpPool {
     this.inScopeOrRefuse(serverId, options.servers);
     const handshake = this.entries.get(serverId)?.handshake;
     if (handshake && !handshake.capabilities?.completions) return [];
-    return this.use(serverId, async (client) => {
+    const request = this.use(serverId, async (client) => {
       // Read again off the connection: a server never connected had no handshake to go on, and a
       // redial may have answered differently from the one that was kept.
       if (!client.getServerCapabilities()?.completions) return [];
@@ -2115,6 +2133,7 @@ export class McpPool {
       );
       return completion.values;
     });
+    return this.stoppable(serverId, options.signal, request);
   }
 
   /** The entries a listing asks: enabled, in scope, and declaring `capability` when last seen. */
@@ -2151,7 +2170,7 @@ export class McpPool {
     run: (client: Client) => Promise<T>,
   ): Promise<T> {
     this.inScopeOrRefuse(serverId, options.servers);
-    return this.use(serverId, (client) => {
+    const request = this.use(serverId, (client) => {
       if (!client.getServerCapabilities()?.[capability]) {
         const entry = this.entries.get(serverId);
         const slug = entry ? slugOf(entry.config) : serverId;
@@ -2160,6 +2179,28 @@ export class McpPool {
         });
       }
       return run(client);
+    });
+    return this.stoppable(serverId, options.signal, request);
+  }
+
+  /**
+   * `request`, with a rejection that was `signal` aborting refused as `aborted` rather than passed
+   * on as the SDK's timeout — see `abortedBy`.
+   */
+  private stoppable<T>(
+    serverId: string,
+    signal: AbortSignal | undefined,
+    request: Promise<T>,
+  ): Promise<T> {
+    if (!signal) return request;
+    return request.catch((error: unknown) => {
+      if (!abortedBy(signal, error)) throw error;
+      const entry = this.entries.get(serverId);
+      const slug = entry ? slugOf(entry.config) : serverId;
+      throw new McpPoolError("aborted", `the request to the MCP server "${slug}" was aborted`, {
+        serverId,
+        cause: signal.reason,
+      });
     });
   }
 
@@ -2382,8 +2423,9 @@ export class McpPool {
    * @throws {McpPoolError} `unknown-tool` (a hidden tool included), or `out-of-scope` for a tool
    *   this run may not reach. All carry the same message, so the model cannot tell them apart.
    *   `invalid-arguments` where the arguments fail the tool's schema after coercion, with a
-   *   message the model can correct from; `timeout` where the request ran out of time; and
-   *   `tool-error` where the server answered `isError`.
+   *   message the model can correct from; `timeout` where the request ran out of time;
+   *   `aborted` where `signal` stopped it, with the signal's reason as `cause`; and `tool-error`
+   *   where the server answered `isError`.
    */
   call(
     qualifiedName: string,
@@ -2630,6 +2672,16 @@ export class McpPool {
       },
     )
       .catch((error: unknown) => {
+        // Before the timeout, since an abort arrives wearing the timeout's code: a run a person
+        // stopped must not report its tool as slow, and a caller sorting failures must be able to
+        // tell the two apart.
+        if (abortedBy(signal, error)) {
+          throw new McpPoolError("aborted", `"${qualifiedName}" was aborted`, {
+            toolName: qualifiedName,
+            serverId: found.serverId,
+            cause: signal.reason,
+          });
+        }
         // The SDK's own timeout, coded: a caller deciding whether to retry should not have to
         // recognise "MCP error -32001" to find out the tool was merely slow.
         if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {

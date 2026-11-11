@@ -182,6 +182,37 @@ test("a call that runs out of time is refused as timeout", async () => {
   expect(httpStatusFor((error as McpPoolError).code)).toBe(504);
 });
 
+test("a call its signal stops is refused as aborted, not as a timeout, and at once", async () => {
+  pool = makePool({ servers, callTimeoutMs: 5000 });
+  await pool.sync([memoryRow("echo")]);
+  const controller = new AbortController();
+  const reason = new Error("the person pressed stop");
+  const started = Date.now();
+  const call = pool
+    .call("echo__ping", { sleepMs: 2000 }, { signal: controller.signal })
+    .catch((caught: unknown) => caught);
+  setTimeout(() => controller.abort(reason), 20);
+  const error = await call;
+
+  // The SDK rejects an abort with the code its own timer uses, which read as "timed out after
+  // 5000ms" for a call that ran for twenty.
+  expect(error).toBeInstanceOf(McpPoolError);
+  expect(error).toMatchObject({ code: "aborted", serverId: "echo", toolName: "echo__ping" });
+  expect((error as McpPoolError).cause).toBe(reason);
+  expect((error as McpPoolError).timeoutMs).toBeUndefined();
+  expect(Date.now() - started).toBeLessThan(1000);
+  expect(httpStatusFor("aborted")).toBe(499);
+});
+
+test("a call whose signal never aborts still times out as timeout", async () => {
+  pool = makePool({ servers, callTimeoutMs: 50 });
+  await pool.sync([memoryRow("echo")]);
+  const error = await pool
+    .call("echo__ping", { sleepMs: 500 }, { signal: new AbortController().signal })
+    .catch((caught: unknown) => caught);
+  expect(error).toMatchObject({ code: "timeout", timeoutMs: 50 });
+});
+
 test("maxResultChars caps a call on the pool, the row and the call, nearest first", async () => {
   pool = makePool({ servers: { ...servers, big: () => echoServer() }, maxResultChars: 100 });
   await pool.sync([memoryRow("echo"), memoryRow("big", { maxResultChars: 0 })]);

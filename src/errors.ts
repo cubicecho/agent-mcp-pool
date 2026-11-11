@@ -49,6 +49,7 @@ export type McpPoolErrorCode =
   | "tool-error"
   | "invalid-arguments"
   | "timeout"
+  | "aborted"
   | "unsupported";
 
 /** What an `McpPoolError` carries beyond its message. */
@@ -63,6 +64,7 @@ export interface McpPoolErrorOptions {
   retryAt?: number;
   /** For `timeout`: the bound that ran out, in milliseconds. */
   timeoutMs?: number;
+  /** What went wrong underneath. For `aborted`, the signal's own `reason`. */
   cause?: unknown;
 }
 
@@ -107,6 +109,7 @@ export class McpPoolError extends Error {
  * A tool or server that does not exist is `404`, out of scope included, since to that caller it
  * does not exist, and so are prompts or resources a server never declared; a failure on the far
  * side of the pool is `502`; a backoff, which will clear on its own, is `503`; a timeout `504`;
+ * a request its caller stopped `499`, the status for a client that went away before the answer;
  * arguments the model got wrong `400`; and a pool with nothing to reconcile is the host's own
  * misconfiguration, `500`.
  *
@@ -128,5 +131,6 @@ const HTTP_STATUS: Record<McpPoolErrorCode, number> = {
   "tool-error": 502,
   "invalid-arguments": 400,
   timeout: 504,
+  aborted: 499,
   unsupported: 404,
 };

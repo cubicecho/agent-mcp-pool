@@ -193,6 +193,31 @@ test("a server outside the scope is refused in the words for one that does not e
   );
 });
 
+test("a prompt, a resource and a completion their signal stops are refused as aborted", async () => {
+  await pool.sync([row()]);
+  const reason = new Error("stopped");
+  const signal = AbortSignal.abort(reason);
+
+  for (const request of [
+    pool.expandPrompt("echo-1", "greet", { name: "Ada" }, { signal }),
+    pool.readResource("echo-1", "echo://greeting", { signal }),
+    pool.complete(
+      "echo-1",
+      { type: "ref/prompt", name: "greet" },
+      { name: "name", value: "A" },
+      {},
+      {
+        signal,
+      },
+    ),
+  ]) {
+    const refused = await request.catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(McpPoolError);
+    expect(refused).toMatchObject({ code: "aborted", serverId: "echo-1" });
+    expect((refused as McpPoolError).cause).toBe(reason);
+  }
+});
+
 test("readResource returns text with its mime type", async () => {
   await pool.sync([plain()]);
 
