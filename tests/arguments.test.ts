@@ -111,6 +111,7 @@ test("httpStatusFor maps every code", () => {
     "tool-error": 502,
     "invalid-arguments": 400,
     timeout: 504,
+    aborted: 499,
     unsupported: 404,
   };
   for (const [code, status] of Object.entries(codes)) {
@@ -201,7 +202,6 @@ test("a call its signal stops is refused as aborted, not as a timeout, and at on
   expect((error as McpPoolError).cause).toBe(reason);
   expect((error as McpPoolError).timeoutMs).toBeUndefined();
   expect(Date.now() - started).toBeLessThan(1000);
-  expect(httpStatusFor("aborted")).toBe(499);
 });
 
 test("a call whose signal never aborts still times out as timeout", async () => {
