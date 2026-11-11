@@ -1,3 +1,10 @@
+# [3.15.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.14.0...v3.15.0) (2026-11-11)
+
+
+### Features
+
+* renew stale state with refreshMs, a liveness ping and maxConnectionAgeMs ([dfd368b](https://github.com/cubicecho/agent-mcp-pool/commit/dfd368bbe79f29343819f19aa690cc7b8215e791)), closes [#111](https://github.com/cubicecho/agent-mcp-pool/issues/111)
+
 # [3.14.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.13.0...v3.14.0) (2026-11-11)
 
 
