@@ -320,6 +320,112 @@ test("a failing hook is an outcome and a notice, never a rejection", async () =>
   );
 });
 
+// --- hookRunner ---------------------------------------------------------------------------------
+
+/**
+ * agent-core's `HookRunner` and the shapes it names, copied as agent-core declares them. Neither
+ * package imports the other, so the assignments in the test below are what hold the two together.
+ */
+type CoreHookEvent =
+  | "sessionStart"
+  | "beforeTurn"
+  | "afterTurn"
+  | "beforeCompact"
+  | "sessionEnd"
+  | "sessionDelete";
+interface CoreHookMessage {
+  speaker: string;
+  text: string;
+  uuid: string;
+}
+interface CoreHookContext {
+  session: { id: string };
+  host?: string;
+  now?: string;
+  prompt?: string;
+  reply?: string;
+  turn?: { index: number; messages?: CoreHookMessage[] };
+  compacting?: CoreHookMessage[];
+  range?: { from: number; through: number };
+  status?: "ok" | "stopped" | "error";
+  vars?: Record<string, unknown>;
+}
+interface CoreHookOutcome {
+  serverId: string;
+  label: string;
+  hookId: string;
+  event: CoreHookEvent;
+  ok: boolean;
+  text?: string;
+  error?: string;
+  skipped?: boolean;
+  ms: number;
+  inject: boolean;
+  maxTokens: number;
+  veto?: boolean;
+}
+type CoreHookRunner = (
+  event: CoreHookEvent,
+  context: CoreHookContext,
+  options: { signal?: AbortSignal },
+) => Promise<readonly CoreHookOutcome[]>;
+
+test("hookRunner is agent-core's HookRunner, and binds the scope it was made with", async () => {
+  await pool.sync([
+    echoRow({ hooks: [hook({ id: "one" })] }),
+    echoRow({ id: "echo-2", slug: "echo2", label: "Echo 2", hooks: [hook({ id: "two" })] }),
+  ]);
+  const every: CoreHookRunner = pool.hookRunner();
+  const scoped: CoreHookRunner = pool.hookRunner({ servers: ["echo-2"] });
+  const none: CoreHookRunner = pool.hookRunner({ servers: [] });
+
+  expect((await every("beforeTurn", context, {})).map((o) => o.hookId)).toEqual(["one", "two"]);
+  expect((await scoped("beforeTurn", context, {})).map((o) => o.hookId)).toEqual(["two"]);
+  expect(await none("beforeTurn", context, {})).toEqual([]);
+});
+
+test("a scope given as a generator holds for every event, not just the first", async () => {
+  await withHooks([hook()]);
+  function* ids() {
+    yield "echo-1";
+  }
+  const run = pool.hookRunner({ servers: ids() });
+  expect(await run("beforeTurn", context)).toHaveLength(1);
+  expect(await run("beforeTurn", context)).toHaveLength(1);
+});
+
+test("a scope edited after the runner was made does not move it", async () => {
+  await withHooks([hook()]);
+  const servers = new Set<string>();
+  const run = pool.hookRunner({ servers });
+  servers.add("echo-1");
+  expect(await run("beforeTurn", context)).toEqual([]);
+});
+
+test("hookRunner tells its own listener of a failure, and takes each call's signal", async () => {
+  await withHooks([
+    hook({ args: { fail: "boom" } }),
+    hook({ id: "slow", args: { sleepMs: 5000 } }),
+  ]);
+  const notices: string[] = [];
+  const run = pool.hookRunner({ onNotice: (notice) => notices.push(notice) });
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 50);
+  const started = Date.now();
+  const outcomes = await run("beforeTurn", context, { signal: controller.signal });
+  expect(outcomes.map(({ hookId, ok }) => [hookId, ok])).toEqual([
+    ["h", false],
+    ["slow", false],
+  ]);
+  expect(Date.now() - started).toBeLessThan(1500);
+  expect(notices).toEqual(
+    expect.arrayContaining([
+      'Echo: beforeTurn hook "h" failed: boom',
+      expect.stringContaining('"slow"'),
+    ]),
+  );
+});
+
 test("a hook whose placeholder has no value is skipped rather than sent", async () => {
   await withHooks([hook({ args: { text: "{{reply}}" } })]);
   const notices: string[] = [];

@@ -80,6 +80,7 @@ What a pool and its methods are told: the constructor's options and each call's.
 - `CallOptions` (type) — How one `call()` is made, beyond its name and arguments.
 - `DescribeOptions` (type) — What `describe()` takes beside the name.
 - `ElicitHandler` (type) — Answers one `elicitation/create`: `McpPoolOptions.onElicit` for the pool, `CallOptions.onElicit` for one call.
+- `HookRunnerOptions` (type) — What `hookRunner` binds for the life of the runner: everything `runHooks` takes but the signal, which belongs to each call.
 - `ListingOptions` (type) — What `prompts()` and `resources()` take.
 - `McpPoolOptions` (type) — How a pool is built: where its rows come from, how patient it is, and what it may spawn.
 - `PoolLog` (type) — Where the pool's own progress goes.
@@ -149,6 +150,7 @@ Questions about server rows that need neither a connection nor Node — for the 
 - `HookEvent` (type) — A point in a session a hook can be bound to.
 - `HookMessage` (type) — One message of a session as a hook is handed it.
 - `HookOutcome` (type) — What one hook did.
+- `HookRunner` (type) — Runs one event's hooks, as `McpPool.hookRunner` hands it back — agent-core's `HookRunner`, and assignable to it.
 - `HttpServerConfig` (type) — A server reached over streamable HTTP, at a url this process does not own the lifetime of.
 - `McpConnection` (type) — What it takes to reach a server — the connection half of a row, without its identity.
 - `McpProbe` (type) — What `probe` found: whether the config works, and what it offers if it does.

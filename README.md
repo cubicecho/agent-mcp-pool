@@ -248,6 +248,20 @@ void pool.runHooks("afterTurn", { session: { id }, prompt, reply, turn: { index,
 The pool never fires a hook itself — only the host knows when a turn starts. It supplies the runner,
 so every host runs the same rows the same way.
 
+For agent-core, whose `gather`, `notify`, `consult` and `runAgentLoop` take a `HookRunner`, the pool
+hands one over with the run's scope and listener bound:
+
+```ts
+const run = pool.hookRunner({ servers: agent.mcpServerIds, onNotice });
+const { context } = await gather(run, ["beforeTurn"], { session: { id }, prompt }, { signal });
+```
+
+The scope is the reason to take this over writing the one-line wrapper: a runner built without
+`servers` fires every server's hooks for a run scoped to a few. It is copied when the runner is
+made, so a generator or a set edited later does not move it; the rows are read at each event. The
+runner's type is declared here rather than imported from agent-core, and a test holds it
+assignable to agent-core's.
+
 | Event | Runs | Context beyond `session.id`, `host`, `now`, `vars.*` | `inject` |
 |---|---|---|---|
 | `sessionStart` | before a session's first turn | `prompt` | yes |
