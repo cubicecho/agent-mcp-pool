@@ -148,6 +148,47 @@ test("a server with resources and no templates handler lists no templates, not a
   expect(entry?.error).toBeUndefined();
 });
 
+test("a server with prompts and no tools connects, lists no tools, and serves its prompts", async () => {
+  const errors: string[] = [];
+  pool = makePool({ log: { error: (message) => errors.push(message) } });
+  // Neither tools nor resources: a prompts-only server answers `tools/list` with Method not
+  // found, which used to fail the connect and leave its prompts unreachable.
+  await pool.sync([row({}, { MCP_ECHO_WITHOUT: "tools,resources" })]);
+
+  expect(pool.state()[0]).toMatchObject({ status: "ready", tools: [] });
+  expect(pool.tools()).toEqual([]);
+  const [entry] = await pool.prompts();
+  expect(entry?.prompts.map((prompt) => prompt.name)).toEqual(["greet", "review", "picture"]);
+  expect(await pool.expandPrompt("echo-1", "greet", { name: "Ada" })).toBe("Hello, Ada!");
+  expect(errors).toEqual([]);
+});
+
+test("a server with resources and no tools connects and serves its resources", async () => {
+  await pool.sync([echoRow({ env: { MCP_ECHO_SPAWN_LOG: spawnLog, MCP_ECHO_WITHOUT: "tools" } })]);
+
+  expect(pool.state()[0]).toMatchObject({ status: "ready", tools: [] });
+  const [entry] = await pool.resources();
+  expect(entry?.resources).toHaveLength(3);
+  expect(await pool.readResource("echo-1", "echo://greeting")).toMatchObject({
+    text: "hello from a resource",
+  });
+});
+
+test("a refresh leaves a server that declared no tools alone rather than logging a failure", async () => {
+  const errors: string[] = [];
+  pool = makePool({ refreshMs: 1, log: { error: (message) => errors.push(message) } });
+  await pool.sync([row({}, { MCP_ECHO_WITHOUT: "tools" })]);
+
+  // Past the refresh age, a catalogue read is what starts a re-list.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  pool.catalog();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  pool.catalog();
+
+  expect(errors).toEqual([]);
+  expect(pool.state()[0]?.status).toBe("ready");
+});
+
 test("one message expands verbatim", async () => {
   await pool.sync([row()]);
 

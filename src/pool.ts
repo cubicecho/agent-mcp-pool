@@ -1178,7 +1178,9 @@ export class McpPool {
    * @param cause The server's notification, or the pool's own clock.
    */
   private relist(entry: Entry, client: Client, cause: "notification" | "refresh") {
-    if (!this.indexTools) return;
+    // A server that declared no `tools` has none to list again, and asking is Method not found —
+    // a refresh against a prompts-only server would log that as a failure on every use.
+    if (!this.indexTools || !client.getServerCapabilities()?.tools) return;
     if (cause === "notification") {
       if (entry.relistOwed) return;
       entry.relistOwed = true;
