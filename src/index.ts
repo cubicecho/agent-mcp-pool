@@ -61,6 +61,7 @@ export {
 export type {
   CallOptions,
   DescribeOptions,
+  ElicitHandler,
   ListingOptions,
   McpPoolOptions,
   PoolLog,

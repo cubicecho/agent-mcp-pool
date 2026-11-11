@@ -2,7 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   type CallToolResult,
+  type ElicitRequestParams,
   ElicitRequestSchema,
+  type ElicitResult,
   ErrorCode,
   type LoggingLevel,
   McpError,
@@ -30,6 +32,7 @@ import { couldQualify, type PooledTool, pooledTool } from "./naming.ts";
 import type {
   CallOptions,
   DescribeOptions,
+  ElicitHandler,
   ListingOptions,
   McpPoolOptions,
   PoolLog,
@@ -157,6 +160,16 @@ interface LogSink {
   worst: number;
 }
 
+/** One call answering its own elicitations: the handler, and what ends its wait. */
+interface ElicitSink {
+  onElicit: ElicitHandler;
+  /** Aborts when the call's request settles, however it settles. */
+  settled: AbortSignal;
+}
+
+/** What a person who never answers is taken to have said. */
+const CANCEL: ElicitResult = { action: "cancel" };
+
 /**
  * A `notifications/message` read as an entry, or `undefined` for one that is not shaped like the
  * spec's — which is left to `onNotification`, where a listener can make of it what it likes.
@@ -260,6 +273,8 @@ export class McpPool {
   private inFlight = new WeakMap<Client, Set<Promise<unknown>>>();
   /** The calls in `inFlight` that asked to hear their server's log, by request. See `relayLog`. */
   private logSinks = new WeakMap<Promise<unknown>, LogSink>();
+  /** The calls in `inFlight` that answer their own elicitations, by request. See `elicit`. */
+  private elicitSinks = new WeakMap<Promise<unknown>, ElicitSink>();
   /** The redial each client that lost its session is being, or was, replaced by. See `renew`. */
   private renewals = new WeakMap<Client, Promise<void>>();
   private readonly lazy: boolean;
@@ -284,7 +299,9 @@ export class McpPool {
   private readonly toolsTokenWarning: number;
   /** The largest over-limit tool set `tools()` has reported. See `weigh`. */
   private weighed = 0;
-  private readonly onElicit?: McpPoolOptions["onElicit"];
+  private readonly onElicit?: ElicitHandler;
+  /** Whether connections declare elicitation: a pool-wide handler, or a host answering per call. */
+  private readonly elicitation: boolean;
   private readonly elicitationModes: ("form" | "url")[];
   private readonly createTransport: TransportFactory;
   private readonly toolsCache?: McpPoolOptions["toolsCache"];
@@ -313,6 +330,7 @@ export class McpPool {
     maxLogsPerCall = DEFAULT_MAX_LOGS_PER_CALL,
     toolsTokenWarning = 3000,
     onElicit,
+    elicitation = false,
     elicitationModes = ["form"],
     lazy = false,
     idleTimeoutMs,
@@ -337,6 +355,7 @@ export class McpPool {
     this.maxLogsPerCall = maxLogsPerCall;
     this.toolsTokenWarning = toolsTokenWarning;
     this.onElicit = onElicit;
+    this.elicitation = elicitation || onElicit !== undefined;
     this.elicitationModes = elicitationModes;
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
@@ -753,23 +772,78 @@ export class McpPool {
    * @param serverId The server this client will dial, for the elicitation handler to report.
    */
   private newClient(serverId: string): Client {
-    const onElicit = this.onElicit;
     const modes = Object.fromEntries(this.elicitationModes.map((mode) => [mode, {}]));
     const client = new Client(
       { name: this.clientName, version: this.clientVersion },
-      onElicit ? { capabilities: { elicitation: modes } } : {},
+      this.elicitation ? { capabilities: { elicitation: modes } } : {},
     );
-    if (onElicit) {
-      client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
-        try {
-          return await onElicit(serverId, request.params, { signal: extra.signal });
-        } catch (error) {
-          this.log.error?.(`[mcp] ${serverId}: elicitation handler threw: ${errorMessage(error)}`);
-          return { action: "cancel" };
-        }
-      });
+    if (this.elicitation) {
+      client.setRequestHandler(ElicitRequestSchema, (request, extra) =>
+        this.elicit(serverId, client, request.params, extra.signal),
+      );
     }
     return client;
+  }
+
+  /**
+   * Puts one elicitation in front of whoever can answer it: the call that caused it where that
+   * call can be named and has a handler, then the pool-wide handler, then `decline`.
+   *
+   * The best route is not taken. Under the 2026-07-28 revision's multi round-trip requests a
+   * server answers the `tools/call` itself with its input request, and the pool would answer it
+   * from the call's handler and resend the call with `inputResponses` and the server's
+   * `requestState`, so `call()` still resolves to the final result. SDK 1.30 speaks 2025-11-25 at
+   * newest. Next best is a related request id, and SDK 1.30 has none to give: a server sends the
+   * request with one, but the client transports hand `onmessage` the message alone, so the
+   * handler's `extra` carries only the elicitation's own id. What is left is elimination, as for
+   * a log message — see `relayLog`.
+   *
+   * TODO: route by the call's own input request once the SDK supports 2026-07-28 (MRTR), ahead
+   * of everything here.
+   *
+   * @param serverId The server asking, for the handler to report.
+   * @param client The connection it asked on.
+   * @param params The request.
+   * @param signal Aborts when the server gives up on the request.
+   */
+  private async elicit(
+    serverId: string,
+    client: Client,
+    params: ElicitRequestParams,
+    signal: AbortSignal,
+  ): Promise<ElicitResult> {
+    const only = this.soleRequest(client);
+    const sink = only && this.elicitSinks.get(only);
+    if (sink) {
+      const { settled } = sink;
+      // The call's clock keeps running while a person reads the question, and once the call has
+      // settled nothing is waiting on the answer: the server has given up on it, or answered
+      // without it. A person who has not answered by then is a `cancel`.
+      const gone = new Promise<ElicitResult>((resolve) => {
+        if (settled.aborted) resolve(CANCEL);
+        settled.addEventListener("abort", () => resolve(CANCEL), { once: true });
+      });
+      const extra = { signal: AbortSignal.any([signal, settled]) };
+      return Promise.race([this.ask(sink.onElicit, serverId, params, extra), gone]);
+    }
+    if (this.onElicit) return this.ask(this.onElicit, serverId, params, { signal });
+    // Declared for a host that answers per call, and no call can be named for this one.
+    return { action: "decline" };
+  }
+
+  /** A handler, kept from throwing into the SDK's: a broken prompt is a `cancel`, not an error. */
+  private async ask(
+    handler: ElicitHandler,
+    serverId: string,
+    params: ElicitRequestParams,
+    extra: { signal: AbortSignal },
+  ): Promise<ElicitResult> {
+    try {
+      return await handler(serverId, params, extra);
+    } catch (error) {
+      this.log.error?.(`[mcp] ${serverId}: elicitation handler threw: ${errorMessage(error)}`);
+      return CANCEL;
+    }
   }
 
   /**
@@ -1394,10 +1468,8 @@ export class McpPool {
    * @returns Whether a call heard it, in which case nobody else is told.
    */
   private relayLog(client: Client, notification: Notification): boolean {
-    const running = this.inFlight.get(client);
-    if (running?.size !== 1) return false;
-    const [only] = running;
-    const sink = this.logSinks.get(only);
+    const only = this.soleRequest(client);
+    const sink = only && this.logSinks.get(only);
     const entry = sink && logEntry(notification.params);
     if (!sink || !entry) return false;
     if (sink.heard >= this.maxLogsPerCall) {
@@ -2004,6 +2076,17 @@ export class McpPool {
     }
   }
 
+  /**
+   * The one request the pool has in flight on `client`, or `undefined` for none or several: the
+   * whole of what a server→client message can be attributed by on SDK 1.30.
+   */
+  private soleRequest(client: Client): Promise<unknown> | undefined {
+    const running = this.inFlight.get(client);
+    if (running?.size !== 1) return undefined;
+    const [only] = running;
+    return only;
+  }
+
   /** Holds `request` as in flight on `client` until it settles. */
   private track<T>(client: Client, request: Promise<T>): Promise<T> {
     const running = this.inFlight.get(client) ?? new Set();
@@ -2167,6 +2250,7 @@ export class McpPool {
       links: withLinks = false,
       cache: useCache = true,
       onLog,
+      onElicit,
     } = options;
     const allowed = scope(servers);
     // Resolved by the whole qualified name rather than by splitting it: `qualify` shortens names
@@ -2303,6 +2387,14 @@ export class McpPool {
         // Keyed by the very promise `track` holds as in flight, so `relayLog` can go from "the one
         // request running here" to the call that made it.
         if (sink) this.logSinks.set(request, sink);
+        // Per attempt, so a redial's request answers its own elicitations, and a wait on the first
+        // ends with the first.
+        if (onElicit) {
+          const settled = new AbortController();
+          const end = () => settled.abort();
+          request.then(end, end);
+          this.elicitSinks.set(request, { onElicit, settled: settled.signal });
+        }
         return request;
       },
     )

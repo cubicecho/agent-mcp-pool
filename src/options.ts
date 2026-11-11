@@ -16,6 +16,22 @@ import type { HookOutcome, McpServerConfig, ServerLogEntry, ToolsCache } from ".
  */
 
 /**
+ * Answers one `elicitation/create`: `McpPoolOptions.onElicit` for the pool, `CallOptions.onElicit`
+ * for one call.
+ *
+ * @param serverId The config id of the server asking.
+ * @param params The request: `message`, and `requestedSchema` for a form or `url` for a link.
+ * @param extra `signal` aborts when the server gives up on the request — and, for a call's own
+ *   handler, when that call settles, its timeout and its signal included.
+ * @returns The user's answer.
+ */
+export type ElicitHandler = (
+  serverId: string,
+  params: ElicitRequestParams,
+  extra: { signal: AbortSignal },
+) => ElicitResult | Promise<ElicitResult>;
+
+/**
  * Where the pool's own progress goes.
  *
  * Named so a consumer wiring its own logger in has something to type the adapter against —
@@ -146,29 +162,31 @@ export interface McpPoolOptions {
    */
   maxLogsPerCall?: number;
   /**
-   * Answers a server that asks the user for input mid-call: MCP's `elicitation/create`.
+   * Answers a server that asks the user for input mid-call, where no call answers it itself:
+   * MCP's `elicitation/create`.
    *
-   * Absent, the pool declares no elicitation capability, so a well-behaved server does not ask and
-   * one that asks anyway is refused by the SDK. Present, every connection declares it and routes
-   * each request here with the id of the server that sent it. Resolve with `accept` and the
-   * `content`, or `decline` or `cancel`. A listener that throws is logged and answered `cancel`,
-   * so a broken prompt does not fail the server's tool with a protocol error.
+   * Present, every connection declares the capability, and a request lands here with the id of
+   * the server that sent it — unless `CallOptions.onElicit` claims it first. Resolve with `accept`
+   * and the `content`, or `decline` or `cancel`. A listener that throws is logged and answered
+   * `cancel`, so a broken prompt does not fail the server's tool with a protocol error. With
+   * neither this nor `elicitation`, nothing is declared, so a well-behaved server does not ask and
+   * one that asks anyway is refused by the SDK.
    *
    * A person answering takes time, and the call that caused the request is still on its clock:
    * set `callTimeoutMs` for that server with the wait in mind.
-   *
-   * @param serverId The config id of the server asking.
-   * @param params The request: `message`, and `requestedSchema` for a form or `url` for a link.
-   * @param extra `signal` aborts when the server gives up on the request.
-   * @returns The user's answer.
    */
-  onElicit?: (
-    serverId: string,
-    params: ElicitRequestParams,
-    extra: { signal: AbortSignal },
-  ) => ElicitResult | Promise<ElicitResult>;
+  onElicit?: ElicitHandler;
   /**
-   * Which elicitation modes `onElicit` can handle. Defaults to `["form"]`.
+   * Declare the elicitation capability even with no pool-wide `onElicit`, for a host that answers
+   * only per call, through `CallOptions.onElicit`.
+   *
+   * A request no call can be named for is then answered `decline`. Absent or `false`, the
+   * capability is declared exactly when `onElicit` is set.
+   */
+  elicitation?: boolean;
+  /**
+   * Which elicitation modes the handlers can answer, pool-wide and per call. Defaults to
+   * `["form"]`.
    *
    * `form` asks for fields against a flat schema; `url` asks the user to open a link, for a flow
    * such as an OAuth consent the client should not see. Declare `url` only when the host can open
@@ -388,6 +406,24 @@ export interface CallOptions {
   cache?: boolean;
   /** How long the request gets, overriding the row's `callTimeoutMs` and the pool's. */
   timeoutMs?: number;
+  /**
+   * Answers the elicitations this call causes, ahead of `McpPoolOptions.onElicit`. The pool must
+   * declare the capability for a server to ask at all: set `onElicit` or `elicitation` on it.
+   *
+   * Attributed by elimination, as `onLog` is: SDK 1.30 tells a client's request handler nothing
+   * of which request a server→client request belongs to, so an elicitation is this call's when
+   * this call is the only request the pool has in flight on that connection. With two in flight
+   * it goes to the pool-wide handler, and with none of those it is declined. Under the
+   * 2026-07-28 revision's multi round-trip requests the question comes back on the call itself;
+   * the SDK speaks 2025-11-25 at newest, so that route is not taken yet.
+   *
+   * The call's timeout keeps running while a person answers; pass a longer `timeoutMs` for a
+   * call that may wait on one. When the call settles first — the timeout, its `signal`, or the
+   * server answering without waiting — the handler's signal aborts and the server is answered
+   * `cancel`, whatever the handler later resolves with. A handler that throws is logged and
+   * answered `cancel`.
+   */
+  onElicit?: ElicitHandler;
   /**
    * Hears what the server logs while this call is running: its `notifications/message`, at the
    * level the row's `logLevel` set.

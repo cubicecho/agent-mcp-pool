@@ -79,6 +79,7 @@ What a pool and its methods are told: the constructor's options and each call's.
 
 - `CallOptions` (type) — How one `call()` is made, beyond its name and arguments.
 - `DescribeOptions` (type) — What `describe()` takes beside the name.
+- `ElicitHandler` (type) — Answers one `elicitation/create`: `McpPoolOptions.onElicit` for the pool, `CallOptions.onElicit` for one call.
 - `ListingOptions` (type) — What `prompts()` and `resources()` take.
 - `McpPoolOptions` (type) — How a pool is built: where its rows come from, how patient it is, and what it may spawn.
 - `PoolLog` (type) — Where the pool's own progress goes.
