@@ -1,3 +1,10 @@
+# [3.16.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.15.0...v3.16.0) (2026-11-11)
+
+
+### Features
+
+* add pool.hookRunner(), a scoped HookRunner for agent-core ([2394f78](https://github.com/cubicecho/agent-mcp-pool/commit/2394f786eda21297cb0968ba3c696efb585c4fb7)), closes [#112](https://github.com/cubicecho/agent-mcp-pool/issues/112)
+
 # [3.15.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.14.0...v3.15.0) (2026-11-11)
 
 
