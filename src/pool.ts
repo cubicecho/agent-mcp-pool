@@ -83,6 +83,7 @@ import type {
   ToolDefinition,
   ToolInfo,
   ToolSafety,
+  ToolsChangeCause,
 } from "./types.ts";
 import { DEFAULT_CLIENT_NAME, POOL_VERSION } from "./version.ts";
 
@@ -96,6 +97,32 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
  * start is respawned once per keystroke in the admin UI.
  */
 const CRASH_BACKOFF_MS = 5000;
+
+/** How old a tool list gets before a use lists it again. See `McpPoolOptions.refreshMs`. */
+const DEFAULT_REFRESH_MS = 15 * 60_000;
+
+/** How long a connection may be quiet before a request on it pings first. See `pingAfterMs`. */
+const DEFAULT_PING_AFTER_MS = 5 * 60_000;
+
+/** How long a liveness ping waits: short, since a server that is up answers one at once. */
+const DEFAULT_PING_TIMEOUT_MS = 5000;
+
+/**
+ * Whether a request's failure still means the server answered.
+ *
+ * An error response is the server talking, so it is alive; a ping it does not implement is the
+ * same. Only the SDK's own timeout, a closed connection, or a transport that threw is silence.
+ */
+function answered(error: unknown) {
+  return (
+    error instanceof McpError &&
+    error.code !== ErrorCode.RequestTimeout &&
+    error.code !== ErrorCode.ConnectionClosed
+  );
+}
+
+/** Why `renew` is replacing a connection, which decides what it logs and reports. */
+type RenewReason = "session" | "unresponsive" | "recycle";
 
 interface Entry {
   config: McpServerConfig;
@@ -112,6 +139,14 @@ interface Entry {
   stale?: boolean;
   /** A `tools/list_changed` has arrived that no re-list has started for yet. See `relist`. */
   relistOwed?: boolean;
+  /** A `refreshMs` re-list is queued or running, so a burst of uses asks for one. */
+  refreshing?: boolean;
+  /**
+   * When this connection last listed its tools, or tried to, as a `Date.now()` stamp — what
+   * `refreshMs` is measured from. A failed walk counts, so a server that cannot list is asked once
+   * per interval rather than on every use.
+   */
+  listedAt?: number;
   /**
    * Set while this entry is being torn down on purpose, so `onClose` can tell a shutdown we asked
    * for from a child that died on its own. Without it, `shutdown()` marks every server crashed on
@@ -277,6 +312,16 @@ export class McpPool {
   private elicitSinks = new WeakMap<Promise<unknown>, ElicitSink>();
   /** The redial each client that lost its session is being, or was, replaced by. See `renew`. */
   private renewals = new WeakMap<Client, Promise<void>>();
+  /** When each client last heard anything from its server, as a `Date.now()` stamp. See `alive`. */
+  private heard = new WeakMap<Client, number>();
+  /** The liveness ping each client has outstanding, so a burst of requests sends one. */
+  private pings = new WeakMap<Client, Promise<boolean>>();
+  /** Which server each client is a connection to, for what a settling request has to look up. */
+  private owners = new WeakMap<Client, string>();
+  private readonly refreshMs: number;
+  private readonly pingAfterMs: number;
+  private readonly pingTimeoutMs: number;
+  private readonly maxConnectionAgeMs?: number;
   private readonly lazy: boolean;
   private readonly idleTimeoutMs?: number;
   private readonly indexTools: boolean;
@@ -334,6 +379,10 @@ export class McpPool {
     elicitationModes = ["form"],
     lazy = false,
     idleTimeoutMs,
+    refreshMs = DEFAULT_REFRESH_MS,
+    pingAfterMs = DEFAULT_PING_AFTER_MS,
+    pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
+    maxConnectionAgeMs,
     indexTools = true,
     createTransport: transportFactory = createTransport,
     toolsCache,
@@ -359,6 +408,10 @@ export class McpPool {
     this.elicitationModes = elicitationModes;
     this.lazy = lazy;
     this.idleTimeoutMs = idleTimeoutMs;
+    this.refreshMs = refreshMs;
+    this.pingAfterMs = pingAfterMs;
+    this.pingTimeoutMs = pingTimeoutMs;
+    this.maxConnectionAgeMs = maxConnectionAgeMs;
     this.indexTools = indexTools;
     this.createTransport = transportFactory;
     this.toolsCache = toolsCache;
@@ -884,9 +937,10 @@ export class McpPool {
       // send `logging/message` or `tools/list_changed` during its own startup, and a handler
       // installed after `listTools` would have missed it.
       client.fallbackNotificationHandler = async (notification) => {
+        this.heard.set(dialled, Date.now());
         if (notification.method === LOG_MESSAGE && this.relayLog(dialled, notification)) return;
         this.notify(config.id, notification);
-        if (notification.method === TOOLS_LIST_CHANGED) this.relist(entry, dialled);
+        if (notification.method === TOOLS_LIST_CHANGED) this.relist(entry, dialled, "notification");
       };
       const transport = this.createTransport(config, {
         childEnv: this.childEnv,
@@ -913,6 +967,9 @@ export class McpPool {
       const pid = "pid" in transport ? transport.pid : undefined;
       entry.pid = typeof pid === "number" ? pid : undefined;
       entry.startedAt = Date.now();
+      entry.listedAt = entry.startedAt;
+      this.heard.set(client, entry.startedAt);
+      this.owners.set(client, config.id);
       entry.handshake = {
         instructions: client.getInstructions(),
         capabilities: client.getServerCapabilities(),
@@ -939,7 +996,9 @@ export class McpPool {
       });
       // A cold server's last-known list was being offered until now. Where the server came back
       // offering something else, that is a change like any other.
-      if (known?.fingerprint !== undefined) this.announce(entry, known.fingerprint, known.tools);
+      if (known?.fingerprint !== undefined) {
+        this.announce(entry, known.fingerprint, known.tools, "reconnect");
+      }
     } catch (error) {
       // The handshake got far enough to start a child and not far enough to hand it over. Nothing
       // else holds this client, so `close()` and `shutdown()` would never reach the process.
@@ -1040,9 +1099,15 @@ export class McpPool {
    * @param entry The server, already holding its new list. The caller has reindexed.
    * @param before The fingerprint of the list it replaced.
    * @param had The tools of the list it replaced.
+   * @param cause What made the pool look.
    * @returns Whether anything moved.
    */
-  private announce(entry: Entry, before: string, had: readonly PooledTool[]) {
+  private announce(
+    entry: Entry,
+    before: string,
+    had: readonly PooledTool[],
+    cause: ToolsChangeCause,
+  ) {
     const after = entry.fingerprint ?? "";
     if (after === before) return false;
     // A tool that kept its name may not have kept its meaning, or its annotations.
@@ -1055,6 +1120,7 @@ export class McpPool {
     this.emit({
       type: "tools-changed",
       serverId: entry.config.id,
+      cause,
       before,
       after,
       tools: entry.tools.length,
@@ -1065,7 +1131,8 @@ export class McpPool {
   }
 
   /**
-   * Lists a connected server's tools again, because it said they changed.
+   * Lists a connected server's tools again, because it said they changed or because the list it
+   * has is older than `refreshMs`.
    *
    * The pool used to forward `tools/list_changed` and do nothing else, so the index stayed at
    * whatever the connect saw: `call()` refused a tool that now existed and offered one that was
@@ -1077,42 +1144,90 @@ export class McpPool {
    * prompt cache its prefix on each change.
    *
    * A burst of notifications is one walk — `relistOwed` is cleared as the walk starts, so one
-   * arriving during it still gets its own. A walk that fails leaves the list as it was: a server
-   * that cannot answer `tools/list` just now has not stopped offering what it offered.
+   * arriving during it still gets its own. A refresh is held by `refreshing` for its whole length
+   * instead: nothing new has been said, so a use during the walk has nothing to add to it. A walk
+   * that fails leaves the list as it was: a server that cannot answer `tools/list` just now has not
+   * stopped offering what it offered.
    *
-   * @param entry The server that sent the notification.
-   * @param client The connection it came in on. A re-list for one that has since been replaced is
+   * A quiet connection is pinged first, as a call's would be. One that does not answer is handed
+   * to `renew`, whose connect lists the tools itself — not awaited, since the redial is queued
+   * behind this very work.
+   *
+   * @param entry The server to list.
+   * @param client The connection to list it on. A re-list for one that has since been replaced is
    *   dropped — the connect that replaced it listed the tools itself.
+   * @param cause The server's notification, or the pool's own clock.
    */
-  private relist(entry: Entry, client: Client) {
-    if (!this.indexTools || entry.relistOwed) return;
-    entry.relistOwed = true;
+  private relist(entry: Entry, client: Client, cause: "notification" | "refresh") {
+    if (!this.indexTools) return;
+    if (cause === "notification") {
+      if (entry.relistOwed) return;
+      entry.relistOwed = true;
+    } else {
+      if (entry.refreshing || entry.relistOwed) return;
+      entry.refreshing = true;
+    }
     void this.queue(async () => {
-      entry.relistOwed = false;
-      const current = () => this.entries.get(entry.config.id) === entry && entry.client === client;
-      if (!current()) return;
-      const slug = slugOf(entry.config);
-      // The same budget a connect gets, since it is the same walk against the same server.
-      const timeoutMs = entry.config.connectTimeoutMs ?? this.connectTimeoutMs;
-      let listed: ListedTool[];
+      if (cause === "notification") entry.relistOwed = false;
       try {
-        listed = await listAllTools(client, timeoutMs == null ? undefined : { timeout: timeoutMs });
-      } catch (error) {
-        this.log.error?.(`[mcp] ${slug}: could not list its changed tools: ${errorMessage(error)}`);
-        return;
+        await this.walk(entry, client, cause);
+      } finally {
+        if (cause === "refresh") entry.refreshing = false;
       }
-      // The server can have crashed while it was answering: `onClose` is not queued.
-      if (!current()) return;
-      const before = entry.fingerprint ?? "";
-      const had = entry.tools;
-      this.adopt(entry, listed);
-      // A server may announce a change that changed nothing the pool reads, and some announce one
-      // on every start. Nothing moved, so there is nothing to reindex, save or tell anyone.
-      if (entry.fingerprint === before) return;
-      this.remember(entry, listed);
-      this.reindex();
-      this.announce(entry, before, had);
     });
+  }
+
+  /** `relist`'s work, from inside the queue. */
+  private async walk(entry: Entry, client: Client, cause: "notification" | "refresh") {
+    const current = () => this.entries.get(entry.config.id) === entry && entry.client === client;
+    if (!current()) return;
+    if (!(await this.alive(entry, client))) {
+      if (current()) void this.renew(entry.config.id, client, "unresponsive");
+      return;
+    }
+    if (!current()) return;
+    const slug = slugOf(entry.config);
+    // The same budget a connect gets, since it is the same walk against the same server.
+    const timeoutMs = entry.config.connectTimeoutMs ?? this.connectTimeoutMs;
+    entry.listedAt = Date.now();
+    let listed: ListedTool[];
+    try {
+      listed = await listAllTools(client, timeoutMs == null ? undefined : { timeout: timeoutMs });
+    } catch (error) {
+      this.log.error?.(
+        cause === "refresh"
+          ? `[mcp] ${slug}: could not list its tools again: ${errorMessage(error)}`
+          : `[mcp] ${slug}: could not list its changed tools: ${errorMessage(error)}`,
+      );
+      return;
+    }
+    this.heard.set(client, Date.now());
+    // The server can have crashed while it was answering: `onClose` is not queued.
+    if (!current()) return;
+    const before = entry.fingerprint ?? "";
+    const had = entry.tools;
+    this.adopt(entry, listed);
+    // A server may announce a change that changed nothing the pool reads, and some announce one
+    // on every start; a refresh usually finds nothing. Nothing moved, so there is nothing to
+    // reindex, save or tell anyone — and `tools()`, which reads the index, sends the same bytes.
+    if (entry.fingerprint === before) return;
+    this.remember(entry, listed);
+    this.reindex();
+    this.announce(entry, before, had, cause);
+  }
+
+  /**
+   * Starts a `refreshMs` re-list of a server a use has just touched, where its list is due one.
+   *
+   * Only a connected server: one that is idle, reaped or down is never woken just to be asked,
+   * and its next connect lists the tools anyway.
+   */
+  private refreshIfDue(entry: Entry) {
+    const every = entry.config.refreshMs ?? this.refreshMs;
+    const { client } = entry;
+    if (!every || !this.indexTools || entry.status !== "ready" || !client) return;
+    if (Date.now() - (entry.listedAt ?? 0) < every) return;
+    this.relist(entry, client, "refresh");
   }
 
   /**
@@ -1248,6 +1363,9 @@ export class McpPool {
     // function name, which OpenAI rejects — a bad request rather than a bad answer, and one that
     // reads as the caller's bug. Caller order is kept; the first mention wins.
     const seen = new Set<string>();
+    // Every server in scope when nothing was named, since a server listing nothing has no name in
+    // the index to be touched by; only the owners of the names asked for otherwise.
+    const touched = new Set<string>();
     for (const name of names ?? this.index.keys()) {
       const found = this.index.get(name);
       if (!found) {
@@ -1263,12 +1381,18 @@ export class McpPool {
       // and "no tool named …" in the log would read as a rename that never happened.
       const owner = this.entries.get(found.serverId);
       if (owner && isHidden(owner.config, found.tool.name)) continue;
+      touched.add(found.serverId);
       if (seen.has(found.tool.qualified)) continue;
       seen.add(found.tool.qualified);
       definitions.push(found.tool.definition);
       tokens += found.tool.tokens;
     }
     this.weigh(definitions.length, tokens);
+    for (const entry of this.entries.values()) {
+      const asked =
+        names === undefined ? inScope(allowed, entry.config.id) : touched.has(entry.config.id);
+      if (asked) this.refreshIfDue(entry);
+    }
     return definitions;
   }
 
@@ -1603,6 +1727,8 @@ export class McpPool {
       // them, and a failed or disabled server's are not in it.
       if (entry.status !== "ready" && entry.status !== "idle") continue;
       if (!inScope(allowed, entry.config.id)) continue;
+      // Answered from the list as it stands; a due re-list lands for the next one.
+      this.refreshIfDue(entry);
       // Before the emptiness check, so a server whose every tool is hidden — or whose names all
       // belong to another server — drops out like one that offers none.
       const offered = entry.tools.filter(
@@ -2068,6 +2194,23 @@ export class McpPool {
     // Already known to be dead and on its way out: a request sent on it now is refused at best,
     // and at worst is the one in flight when the redial closes it.
     if (this.renewals.has(client)) return again();
+    const entry = this.entries.get(id);
+    if (entry?.client === client) {
+      // Old and with nothing in flight is the idle moment a recycle waits for, and this request
+      // can be the first on the new connection instead of the last on the old one.
+      if (this.overAge(entry, client)) {
+        void this.renew(id, client, "recycle");
+        return again();
+      }
+      const alive = this.alive(entry, client);
+      // Awaited only when a ping went out, so a request on a connection that is not quiet costs
+      // no extra turn of the event loop.
+      if (alive !== true && !(await alive)) {
+        if (entry.client === client) void this.renew(id, client, "unresponsive");
+        return again();
+      }
+      if (this.renewals.has(client)) return again();
+    }
     try {
       return await this.track(client, run(client));
     } catch (error) {
@@ -2087,14 +2230,87 @@ export class McpPool {
     return only;
   }
 
-  /** Holds `request` as in flight on `client` until it settles. */
+  /**
+   * Holds `request` as in flight on `client` until it settles, and counts an answer as hearing
+   * from the server. The last request out is the idle moment a recycle waits for.
+   */
   private track<T>(client: Client, request: Promise<T>): Promise<T> {
     const running = this.inFlight.get(client) ?? new Set();
     this.inFlight.set(client, running);
     running.add(request);
-    const done = () => running.delete(request);
-    request.then(done, done);
+    const done = (heard: boolean) => {
+      running.delete(request);
+      if (heard) this.heard.set(client, Date.now());
+      if (running.size === 0) this.recycleIfOld(client);
+    };
+    request.then(
+      () => done(true),
+      (error: unknown) => done(answered(error)),
+    );
     return request;
+  }
+
+  /**
+   * Whether a connection has outlived `maxConnectionAgeMs` and nothing is in flight on it — the
+   * moment it can be replaced without cutting anything off.
+   */
+  private overAge(entry: Entry, client: Client) {
+    const max = entry.config.maxConnectionAgeMs ?? this.maxConnectionAgeMs;
+    if (!max || entry.status !== "ready" || entry.startedAt === undefined) return false;
+    if ((this.inFlight.get(client)?.size ?? 0) > 0) return false;
+    return Date.now() - entry.startedAt >= max;
+  }
+
+  /** Recycles `client` in the background where it is its server's and past its age. */
+  private recycleIfOld(client: Client) {
+    const id = this.owners.get(client);
+    const entry = id === undefined ? undefined : this.entries.get(id);
+    if (!entry || id === undefined || entry.client !== client || this.renewals.has(client)) return;
+    if (this.overAge(entry, client)) void this.renew(id, client, "recycle");
+  }
+
+  /**
+   * Whether a connection still answers, asked with a `ping` only where it has gone quiet.
+   *
+   * Quiet is nothing heard for `pingAfterMs` — no answer, no notification — with nothing in
+   * flight: a server busy with a long call is not silent, and pinging it then would test whether
+   * it can answer two things at once. A burst of requests on one quiet connection shares one ping.
+   *
+   * @returns `true` at once where no ping is needed, so the caller can skip an await; otherwise
+   *   whether the ping was answered. A failure is logged and emitted as `ping-failed`.
+   */
+  private alive(entry: Entry, client: Client): true | Promise<boolean> {
+    const after = entry.config.pingAfterMs ?? this.pingAfterMs;
+    if (!after) return true;
+    if ((this.inFlight.get(client)?.size ?? 0) > 0) return true;
+    if (Date.now() - (this.heard.get(client) ?? 0) < after) return true;
+    const outstanding = this.pings.get(client);
+    if (outstanding) return outstanding;
+    const started = performance.now();
+    const ping = client.ping({ timeout: this.pingTimeoutMs }).then(
+      () => true,
+      (error: unknown) => {
+        if (answered(error)) return true;
+        const reason = errorMessage(error);
+        // A connection already replaced is not worth reporting: whatever replaced it is the news.
+        if (entry.client === client) {
+          this.log.error?.(`[mcp] ${slugOf(entry.config)}: did not answer a ping: ${reason}`);
+          this.emit({
+            type: "ping-failed",
+            serverId: entry.config.id,
+            ms: elapsed(started),
+            error: reason,
+          });
+        }
+        return false;
+      },
+    );
+    this.pings.set(client, ping);
+    return ping.then((ok) => {
+      this.pings.delete(client);
+      if (ok) this.heard.set(client, Date.now());
+      return ok;
+    });
   }
 
   /**
@@ -2105,12 +2321,17 @@ export class McpPool {
    * just made. The entry is left as it is where it no longer holds this client — something else
    * replaced or stopped it first, and that is the newer decision.
    *
+   * The same door serves a connection that stopped answering a ping, and one past
+   * `maxConnectionAgeMs`: each is a client to replace once, after what is still in flight on it.
+   *
    * @param id The server to redial.
    * @param stale The client that was refused.
+   * @param why What is wrong with it, for the log and the `close` event's reason. Read only by the
+   *   first caller for a client; a later one shares the redial already under way.
    * @returns Resolves once the redial has been tried. A failed one leaves the server at `error`,
    *   as any failed connect does.
    */
-  private renew(id: string, stale: Client): Promise<void> {
+  private renew(id: string, stale: Client, why: RenewReason = "session"): Promise<void> {
     let renewed = this.renewals.get(stale);
     if (!renewed) {
       // Not every request on this client was refused: one sent before the session went may still
@@ -2119,10 +2340,15 @@ export class McpPool {
         this.queue(async () => {
           const entry = this.entries.get(id);
           if (!entry || entry.client !== stale) return;
+          const slug = slugOf(entry.config);
           this.log.info?.(
-            `[mcp] ${slugOf(entry.config)}: the server dropped its session, redialling`,
+            why === "recycle"
+              ? `[mcp] ${slug}: the connection is past maxConnectionAgeMs, recycling`
+              : why === "unresponsive"
+                ? `[mcp] ${slug}: the server did not answer a ping, redialling`
+                : `[mcp] ${slug}: the server dropped its session, redialling`,
           );
-          await this.close(entry, "redial");
+          await this.close(entry, why === "recycle" ? "recycle" : "redial");
           await this.connect(entry.config, true);
           this.reindex();
         }),
@@ -2298,7 +2524,10 @@ export class McpPool {
 
     trace.serverId = found.serverId;
     trace.toolName = found.tool.name;
-    if (entry) this.touch(entry);
+    if (entry) {
+      this.touch(entry);
+      this.refreshIfDue(entry);
+    }
 
     // After the refusals above, so a call to a tool this run may not reach is answered as unknown
     // rather than as one whose arguments are wrong. The same precedence as the timeout below.

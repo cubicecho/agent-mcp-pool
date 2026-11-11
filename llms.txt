@@ -170,6 +170,7 @@ Questions about server rows that need neither a connection nor Node — for the 
 - `ToolInfo` (type) — One tool in full, as `McpPool.describe` returns it: what `ToolDefinition` has no room for.
 - `ToolSafety` (type) — What a host may assume of a call to one tool, as `McpPool.toolSafety` returns it.
 - `ToolsCache` (type) — Where a lazy pool keeps each server's tool list between processes, keyed by server id.
+- `ToolsChangeCause` (type) — What made the pool list a server's tools again, on a `tools-changed` event: the server's own `tools/list_changed`, a `refreshMs` re-list, or a connect that replaced a list it had before.
 
 ## Subpath entries
 

@@ -132,4 +132,5 @@ export type {
   ToolInfo,
   ToolSafety,
   ToolsCache,
+  ToolsChangeCause,
 } from "./types.ts";

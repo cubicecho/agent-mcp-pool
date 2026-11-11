@@ -62,6 +62,7 @@ test("a tool the server gains after connecting is listed, offered and callable",
   expect(pool.state()[0].tools.map((listed) => listed.name)).toEqual(["one", "two"]);
   expect(changed()[0]).toMatchObject({
     serverId: "first",
+    cause: "notification",
     tools: 2,
     added: ["two"],
     removed: [],

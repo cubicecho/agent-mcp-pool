@@ -59,6 +59,25 @@ interface McpServerBase {
    */
   callTimeoutMs?: number | null;
   /**
+   * How old this server's tool list may get before a use lists it again, overriding the pool's
+   * `refreshMs`. `null` and absent mean "use the pool's"; `0` turns it off for this server — one
+   * that does send `tools/list_changed` needs no polling.
+   */
+  refreshMs?: number | null;
+  /**
+   * How long this connection may go without hearing from the server before a request on it is
+   * preceded by a `ping`, overriding the pool's `pingAfterMs`. `null` and absent mean "use the
+   * pool's"; `0` turns the check off for this server.
+   */
+  pingAfterMs?: number | null;
+  /**
+   * Recycle this connection once it is older than this, at the first moment nothing is in flight
+   * on it, overriding the pool's `maxConnectionAgeMs`. For a stdio child that leaks, or an http
+   * session a gateway expires. `null` and absent mean "use the pool's"; `0` turns it off for this
+   * server.
+   */
+  maxConnectionAgeMs?: number | null;
+  /**
    * Whether `call()` repairs and checks arguments against this server's schemas, overriding the
    * pool's `coerceArguments`. `null` and absent both mean "use the pool's".
    *
@@ -746,8 +765,10 @@ export interface ServerLogEntry {
  * Why a connection closed, on a `close` event.
  *
  * `idle` is a reap, `stop` is `stop()`, `reconnect` is `reconnect()`, `removed` and `changed` are a
- * sync that dropped the row or changed how it is reached, `redial` is a failed or idle server
- * being dialled again, `shutdown` is `shutdown()`, and `crash` is the server closing on its own.
+ * sync that dropped the row or changed how it is reached, `redial` is a failed, idle or
+ * unresponsive server — or one that dropped its session — being dialled again, `recycle` is a
+ * connection past `maxConnectionAgeMs` being replaced, `shutdown` is `shutdown()`, and `crash` is
+ * the server closing on its own.
  */
 export type PoolCloseReason =
   | "idle"
@@ -756,8 +777,15 @@ export type PoolCloseReason =
   | "removed"
   | "changed"
   | "redial"
+  | "recycle"
   | "shutdown"
   | "crash";
+
+/**
+ * What made the pool list a server's tools again, on a `tools-changed` event: the server's own
+ * `tools/list_changed`, a `refreshMs` re-list, or a connect that replaced a list it had before.
+ */
+export type ToolsChangeCause = "notification" | "refresh" | "reconnect";
 
 /**
  * Something the pool did, as `McpPool.onEvent` reports it.
@@ -767,9 +795,12 @@ export type PoolCloseReason =
  * cap cut it; `raw` calls carry neither. A refusal carries its `McpPoolError` code, a `tool-error`
  * included, and the message as `error`.
  *
- * `tools-changed` is a server's list moving under a live connection, after `tools/list_changed`:
- * `before` and `after` are `toolsFingerprint`s, and `added` and `removed` the server's own names.
- * A tool whose description or schema changed is in neither — only the fingerprints say so.
+ * `tools-changed` is a server's list moving, with what made the pool look as `cause`: `before` and
+ * `after` are `toolsFingerprint`s, and `added` and `removed` the server's own names. A tool whose
+ * description or schema changed is in neither — only the fingerprints say so.
+ *
+ * `ping-failed` is a quiet connection that did not answer a `ping` within `pingTimeoutMs`; the
+ * redial it causes follows as a `close` with reason `redial` and a `connect`.
  */
 export type PoolEvent =
   | { type: "connect"; serverId: string; ms: number; tools: number }
@@ -778,12 +809,14 @@ export type PoolEvent =
   | {
       type: "tools-changed";
       serverId: string;
+      cause: ToolsChangeCause;
       before: string;
       after: string;
       tools: number;
       added: string[];
       removed: string[];
     }
+  | { type: "ping-failed"; serverId: string; ms: number; error: string }
   | {
       type: "call";
       qualified: string;

@@ -140,6 +140,16 @@ then the server's own, and that order is what a prompt cache's prefix is made of
 `tools/list_changed` replaces `entry.tools` in place and reindexes, never appends. It is queued
 like a connect, gated on the client it arrived on, and a failed walk keeps the old list.
 
+**Stale state is renewed on use, never on a timer.** `refreshMs` re-lists a *connected* server
+whose list is older than that, behind the `tools()`, `catalog()` or `call()` that noticed, and
+an unchanged fingerprint adopts nothing — the index keeps the very objects it had. `pingAfterMs`
+pings a connection that has heard nothing for that long before a request goes out on it (in
+`attempt`, so `call()` and `use()` alike, and in a refresh), and only with nothing in flight: a
+server busy with a long call is not quiet. Any answer, an error response included, is alive.
+`maxConnectionAgeMs` recycles at the first moment nothing is in flight — before a request, or as
+the last one settles. All three replace a connection through `renew`, the one door a dropped
+session already used. A ping inside queued work must not await `renew`, which queues behind it.
+
 **A fingerprint is of what the server said, not of what the pool made of it.** Name, description,
 input schema and annotations, sorted — never the slug, the label or the listing order, or a rename
 reads as a rug pull.
