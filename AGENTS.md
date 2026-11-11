@@ -170,6 +170,12 @@ goes to `onNotification`. `logSinks` is keyed by the same promise `track` holds,
 go from "the one request running here" to the call that made it. One relayed to `onLog` is not
 also handed to `onNotification`; past `maxLogsPerCall` it is, and the call gets one summary.
 
+**An elicitation is a call's by the same elimination.** `elicit` asks the sole call in flight's
+own `onElicit`, then the pool-wide one, then answers `decline`; `elicitSinks` is keyed by the
+promise `track` holds, like `logSinks`. SDK 1.30 has no related request id for a client's request
+handler, and multi round-trip requests (2026-07-28) wait on an SDK that speaks it — when one
+does, that route goes first. A call's wait ends when the call settles, with a `cancel`.
+
 **The pool holds its own copy of every row, and `state()` hands back another.** An entry aliasing
 the caller's object makes `sameConnection` compare a row against itself, so an in-place edit never
 reconnects. `state()` also drops `env` and `headers` unless asked: the documented reader of that

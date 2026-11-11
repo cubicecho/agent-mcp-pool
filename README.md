@@ -1082,9 +1082,9 @@ tracer's bug must not fail a tool call. With no listener subscribed, a call does
 
 A server can stop in the middle of a tool and ask the user something: a missing field, a
 confirmation, a link to open. MCP calls that `elicitation/create`, and a client has to declare it
-at the handshake. Without `onElicit` the pool declares nothing, so the server refuses to ask and
-its tool fails. With it, every connection declares the capability and each request lands in the
-handler with the id of the server that sent it:
+at the handshake. Without `onElicit` (or `elicitation: true`, below) the pool declares nothing, so
+the server refuses to ask and its tool fails. With it, every connection declares the capability
+and each request lands in the handler with the id of the server that sent it:
 
 ```ts
 const pool = new McpPool({
@@ -1103,6 +1103,39 @@ can handle rather than a protocol error.
 
 The call that caused the request is still on its clock while a person reads the question, so give
 that server a `callTimeoutMs` sized for the wait.
+
+### Per call
+
+A host running several conversations on one server wants the question in front of the person
+whose call caused it, which a server id cannot say. `call()` takes its own `onElicit`, with the
+same signature, and it is asked ahead of the pool-wide one:
+
+```ts
+const pool = new McpPool({ clientName: "my-agent", elicitation: true });
+
+await pool.call("files__delete", { path }, {
+  timeoutMs: 5 * 60_000,
+  onElicit: (serverId, params, { signal }) => conversation.ask(params, signal),
+});
+```
+
+`elicitation: true` declares the capability with no pool-wide handler, for a host that answers
+only per call. A request goes, best first:
+
+1. to the call whose request it was sent about, by related request id — not taken: SDK 1.30's
+   client transports hand the message on without one;
+2. to the server's only call in flight, if that call has an `onElicit` — by elimination, as a
+   log message reaches `onLog`;
+3. to the pool-wide `onElicit`;
+4. otherwise it is answered `decline`.
+
+The 2026-07-28 revision's multi round-trip requests put the question on the `tools/call` result
+itself, which would come first of all; the SDK speaks 2025-11-25 at newest, so the pool does not
+take that route yet.
+
+The call's own timeout keeps running while a person answers, so pass a longer `timeoutMs` for a
+call that may wait on one. When the call settles first — its timeout, its `signal`, or the server
+answering without waiting — the handler's `signal` aborts and the server is answered `cancel`.
 
 Roots and sampling, the other two client capabilities, are deprecated in the 2026-07-28
 specification release candidate, so the pool does not offer them.
