@@ -159,7 +159,7 @@ test("a well-formed row of either arm has nothing wrong with it", () => {
       pingAfterMs: 60_000,
       maxConnectionAgeMs: null,
       maxResultChars: 0,
-      hooks: [{ id: "r", on: "beforeTurn", tool: "recall", inject: true }],
+      hooks: [{ id: "r", on: "beforeExchange", tool: "recall", inject: true }],
     }),
   ).toEqual([]);
   expect(

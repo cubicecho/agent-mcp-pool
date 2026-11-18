@@ -114,13 +114,13 @@ async function runHook(
     hookId: hook.id,
     event: hook.on,
     // Held to the events that can use it here as well as in `validateHooks`, since a row need
-    // not have been through that: an `afterTurn` hook marked inject would otherwise be handed
+    // not have been through that: an `afterExchange` hook marked inject would otherwise be handed
     // to `contextBlocks` as though it had run in time.
     inject: Boolean(hook.inject) && INJECT_EVENTS.has(hook.on),
     maxTokens: hook.maxTokens ?? DEFAULT_HOOK_MAX_TOKENS,
   };
   // Held to its events for the same reason as `inject`, and the stakes are higher: a row that
-  // never went through `validateHooks` must not be able to stall a compaction from `afterTurn`.
+  // never went through `validateHooks` must not be able to stall a compaction from `afterExchange`.
   const mayVeto = Boolean(hook.veto) && VETO_EVENTS.has(hook.on);
   const settle = (result: Pick<HookOutcome, "ok" | "text" | "error" | "skipped" | "veto">) => {
     const outcome: HookOutcome = { ...base, ...result, ms: Date.now() - started };
@@ -141,7 +141,7 @@ async function runHook(
     return settle({ ok: false, skipped: true, error: `no value for ${paths}` });
   }
 
-  // By the event rather than by `inject`: a `beforeTurn` hook that injects nothing still holds
+  // By the event rather than by `inject`: a `beforeExchange` hook that injects nothing still holds
   // up the turn it runs in front of. A hook that can veto is waited on the same way — the
   // compaction does not start until it answers — so it gets that patience too.
   const waitedOn = INJECT_EVENTS.has(hook.on) || mayVeto;

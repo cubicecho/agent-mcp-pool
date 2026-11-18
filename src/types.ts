@@ -141,20 +141,22 @@ interface McpServerBase {
 }
 
 /**
- * A point in a session a hook can be bound to. Named after Claude Code's hooks of the same shape,
- * so a server's documented config reads the same on every host:
+ * A point in a session a hook can be bound to. Named as agent-core names the same points (an
+ * exchange is one question and every request it takes), and shaped after Claude Code's hooks,
+ * whose names follow each:
  *
- * - `sessionStart` — before the first turn of a session (SessionStart).
- * - `beforeTurn` — before each turn's request is sent (UserPromptSubmit).
- * - `afterTurn` — once a turn has its reply (Stop).
+ * - `sessionStart` — before the first exchange of a session (SessionStart).
+ * - `beforeExchange` — before each question is sent, once per question however many tool calls
+ *   follow it (UserPromptSubmit).
+ * - `afterExchange` — once a question has its answer (Stop).
  * - `beforeCompact` — before old messages are summarised away (PreCompact).
  * - `sessionEnd` — when a run that ends, ends (SessionEnd). A chat that never ends never sends it.
  * - `sessionDelete` — when the host deletes a session's record.
  */
 export type HookEvent =
   | "sessionStart"
-  | "beforeTurn"
-  | "afterTurn"
+  | "beforeExchange"
+  | "afterExchange"
   | "beforeCompact"
   | "sessionEnd"
   | "sessionDelete";
@@ -188,7 +190,7 @@ export interface ToolHook {
    * see `expandArgs`. A path the context has no value for skips the hook.
    */
   args?: unknown;
-  /** Hand what the tool returns to the model. `sessionStart` and `beforeTurn` only. */
+  /** Hand what the tool returns to the model. `sessionStart` and `beforeExchange` only. */
   inject?: boolean;
   /**
    * Let this hook decline what its event announces. `beforeCompact` only — see `readVeto` for how
