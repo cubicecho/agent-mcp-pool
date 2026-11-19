@@ -1,3 +1,18 @@
+# [4.0.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.16.2...v4.0.0) (2026-11-19)
+
+
+* feat!: name the hook events beforeExchange and afterExchange ([5a18d8d](https://github.com/cubicecho/agent-mcp-pool/commit/5a18d8df0f62b8e76187f790b5e4c54463e939e5))
+
+
+### BREAKING CHANGES
+
+* HookEvent's `beforeTurn` and `afterTurn` are now
+`beforeExchange` and `afterExchange`, with no aliases. A hook row whose `on`
+names either old event no longer validates, and `runHooks` called with one
+finds no hooks. Rename them in stored rows and calls.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
 ## [3.16.2](https://github.com/cubicecho/agent-mcp-pool/compare/v3.16.1...v3.16.2) (2026-11-11)
 
 
