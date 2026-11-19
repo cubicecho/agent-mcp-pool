@@ -22,7 +22,7 @@ import {
   validateServers,
 } from "../../src/servers.ts";
 
-const hook: ToolHook = { id: "recall", on: "beforeTurn", tool: "recall", inject: true };
+const hook: ToolHook = { id: "recall", on: "beforeExchange", tool: "recall", inject: true };
 const events: readonly HookEvent[] = HOOK_EVENTS;
 const rows: McpServerConfig[] = fromMcpServersJson('{"mcpServers":{}}', { env: {} });
 

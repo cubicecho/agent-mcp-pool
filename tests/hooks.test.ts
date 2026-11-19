@@ -28,7 +28,7 @@ const context: HookContext = {
 
 const hook = (over: Partial<ToolHook> = {}): ToolHook => ({
   id: "h",
-  on: "beforeTurn",
+  on: "beforeExchange",
   tool: "echo",
   args: { text: "{{prompt}}" },
   ...over,
@@ -44,7 +44,7 @@ const outcome = (over: Partial<HookOutcome> = {}): HookOutcome => ({
   serverId: "echo-1",
   label: "Echo",
   hookId: "h",
-  event: "beforeTurn",
+  event: "beforeExchange",
   ok: true,
   text: "remembered",
   ms: 1,
@@ -99,7 +99,7 @@ test("a well-formed set of hooks has nothing wrong with it", () => {
   expect(
     validateHooks([
       hook({ id: "recall", inject: true, maxTokens: 800 }),
-      hook({ id: "remember", on: "afterTurn", args: { turns: "{{turn.messages}}" } }),
+      hook({ id: "remember", on: "afterExchange", args: { turns: "{{turn.messages}}" } }),
       hook({ id: "card", on: "sessionEnd", args: { card: "{{vars.cardId}}", s: "{{status}}" } }),
       hook({ id: "forget", on: "sessionDelete", args: { session_id: "{{session.id}}" } }),
       hook({ id: "keep", on: "beforeCompact", veto: true, args: { r: "{{range.from}}" } }),
@@ -111,8 +111,8 @@ test("a well-formed set of hooks has nothing wrong with it", () => {
 test("validation names each problem and the hook it is on", () => {
   const errors = validateHooks([
     hook({ id: "a", on: "whenever" as never }),
-    hook({ id: "b", on: "afterTurn", inject: true }),
-    hook({ id: "v", on: "afterTurn", veto: true }),
+    hook({ id: "b", on: "afterExchange", inject: true }),
+    hook({ id: "v", on: "afterExchange", veto: true }),
     hook({ id: "c", args: { text: "{{reply}}" } }),
     hook({ id: "c" }),
     hook({ id: "d", tool: "" }),
@@ -121,9 +121,9 @@ test("validation names each problem and the hook it is on", () => {
   ]);
   expect(errors).toEqual([
     expect.stringMatching(/^hook "a": "whenever" is not an event/),
-    expect.stringMatching(/^hook "b": only sessionStart and beforeTurn can inject/),
+    expect.stringMatching(/^hook "b": only sessionStart and beforeExchange can inject/),
     expect.stringMatching(/^hook "v": only beforeCompact can veto/),
-    expect.stringMatching(/^hook "c": beforeTurn has no \{\{reply\}\}/),
+    expect.stringMatching(/^hook "c": beforeExchange has no \{\{reply\}\}/),
     expect.stringMatching(/^hook "c": another hook on this server has that id/),
     expect.stringMatching(/^hook "d": needs a tool/),
     expect.stringMatching(/^hook "e": maxTokens/),
@@ -142,9 +142,9 @@ test("validation reports a hook's shape rather than trusting its type", () => {
     validateHooks([
       null,
       [],
-      { id: 7, on: "beforeTurn", tool: "recall" },
+      { id: 7, on: "beforeExchange", tool: "recall" },
       { id: "x", tool: "recall" },
-      { id: "y", on: "beforeTurn", tool: "recall", inject: "yes", enabled: 1 },
+      { id: "y", on: "beforeExchange", tool: "recall", inject: "yes", enabled: 1 },
       { id: "z", on: "beforeCompact", tool: "recall", veto: "maybe" },
     ]),
   ).toEqual([
@@ -258,12 +258,12 @@ test("contextBlocks holds each block to its hook's cap and the whole to the tota
 
 test("runHooks calls the bound tool with its templated arguments", async () => {
   await withHooks([hook({ inject: true })]);
-  const [result] = await pool.runHooks("beforeTurn", context);
+  const [result] = await pool.runHooks("beforeExchange", context);
   expect(result).toMatchObject({
     serverId: "echo-1",
     label: "Echo",
     hookId: "h",
-    event: "beforeTurn",
+    event: "beforeExchange",
     ok: true,
     text: 'echo({"text":"hello"})',
     inject: true,
@@ -274,12 +274,12 @@ test("runHooks calls the bound tool with its templated arguments", async () => {
 test("runHooks runs only this event's enabled hooks, in configuration order, at once", async () => {
   await withHooks([
     hook({ id: "slow", args: { text: "slow", sleepMs: 300 } }),
-    hook({ id: "other-event", on: "afterTurn" }),
+    hook({ id: "other-event", on: "afterExchange" }),
     hook({ id: "off", enabled: false }),
     hook({ id: "fast", tool: "ping", args: { sleepMs: 300 } }),
   ]);
   const started = Date.now();
-  const outcomes = await pool.runHooks("beforeTurn", context);
+  const outcomes = await pool.runHooks("beforeExchange", context);
   expect(outcomes.map((o) => o.hookId)).toEqual(["slow", "fast"]);
   expect(outcomes.every((o) => o.ok)).toBe(true);
   // Two 300ms hooks in sequence would take 600.
@@ -288,11 +288,11 @@ test("runHooks runs only this event's enabled hooks, in configuration order, at 
 
 test("runHooks leaves out disabled servers and servers outside the scope", async () => {
   await withHooks([hook()]);
-  expect(await pool.runHooks("beforeTurn", context, { servers: [] })).toEqual([]);
-  expect(await pool.runHooks("beforeTurn", context, { servers: ["echo-1"] })).toHaveLength(1);
+  expect(await pool.runHooks("beforeExchange", context, { servers: [] })).toEqual([]);
+  expect(await pool.runHooks("beforeExchange", context, { servers: ["echo-1"] })).toHaveLength(1);
 
   await pool.sync([echoRow({ hooks: [hook()], enabled: false })]);
-  expect(await pool.runHooks("beforeTurn", context)).toEqual([]);
+  expect(await pool.runHooks("beforeExchange", context)).toEqual([]);
 });
 
 test("a failing hook is an outcome and a notice, never a rejection", async () => {
@@ -302,7 +302,7 @@ test("a failing hook is an outcome and a notice, never a rejection", async () =>
     hook({ id: "fine" }),
   ]);
   const notices: string[] = [];
-  const outcomes = await pool.runHooks("beforeTurn", context, {
+  const outcomes = await pool.runHooks("beforeExchange", context, {
     onNotice: (notice) => notices.push(notice),
   });
   expect(outcomes.map(({ hookId, ok }) => [hookId, ok])).toEqual([
@@ -314,7 +314,7 @@ test("a failing hook is an outcome and a notice, never a rejection", async () =>
   expect(outcomes[1].error).toContain("echo__nope");
   expect(notices).toEqual(
     expect.arrayContaining([
-      'Echo: beforeTurn hook "boom" failed: boom',
+      'Echo: beforeExchange hook "boom" failed: boom',
       expect.stringContaining('hook "missing-tool" failed'),
     ]),
   );
@@ -328,8 +328,8 @@ test("a failing hook is an outcome and a notice, never a rejection", async () =>
  */
 type CoreHookEvent =
   | "sessionStart"
-  | "beforeTurn"
-  | "afterTurn"
+  | "beforeExchange"
+  | "afterExchange"
   | "beforeCompact"
   | "sessionEnd"
   | "sessionDelete";
@@ -379,9 +379,9 @@ test("hookRunner is agent-core's HookRunner, and binds the scope it was made wit
   const scoped: CoreHookRunner = pool.hookRunner({ servers: ["echo-2"] });
   const none: CoreHookRunner = pool.hookRunner({ servers: [] });
 
-  expect((await every("beforeTurn", context, {})).map((o) => o.hookId)).toEqual(["one", "two"]);
-  expect((await scoped("beforeTurn", context, {})).map((o) => o.hookId)).toEqual(["two"]);
-  expect(await none("beforeTurn", context, {})).toEqual([]);
+  expect((await every("beforeExchange", context, {})).map((o) => o.hookId)).toEqual(["one", "two"]);
+  expect((await scoped("beforeExchange", context, {})).map((o) => o.hookId)).toEqual(["two"]);
+  expect(await none("beforeExchange", context, {})).toEqual([]);
 });
 
 test("a scope given as a generator holds for every event, not just the first", async () => {
@@ -390,8 +390,8 @@ test("a scope given as a generator holds for every event, not just the first", a
     yield "echo-1";
   }
   const run = pool.hookRunner({ servers: ids() });
-  expect(await run("beforeTurn", context)).toHaveLength(1);
-  expect(await run("beforeTurn", context)).toHaveLength(1);
+  expect(await run("beforeExchange", context)).toHaveLength(1);
+  expect(await run("beforeExchange", context)).toHaveLength(1);
 });
 
 test("a scope edited after the runner was made does not move it", async () => {
@@ -399,7 +399,7 @@ test("a scope edited after the runner was made does not move it", async () => {
   const servers = new Set<string>();
   const run = pool.hookRunner({ servers });
   servers.add("echo-1");
-  expect(await run("beforeTurn", context)).toEqual([]);
+  expect(await run("beforeExchange", context)).toEqual([]);
 });
 
 test("hookRunner tells its own listener of a failure, and takes each call's signal", async () => {
@@ -412,7 +412,7 @@ test("hookRunner tells its own listener of a failure, and takes each call's sign
   const controller = new AbortController();
   setTimeout(() => controller.abort(), 50);
   const started = Date.now();
-  const outcomes = await run("beforeTurn", context, { signal: controller.signal });
+  const outcomes = await run("beforeExchange", context, { signal: controller.signal });
   expect(outcomes.map(({ hookId, ok }) => [hookId, ok])).toEqual([
     ["h", false],
     ["slow", false],
@@ -420,7 +420,7 @@ test("hookRunner tells its own listener of a failure, and takes each call's sign
   expect(Date.now() - started).toBeLessThan(1500);
   expect(notices).toEqual(
     expect.arrayContaining([
-      'Echo: beforeTurn hook "h" failed: boom',
+      'Echo: beforeExchange hook "h" failed: boom',
       expect.stringContaining('"slow"'),
     ]),
   );
@@ -429,36 +429,36 @@ test("hookRunner tells its own listener of a failure, and takes each call's sign
 test("a hook whose placeholder has no value is skipped rather than sent", async () => {
   await withHooks([hook({ args: { text: "{{reply}}" } })]);
   const notices: string[] = [];
-  const [result] = await pool.runHooks("beforeTurn", context, {
+  const [result] = await pool.runHooks("beforeExchange", context, {
     onNotice: (notice) => notices.push(notice),
   });
   expect(result).toMatchObject({ ok: false, skipped: true, error: "no value for {{reply}}" });
-  expect(notices).toEqual(['Echo: beforeTurn hook "h" skipped: no value for {{reply}}']);
+  expect(notices).toEqual(['Echo: beforeExchange hook "h" skipped: no value for {{reply}}']);
 });
 
 test("a hook that outlives its timeout fails at the timeout", async () => {
   await withHooks([hook({ timeoutMs: 100, args: { sleepMs: 2000 } })]);
-  const [result] = await pool.runHooks("beforeTurn", context);
+  const [result] = await pool.runHooks("beforeExchange", context);
   expect(result.ok).toBe(false);
   expect(result.ms).toBeLessThan(1500);
 });
 
 test("an abort resolves the hooks promptly, and one already aborted never runs", async () => {
-  await withHooks([hook({ on: "afterTurn", args: { sleepMs: 5000 } })]);
+  await withHooks([hook({ on: "afterExchange", args: { sleepMs: 5000 } })]);
   const controller = new AbortController();
   setTimeout(() => controller.abort(), 50);
   const started = Date.now();
-  const [aborted] = await pool.runHooks("afterTurn", context, { signal: controller.signal });
+  const [aborted] = await pool.runHooks("afterExchange", context, { signal: controller.signal });
   expect(aborted.ok).toBe(false);
   expect(Date.now() - started).toBeLessThan(1500);
 
-  const [skipped] = await pool.runHooks("afterTurn", context, { signal: controller.signal });
+  const [skipped] = await pool.runHooks("afterExchange", context, { signal: controller.signal });
   expect(skipped).toMatchObject({ ok: false, skipped: true });
 });
 
 test("an empty result is a success with nothing to inject", async () => {
   await withHooks([hook({ inject: true, args: { empty: true } })]);
-  const [result] = await pool.runHooks("beforeTurn", context);
+  const [result] = await pool.runHooks("beforeExchange", context);
   expect(result.ok).toBe(true);
   expect(result.text).toBeUndefined();
   expect(contextBlocks([result]).text).toBe("");
@@ -471,14 +471,14 @@ test("an empty result is a success with nothing to inject", async () => {
  */
 test("a tool that answers with the pool's own placeholder text is still heard", async () => {
   await withHooks([hook({ inject: true, args: { raw: "(no output)" } })]);
-  const [result] = await pool.runHooks("beforeTurn", context);
+  const [result] = await pool.runHooks("beforeExchange", context);
   expect(result.ok).toBe(true);
   expect(result.text).toBe("(no output)");
 });
 
 test("inject is ignored on an event that runs too late, even on an unvalidated row", async () => {
-  await withHooks([hook({ on: "afterTurn", inject: true })]);
-  const [result] = await pool.runHooks("afterTurn", context);
+  await withHooks([hook({ on: "afterExchange", inject: true })]);
+  const [result] = await pool.runHooks("afterExchange", context);
   expect(result.inject).toBe(false);
 });
 
@@ -516,8 +516,8 @@ test("the same answer from a row that may not veto is an ordinary one", async ()
 
 /** `veto` is held to its event in the runner too, since a row need not have been validated. */
 test("veto on an event that announces nothing stoppable is ignored", async () => {
-  await withHooks([vetoHook('{"veto":true}', { on: "afterTurn" })]);
-  const [result] = await pool.runHooks("afterTurn", context);
+  await withHooks([vetoHook('{"veto":true}', { on: "afterExchange" })]);
+  const [result] = await pool.runHooks("afterExchange", context);
   expect(result).toMatchObject({ ok: true, text: '{"veto":true}' });
   expect(result.veto).toBeUndefined();
 });
@@ -560,7 +560,7 @@ test("a hook that can veto gets the waited-on timeout rather than the call's", a
 
 test("runHooks fills in now when the caller did not", async () => {
   await withHooks([hook({ args: { text: "{{now}}" } })]);
-  const [result] = await pool.runHooks("beforeTurn", context);
+  const [result] = await pool.runHooks("beforeExchange", context);
   expect(result.text).toMatch(/"text":"\d{4}-\d{2}-\d{2}T/);
 });
 
@@ -591,7 +591,7 @@ test("a hidden tool is not offered, is refused to a plain call, and reaches a ho
   expect(refused.message).toBe('no connected MCP server offers a tool called "echo__add"');
 
   expect(await pool.call("echo__add", { a: 1, b: 2 }, { hidden: true })).toBe('add({"a":1,"b":2})');
-  const [result] = await pool.runHooks("beforeTurn", context);
+  const [result] = await pool.runHooks("beforeExchange", context);
   expect(result).toMatchObject({ ok: true, text: 'add({"a":1,"b":2})' });
 });
 

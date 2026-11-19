@@ -2734,7 +2734,7 @@ export class McpPool {
    *
    * Hooks come from the rows: each enabled server inside the scope contributes its enabled hooks
    * for this event, in configuration order. They run at once rather than in turn — they are
-   * independent by construction, and on `beforeTurn` the user is waiting on the slowest of them.
+   * independent by construction, and on `beforeExchange` the user is waiting on the slowest of them.
    *
    * **Never rejects.** A hook is an addition to a session, never a condition of it: a memory
    * server that is down must cost a turn its recall, not the turn. A failed call, a timeout, an

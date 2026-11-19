@@ -22,8 +22,8 @@ export type { HookContext, HookEvent, HookMessage, HookOutcome, ToolHook };
 /** Every event a hook can be bound to, in the order a session meets them. */
 export const HOOK_EVENTS: readonly HookEvent[] = [
   "sessionStart",
-  "beforeTurn",
-  "afterTurn",
+  "beforeExchange",
+  "afterExchange",
   "beforeCompact",
   "sessionEnd",
   "sessionDelete",
@@ -32,13 +32,13 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
 /**
  * What each event puts in its context, beyond the ones every event carries.
  *
- * The contract `validateHooks` holds a row to, so a template naming `{{reply}}` on `beforeTurn` —
+ * The contract `validateHooks` holds a row to, so a template naming `{{reply}}` on `beforeExchange` —
  * where there is no reply yet — is refused when it is saved rather than skipped on every turn.
  */
 const EVENT_VARS: Record<HookEvent, readonly string[]> = {
   sessionStart: ["prompt"],
-  beforeTurn: ["prompt", "turn.index"],
-  afterTurn: ["prompt", "reply", "turn.index", "turn.messages"],
+  beforeExchange: ["prompt", "turn.index"],
+  afterExchange: ["prompt", "reply", "turn.index", "turn.messages"],
   beforeCompact: ["compacting", "range.from", "range.through"],
   sessionEnd: ["status", "reply"],
   sessionDelete: [],
@@ -51,7 +51,7 @@ const COMMON_VARS = ["session.id", "host", "now"] as const;
  * The events whose output can reach the model. Only these two run before the request they would
  * be added to — anything later has nothing left to add context to.
  */
-export const INJECT_EVENTS: ReadonlySet<HookEvent> = new Set(["sessionStart", "beforeTurn"]);
+export const INJECT_EVENTS: ReadonlySet<HookEvent> = new Set(["sessionStart", "beforeExchange"]);
 
 /**
  * The events a hook may decline. Only `beforeCompact` announces something that has not happened

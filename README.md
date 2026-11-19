@@ -227,22 +227,22 @@ const memory = {
   hiddenTools: ["zeromem_remember", "zeromem_forget_session"],
   hooks: [
     {
-      id: "recall", on: "beforeTurn", tool: "zeromem_recall", inject: true, maxTokens: 800,
+      id: "recall", on: "beforeExchange", tool: "zeromem_recall", inject: true, maxTokens: 800,
       args: { query: "{{prompt}}", exclude_session: "app:{{session.id}}", format: "text" },
     },
     {
-      id: "remember", on: "afterTurn", tool: "zeromem_remember",
+      id: "remember", on: "afterExchange", tool: "zeromem_remember",
       args: { session_id: "app:{{session.id}}", turns: "{{turn.messages}}" },
     },
   ],
 };
 
 // Before the request:
-const outcomes = await pool.runHooks("beforeTurn", { session: { id }, prompt }, { signal, onNotice });
+const outcomes = await pool.runHooks("beforeExchange", { session: { id }, prompt }, { signal, onNotice });
 const { text } = contextBlocks(outcomes); // <context source="Memory">…</context>, or ""
 
 // After the reply — not awaited, and not on the turn's signal:
-void pool.runHooks("afterTurn", { session: { id }, prompt, reply, turn: { index, messages } });
+void pool.runHooks("afterExchange", { session: { id }, prompt, reply, turn: { index, messages } });
 ```
 
 The pool never fires a hook itself — only the host knows when a turn starts. It supplies the runner,
@@ -253,7 +253,7 @@ hands one over with the run's scope and listener bound:
 
 ```ts
 const run = pool.hookRunner({ servers: agent.mcpServerIds, onNotice });
-const { context } = await gather(run, ["beforeTurn"], { session: { id }, prompt }, { signal });
+const { context } = await gather(run, ["beforeExchange"], { session: { id }, prompt }, { signal });
 ```
 
 The scope is the reason to take this over writing the one-line wrapper: a runner built without
@@ -265,8 +265,8 @@ assignable to agent-core's.
 | Event | Runs | Context beyond `session.id`, `host`, `now`, `vars.*` | `inject` |
 |---|---|---|---|
 | `sessionStart` | before a session's first turn | `prompt` | yes |
-| `beforeTurn` | before each turn's request | `prompt`, `turn.index` | yes |
-| `afterTurn` | once a turn has its reply | `prompt`, `reply`, `turn.index`, `turn.messages` | no |
+| `beforeExchange` | before each question is sent | `prompt`, `turn.index` | yes |
+| `afterExchange` | once a question has its answer | `prompt`, `reply`, `turn.index`, `turn.messages` | no |
 | `beforeCompact` | before old messages are summarised away | `compacting`, `range.from`, `range.through` | no, but see `veto` |
 | `sessionEnd` | when a run that ends, ends | `status`, `reply` | no |
 | `sessionDelete` | when the host deletes a session | — | no |
@@ -285,7 +285,7 @@ assignable to agent-core's.
   turn its recall, not the turn.
 - **At once, in order.** An event's hooks run in parallel, and their outcomes come back in
   configuration order.
-- **Bounded.** A hook gets its `timeoutMs`. Otherwise it gets 3s on `sessionStart` and `beforeTurn`,
+- **Bounded.** A hook gets its `timeoutMs`. Otherwise it gets 3s on `sessionStart` and `beforeExchange`,
   because the user is waiting on those, and on a hook that can veto, because the compaction is —
   and the SDK's timeout everywhere else. The bound covers waking a server that is down as well as
   the request itself.
