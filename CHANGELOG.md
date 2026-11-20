@@ -1,3 +1,10 @@
+## [4.0.1](https://github.com/cubicecho/agent-mcp-pool/compare/v4.0.0...v4.0.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **hooks:** write hook context as fenced hook_context blocks ([e230caf](https://github.com/cubicecho/agent-mcp-pool/commit/e230cafb1d8711ca6ceb5060a756cbdee5b39102))
+
 # [4.0.0](https://github.com/cubicecho/agent-mcp-pool/compare/v3.16.2...v4.0.0) (2026-11-19)
 
 
