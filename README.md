@@ -239,7 +239,7 @@ const memory = {
 
 // Before the request:
 const outcomes = await pool.runHooks("beforeExchange", { session: { id }, prompt }, { signal, onNotice });
-const { text } = contextBlocks(outcomes); // <context source="Memory">…</context>, or ""
+const { text } = contextBlocks(outcomes); // <hook_context source="Memory">…</hook_context>, or ""
 
 // After the reply — not awaited, and not on the turn's signal:
 void pool.runHooks("afterExchange", { session: { id }, prompt, reply, turn: { index, messages } });
@@ -291,9 +291,13 @@ assignable to agent-core's.
   the request itself.
 - **Read and add only.** A hook cannot stop a turn or rewrite it. What it returns reaches the model
   only through `contextBlocks`. That function caps each block at its hook's `maxTokens` (1000 by
-  default) and the total at 2000. Its `injected` lists each hook that made it in, with its `tokens`
-  and its `text` exactly as it went into the block — trimmed, cut with `…` if over a cap, without
-  the wrapper — for a host that shows the user what each hook added.
+  default) and the total at 2000. Each block is `<hook_context source="…">`, not `<context>`, which
+  Open WebUI and other chat clients already wrap retrieved documents in. The text inside is fenced:
+  a hook that writes `</hook_context>`, or any other tag of agent-core's prompt layout, has its `<`
+  escaped, so it cannot end its block early. The output matches agent-core's `assembleContext`
+  character for character. Its `injected` lists each hook that made it in, with its `tokens` and its
+  `text` as the hook said it — trimmed, cut with `…` if over a cap, unfenced and without the
+  wrapper — for a host that shows the user what each hook added.
 
 ### Declining a compaction
 
