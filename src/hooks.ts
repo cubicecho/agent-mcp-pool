@@ -262,14 +262,38 @@ export function readVeto(text: string | undefined): { veto: boolean; reason?: st
 const attribute = (text: string) =>
   text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 
+/**
+ * The tag each hook's block is wrapped in. Not `context`, which chat clients such as Open WebUI
+ * already wrap retrieved documents in, so a model behind one would read the two as one.
+ */
+const HOOK_CONTEXT_TAG = "hook_context";
+
+/**
+ * Every tag agent-core's prompt layout writes: any `prompt_…` part, and its `LAYOUT_TAGS` as whole
+ * names, opening or closing, in any case and however spaced. A copy of agent-core's own pattern
+ * rather than an import, since neither package depends on the other; the two must escape the same
+ * tags for `contextBlocks` to build what agent-core's `assembleContext` does.
+ */
+const LAYOUT_TAG =
+  /<(\s*\/?\s*(?:prompt_[a-z0-9_-]*|(?:precedence|server_instructions|tool_catalogue|untrusted|hook_context)(?![a-z0-9_-])))/gi;
+
+/**
+ * Text that cannot open or close a section of the prompt, whatever it says.
+ *
+ * @param text A hook's text.
+ * @returns The text with the `<` of every layout tag escaped as `&lt;`, and nothing else touched.
+ */
+const fence = (text: string) => text.replace(LAYOUT_TAG, "&lt;$1");
+
 /** What `contextBlocks` built, and what each hook contributed to it. */
 export interface ContextBlocks {
   /** The blocks, blank-line separated; empty when no hook had anything to add. */
   text: string;
   /**
-   * One entry per hook whose output made it in, in the order it appears. `text` is what went inside
-   * its block — trimmed, cut with `…` if it was over a cap, without the `<context>` wrapper — so a
-   * host can show what each hook added without re-deriving the caps or parsing the wrapper back off.
+   * One entry per hook whose output made it in, in the order it appears. `text` is what the hook
+   * said — trimmed, cut with `…` if it was over a cap, unfenced and without the `<hook_context>`
+   * wrapper — so a host can show what each hook added without re-deriving the caps or parsing the
+   * wrapper back off.
    */
   injected: { serverId: string; hookId: string; tokens: number; text: string }[];
 }
@@ -277,11 +301,15 @@ export interface ContextBlocks {
 /**
  * The injecting hooks' output, as context for the model.
  *
- * Each one is wrapped in `<context source="…">` naming the server it came from, so a model reading
- * a recalled line can tell it is a memory rather than something the user said. Each is held to its
- * own hook's `maxTokens`, and the whole to `maxTokens` here: a hook with a generous cap on a server
- * that returns a page cannot crowd out the conversation it was meant to inform. Blocks past the
- * total are dropped whole rather than cut to a stub.
+ * Each one is wrapped in `<hook_context source="…">` naming the server it came from, so a model
+ * reading a recalled line can tell it is a memory rather than something the user said. Each is held
+ * to its own hook's `maxTokens`, and the whole to `maxTokens` here: a hook with a generous cap on a
+ * server that returns a page cannot crowd out the conversation it was meant to inform. Blocks past
+ * the total are dropped whole rather than cut to a stub.
+ *
+ * The text is fenced: a hook that writes `</hook_context>`, or any other tag of agent-core's prompt
+ * layout, cannot end its block early and pass what follows off as the user's message. The output is
+ * agent-core's `assembleContext`'s, character for character, for the same outcomes.
  *
  * @param outcomes What `runHooks` returned. Failed, empty and non-injecting ones are skipped.
  * @param options `maxTokens` across every block together; 2000 if not given.
@@ -302,7 +330,8 @@ export function contextBlocks(
     if (estimateTokens(text) > cap) text = `${text.slice(0, cap * 4 - 1).trimEnd()}…`;
     const tokens = estimateTokens(text);
     remaining -= tokens;
-    blocks.push(`<context source="${attribute(outcome.label)}">\n${text}\n</context>`);
+    const source = attribute(outcome.label);
+    blocks.push(`<${HOOK_CONTEXT_TAG} source="${source}">\n${fence(text)}\n</${HOOK_CONTEXT_TAG}>`);
     injected.push({ serverId: outcome.serverId, hookId: outcome.hookId, tokens, text });
   }
   return { text: blocks.join("\n\n"), injected };
